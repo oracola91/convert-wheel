@@ -1,47 +1,66 @@
 //! Which formats the wheel offers for a dragged file.
-//!
-//! Proof step: this only picks the labels. The converter that uses them comes next.
 
 use std::path::Path;
 
-const IMAGE_IN: &[&str] = &["jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp", "gif", "avif"];
-const IMAGE_OUT: &[&str] = &["jpg", "png", "heic", "webp", "tiff", "gif", "avif", "pdf"];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Image,
+    Audio,
+    Video,
+    Doc,
+    Sheet,
+    Slides,
+}
 
-const AUDIO_IN: &[&str] = &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"];
-const AUDIO_OUT: &[&str] = &["mp3", "m4a", "wav", "flac", "aiff", "ogg"];
-
-const VIDEO_IN: &[&str] = &["mp4", "mov", "m4v", "mkv", "webm", "avi"];
-const VIDEO_OUT: &[&str] = &["mp4", "mov", "webm", "gif", "mp3"];
-
-const DOC_IN: &[&str] = &["md", "markdown", "docx", "odt", "html", "htm", "txt", "rtf", "epub"];
-const DOC_OUT: &[&str] = &["docx", "html", "md", "txt", "odt", "epub"];
+/// What each kind of file is read from and can be turned into.
+const KINDS: &[(Kind, &[&str], &[&str])] = &[
+    (
+        Kind::Image,
+        &["jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp", "gif", "avif"],
+        &["jpg", "png", "heic", "webp", "tiff", "gif", "avif", "pdf"],
+    ),
+    (
+        Kind::Audio,
+        &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"],
+        &["mp3", "m4a", "wav", "flac", "aiff", "ogg"],
+    ),
+    (
+        Kind::Video,
+        &["mp4", "mov", "m4v", "mkv", "webm", "avi"],
+        &["mp4", "mov", "webm", "gif", "mp3"],
+    ),
+    (
+        Kind::Doc,
+        &["docx", "doc", "odt", "rtf", "md", "markdown", "html", "htm", "txt", "epub"],
+        &["pdf", "docx", "odt", "html", "md", "txt", "epub"],
+    ),
+    (Kind::Sheet, &["xlsx", "xls", "ods", "csv"], &["pdf", "xlsx", "ods", "csv"]),
+    (Kind::Slides, &["pptx", "ppt", "odp"], &["pdf", "pptx", "odp"]),
+];
 
 /// Most segments the wheel draws, so labels stay readable.
 pub const MAX_SEGMENTS: usize = 8;
 
-fn extension(path: &str) -> Option<String> {
-    Path::new(path)
-        .extension()
+pub fn extension(path: &Path) -> Option<String> {
+    path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
 }
 
-fn outputs_for(ext: &str) -> &'static [&'static str] {
-    if IMAGE_IN.contains(&ext) {
-        IMAGE_OUT
-    } else if AUDIO_IN.contains(&ext) {
-        AUDIO_OUT
-    } else if VIDEO_IN.contains(&ext) {
-        VIDEO_OUT
-    } else if DOC_IN.contains(&ext) {
-        DOC_OUT
-    } else {
-        &[]
-    }
+pub fn kind_of(ext: &str) -> Option<Kind> {
+    KINDS.iter().find(|(_, ins, _)| ins.contains(&ext)).map(|(k, _, _)| *k)
+}
+
+pub fn outputs_for(ext: &str) -> &'static [&'static str] {
+    KINDS
+        .iter()
+        .find(|(_, ins, _)| ins.contains(&ext))
+        .map(|(_, _, outs)| *outs)
+        .unwrap_or(&[])
 }
 
 /// Same name for the same format, so "jpeg" in and "jpg" out don't both show.
-fn canonical(ext: &str) -> &str {
+pub fn canonical(ext: &str) -> &str {
     match ext {
         "jpeg" => "jpg",
         "tif" => "tiff",
@@ -56,7 +75,7 @@ fn canonical(ext: &str) -> &str {
 /// Formats every dragged file can be turned into, minus the format they already have
 /// when they all share one.
 pub fn formats_for(paths: &[String]) -> Vec<&'static str> {
-    let exts: Vec<String> = paths.iter().filter_map(|p| extension(p)).collect();
+    let exts: Vec<String> = paths.iter().filter_map(|p| extension(Path::new(p))).collect();
     if exts.is_empty() || exts.len() != paths.len() {
         return Vec::new();
     }
@@ -92,6 +111,8 @@ mod tests {
     fn mixed_kinds_share_only_common_formats() {
         // a video and an audio file only share mp3
         assert_eq!(formats_for(&v(&["/tmp/a.mov", "/tmp/b.wav"])), vec!["mp3"]);
+        // office files of any kind can all become a PDF
+        assert_eq!(formats_for(&v(&["/tmp/a.docx", "/tmp/b.xlsx", "/tmp/c.pptx"])), vec!["pdf"]);
     }
 
     #[test]
@@ -105,5 +126,18 @@ mod tests {
     fn mixed_image_formats_keep_all_outputs() {
         let f = formats_for(&v(&["/tmp/a.png", "/tmp/b.jpg"]));
         assert!(f.contains(&"png") && f.contains(&"jpg"));
+    }
+
+    #[test]
+    fn word_files_offer_pdf() {
+        assert!(formats_for(&v(&["/tmp/a.docx"])).contains(&"pdf"));
+        assert!(formats_for(&v(&["/tmp/a.doc"])).contains(&"docx"));
+    }
+
+    #[test]
+    fn no_kind_offers_more_than_the_wheel_draws() {
+        for (_, _, outs) in KINDS {
+            assert!(outs.len() <= MAX_SEGMENTS);
+        }
     }
 }
