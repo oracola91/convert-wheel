@@ -9,12 +9,11 @@ use std::{thread, time::Duration};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager};
 
-use crate::formats;
+use crate::{formats, wheel};
 
 const POLL: Duration = Duration::from_millis(30);
 /// How long the wheel stays after the button is released, so a drop on it can land.
 const HIDE_DELAY: Duration = Duration::from_millis(400);
-pub const WHEEL_SIZE: f64 = 340.0;
 
 #[derive(Clone, Serialize)]
 struct WheelShow {
@@ -80,10 +79,13 @@ fn show_wheel(app: &AppHandle, paths: Vec<String>) {
         .map(|m| m.size().height as f64 / m.scale_factor())
         .unwrap_or(0.0);
     let pos = LogicalPosition::new(
-        x - WHEEL_SIZE / 2.0,
-        screen_height - y_from_bottom - WHEEL_SIZE / 2.0,
+        x - wheel::SIZE / 2.0,
+        screen_height - y_from_bottom - wheel::SIZE / 2.0,
     );
     let formats = formats::formats_for(&paths);
+    if let Ok(mut shown) = app.state::<wheel::Shown>().0.lock() {
+        *shown = formats.clone();
+    }
     let _ = win.set_position(pos);
     let _ = win.emit("wheel-show", WheelShow { paths, formats });
     let _ = win.show();
@@ -94,6 +96,9 @@ pub fn hide_wheel(app: &AppHandle) {
         let _ = win.hide();
     }
 }
+
+#[cfg(target_os = "macos")]
+pub use macos::file_paths;
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -124,10 +129,14 @@ mod macos {
         (p.x, p.y)
     }
 
-    /// Paths of the files being dragged. Finder hands over file reference URLs
-    /// (file:///.file/id=...), so each one is resolved to a normal path.
     pub fn dragged_files() -> Vec<String> {
-        let Some(items) = drag_pasteboard().pasteboardItems() else {
+        file_paths(&drag_pasteboard())
+    }
+
+    /// Paths of the files on a pasteboard. Finder hands over file reference URLs
+    /// (file:///.file/id=...), so each one is resolved to a normal path.
+    pub fn file_paths(pb: &NSPasteboard) -> Vec<String> {
+        let Some(items) = pb.pasteboardItems() else {
             return Vec::new();
         };
         items

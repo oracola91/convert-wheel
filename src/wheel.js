@@ -1,8 +1,8 @@
-// Draws the format wheel and reports which segment a dragged file was dropped on.
+// Draws the format wheel. The drop itself is handled natively (drop_view.rs), which
+// also says which segment is under the cursor.
 const { listen } = window.__TAURI__.event;
-const { invoke } = window.__TAURI__.core;
-const { getCurrentWebview } = window.__TAURI__.webview;
 
+// Same numbers as src-tauri/src/wheel.rs.
 const SIZE = 340;
 const C = SIZE / 2;
 const R_OUT = 160;
@@ -66,18 +66,6 @@ function draw() {
   svg.append(label);
 }
 
-// Drag positions arrive in physical pixels relative to the window.
-function segmentAt(pos) {
-  if (!pos || formats.length === 0) return -1;
-  const x = pos.x / window.devicePixelRatio - C;
-  const y = pos.y / window.devicePixelRatio - C;
-  const r = Math.hypot(x, y);
-  if (r < R_IN || r > R_OUT + 10) return -1;
-  let a = Math.atan2(x, -y);
-  if (a < 0) a += 2 * Math.PI;
-  return Math.floor((a / (2 * Math.PI)) * formats.length) % formats.length;
-}
-
 function setActive(i) {
   if (i === active) return;
   active = i;
@@ -94,20 +82,8 @@ listen('wheel-show', (event) => {
   svg.classList.add('pop');
 });
 
-getCurrentWebview().onDragDropEvent((event) => {
-  const { type, position } = event.payload;
-  if (type === 'enter' || type === 'over') {
-    setActive(segmentAt(position));
-  } else if (type === 'leave') {
-    setActive(-1);
-  } else if (type === 'drop') {
-    const i = segmentAt(position);
-    invoke('wheel_dropped', {
-      paths: event.payload.paths,
-      format: i >= 0 ? formats[i] : null,
-    });
-    setActive(-1);
-  }
+listen('wheel-hover', (event) => {
+  setActive(event.payload ?? -1);
 });
 
 draw();
