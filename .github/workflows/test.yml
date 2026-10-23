@@ -16,10 +16,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same pull request replaces the run still going.
+# A newer push to the same pull request replaces the run still going. Runs on main
+# all finish, so each merge keeps its result.
 concurrency:
   group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -48,24 +49,29 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev mupdf-tools
 
-      - name: Install MuPDF
+      # pandoc too on macOS, for the PDF to Word test.
+      - name: Install MuPDF and pandoc
         if: runner.os == 'macOS'
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
-        run: brew install mupdf-tools
+        run: brew install mupdf-tools pandoc
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
         with:
           toolchain: 1.99.1
 
-      # Test builds only: release builds in build.yml never restore a cache.
+      # Test builds only: release builds in build.yml never restore a cache. Only runs
+      # on main save one, so pull requests (forks included) can't fill or replace it.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Unit tests
         working-directory: src-tauri
         env:
-          # Linux and macOS have MuPDF (above), so the PDF test must really run there.
+          # Linux and macOS have MuPDF (above), so the PDF test must really run there;
+          # macOS has pandoc too, for the PDF to Word test.
           REQUIRE_MUTOOL: ${{ runner.os != 'Windows' && '1' || '' }}
+          REQUIRE_PANDOC: ${{ runner.os == 'macOS' && '1' || '' }}
         run: cargo test --locked
