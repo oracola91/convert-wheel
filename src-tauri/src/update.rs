@@ -195,18 +195,31 @@ fn relaunch(app: &AppHandle) {
     {
         let pid = std::process::id().to_string();
         let target = relaunch_target();
+        // macOS goes on treating the app as running for a moment after it quits, and a
+        // plain `open` then fails (LaunchServices error -600 or -609, while `open` itself
+        // reports success). So: wait a little, ask for a new copy (-n), and try again
+        // until one is running.
         let script = if cfg!(target_os = "macos") {
-            r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; open "$2""#
+            r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
+            for try in 1 2 3 4 5 6 7 8 9 10; do
+                sleep 0.5; open -n "$2"; sleep 1.5
+                pgrep -U "$(id -u)" -x convert-wheel >/dev/null && exit 0
+            done"#
         } else {
             r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec "$2""#
         };
         if let Some(target) = target {
+            use std::os::unix::process::CommandExt;
             let started = std::process::Command::new("/bin/sh")
                 .args(["-c", script, "sh", &pid])
                 .arg(target)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
+                // A process group of its own: when an app quits, macOS stops what is
+                // left in the app's group, and that would cut this helper off before it
+                // starts the new copy.
+                .process_group(0)
                 .spawn();
             if let Err(e) = started {
                 log::line(&format!("couldn't schedule the restart ({e}); start Convert Wheel again by hand"));
