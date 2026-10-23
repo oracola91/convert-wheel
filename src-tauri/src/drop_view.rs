@@ -41,14 +41,12 @@ define_class!(
         #[unsafe(method(draggingEntered:))]
         fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
             self.shrink_drag_image(sender);
-            self.set_hover(self.segment(sender));
-            NSDragOperation::Copy
+            self.track(sender)
         }
 
         #[unsafe(method(draggingUpdated:))]
         fn dragging_updated(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
-            self.set_hover(self.segment(sender));
-            NSDragOperation::Copy
+            self.track(sender)
         }
 
         #[unsafe(method(draggingExited:))]
@@ -61,7 +59,6 @@ define_class!(
             true
         }
 
-        /// Returning false for a drop in the middle makes macOS slide the file back.
         #[unsafe(method(performDragOperation:))]
         fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
             let app = &self.ivars().app;
@@ -96,6 +93,18 @@ impl DropView {
         let size = self.bounds().size;
         let n = self.ivars().app.state::<wheel::Shown>().0.lock().ok()?.len();
         wheel::segment_at(p.x - size.width / 2.0, p.y - size.height / 2.0, n)
+    }
+
+    /// Lights up the segment under the cursor and accepts the drop only there. Anywhere
+    /// else (the middle, the corners) the drop is refused, so macOS slides the file back.
+    fn track(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+        let segment = self.segment(sender);
+        self.set_hover(segment);
+        if segment.is_some() {
+            NSDragOperation::Copy
+        } else {
+            NSDragOperation::None
+        }
     }
 
     /// Tells the page which segment to light up, only when it changes.
