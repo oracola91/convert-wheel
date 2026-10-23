@@ -4,6 +4,8 @@ mod convert;
 #[cfg(target_os = "macos")]
 mod drop_view;
 mod formats;
+#[cfg(target_os = "linux")]
+mod linux;
 mod login;
 mod menu;
 mod settings;
@@ -24,6 +26,12 @@ use tauri_plugin_notification::NotificationExt;
 struct Job {
     paths: Vec<String>,
     format: String,
+}
+
+/// Esc or a click in the middle of a wheel that was opened from the keyboard shortcut.
+#[tauri::command]
+fn wheel_cancel(app: AppHandle) {
+    trigger::hide_wheel(&app, false);
 }
 
 /// Queues a drop on the wheel for conversion.
@@ -133,6 +141,15 @@ fn main() {
     if args.first().map(String::as_str) == Some("--convert") {
         std::process::exit(cli(&args[1..]));
     }
+    // For a keyboard shortcut on Linux, where Wayland hides Shift+drag from apps.
+    #[cfg(target_os = "linux")]
+    if args.first().map(String::as_str) == Some("--show") {
+        if let Err(e) = linux::send_show() {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -153,9 +170,12 @@ fn main() {
             }
             #[cfg(windows)]
             win32::install(app.handle());
+            #[cfg(target_os = "linux")]
+            linux::install(app.handle());
             trigger::start(app.handle().clone());
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![wheel_cancel])
         .run(tauri::generate_context!())
         .expect("error while running convert-wheel");
 }

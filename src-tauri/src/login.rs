@@ -1,6 +1,7 @@
 //! Open at Login. macOS: the system's login items (System Settings > General >
 //! Login Items); only an app in a bundle can be one, so the switch is off limits when
 //! the app runs straight from Terminal. Windows: the Run key in the registry.
+//! Linux: an XDG autostart entry.
 
 #[cfg(target_os = "macos")]
 mod imp {
@@ -68,7 +69,51 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+/// Linux: an XDG autostart entry, which GNOME, KDE and the others start at login.
+#[cfg(target_os = "linux")]
+mod imp {
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn entry() -> Option<PathBuf> {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        Some(config.join("autostart/convert-wheel.desktop"))
+    }
+
+    /// A development build would register a path that disappears on the next build.
+    pub fn available() -> bool {
+        !cfg!(debug_assertions) && entry().is_some()
+    }
+
+    pub fn is_enabled() -> bool {
+        entry().is_some_and(|e| e.is_file())
+    }
+
+    pub fn set_enabled(on: bool) -> Result<(), String> {
+        let entry = entry().ok_or("no home folder")?;
+        if !on {
+            return match fs::remove_file(&entry) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                _ => Ok(()),
+            };
+        }
+        // An AppImage runs from a temporary mount; $APPIMAGE is the file itself.
+        let exe = std::env::var_os("APPIMAGE")
+            .map(PathBuf::from)
+            .map_or_else(|| std::env::current_exe().map_err(|e| e.to_string()), Ok)?;
+        let desktop = format!(
+            "[Desktop Entry]\nType=Application\nName=Convert Wheel\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
+            exe.display()
+        );
+        fs::create_dir_all(entry.parent().ok_or("no autostart folder")?)
+            .and_then(|_| fs::write(&entry, desktop))
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 mod imp {
     pub fn available() -> bool {
         false

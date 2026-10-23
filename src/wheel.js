@@ -1,6 +1,7 @@
 // Draws the format wheel. The drop itself is handled natively (drop_view.rs), which
 // says what is under the cursor. The glass and the file icon in the hub are native too.
 const { listen } = window.__TAURI__.event;
+const { invoke } = window.__TAURI__.core;
 
 // Same numbers as src-tauri/src/wheel.rs.
 const SIZE = 340;
@@ -21,8 +22,10 @@ const NAMES = {
 const svg = document.getElementById('wheel');
 let paths = [];
 let formats = [];
-// Windows learns which files are dragged only when they reach the wheel.
+// Windows and Linux learn which files are dragged only when they reach the wheel.
 let pending = false;
+// Opened from the keyboard shortcut (Linux): waits for a file instead of a mouse-up.
+let pinned = false;
 let segments = [];
 let hub = null;
 let hubLabel = null;
@@ -94,7 +97,7 @@ function show(hover) {
     const f = formats[hover.segment];
     hubLabel.textContent = `To ${NAMES[f] ?? f.toUpperCase()}`;
   } else if (pending) {
-    hubLabel.textContent = 'Drop here';
+    hubLabel.textContent = pinned ? 'Drag a file here' : 'Drop here';
   } else if (formats.length === 0) {
     hubLabel.textContent = 'No formats';
   } else {
@@ -109,7 +112,7 @@ function restart(className) {
 }
 
 listen('wheel-show', (event) => {
-  ({ paths, formats, pending } = event.payload);
+  ({ paths, formats, pending, pinned } = event.payload);
   document.documentElement.classList.toggle('solid', !event.payload.glass);
   build();
   restart('opening');
@@ -125,3 +128,11 @@ listen('wheel-hover', (event) => show(event.payload));
 
 // The chosen segment stays lit while the wheel shrinks back to where it opened.
 listen('wheel-close', () => restart('closing'));
+
+// A wheel opened from the shortcut closes with Esc or a click in the middle.
+document.addEventListener('keydown', (event) => {
+  if (pinned && event.key === 'Escape') invoke('wheel_cancel');
+});
+svg.addEventListener('click', (event) => {
+  if (pinned && event.target === hub) invoke('wheel_cancel');
+});
