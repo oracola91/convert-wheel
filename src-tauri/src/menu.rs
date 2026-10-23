@@ -46,15 +46,20 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let kind_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = kinds.iter().map(|k| k as _).collect();
     let shown = Submenu::with_items(app, "Formats on the Wheel", true, &kind_refs)?;
 
-    let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("cmd+q"))?;
+    let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
     let menu = Menu::with_items(app, &[&title, &hint, &sep()?, &login, &save, &shown, &sep()?, &quit])?;
 
-    TrayIconBuilder::with_id("main")
-        .icon(tauri::include_image!("./icons/tray.png"))
-        // A template icon: macOS tints it to match the menu bar, light or dark.
-        .icon_as_template(true)
-        .tooltip("Convert Wheel: hold Shift while dragging a file")
+    // macOS: a template icon it tints to match the menu bar, light or dark. Windows'
+    // tray can be light or dark too, so it gets the coloured app icon instead.
+    #[cfg(target_os = "macos")]
+    let tray = TrayIconBuilder::with_id("main").icon(tauri::include_image!("./icons/tray.png")).icon_as_template(true);
+    #[cfg(not(target_os = "macos"))]
+    let tray = match app.default_window_icon() {
+        Some(icon) => TrayIconBuilder::with_id("main").icon(icon.clone()),
+        None => TrayIconBuilder::with_id("main"),
+    };
+    tray.tooltip("Convert Wheel: hold Shift while dragging a file")
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(on_event)
