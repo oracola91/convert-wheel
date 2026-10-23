@@ -4,6 +4,8 @@ Hold Shift while dragging a file. A wheel of formats appears under the cursor. D
 
 This is our own build, written from scratch. The idea comes from what the paid Tangerine app for macOS visibly does. No Tangerine code, assets or binaries were used or inspected.
 
+**To install it, see [INSTALL.md](INSTALL.md).** Installers for every system are on the [Releases page](https://github.com/oracola91/convert-wheel/releases).
+
 ## Status (macOS)
 
 | Step | State |
@@ -11,11 +13,11 @@ This is our own build, written from scratch. The idea comes from what the paid T
 | 1. Proof: Shift+drag shows the wheel, a drop hands over the file path | Done, tested by hand |
 | 2. Converter core (ImageMagick, ffmpeg, pandoc, LibreOffice) | Done. All 49 format pairs pass from the command line; Word to PDF tested by hand |
 | 3. Finished wheel: glass, motion, hub icon, haptics, screen edges | Done, tested by hand |
-| 4. Menu bar app: Open at Login, where files go, which formats show | Built, waiting on a hands-on test |
-| 5. Testing with real files | Not started |
+| 4. Menu bar app: Open at Login, where files go, which formats show | Done, tested by hand |
+| 5. Testing with real files | In daily use |
 | 6. Install as an app | Done: `scripts/install-macos.sh` |
 
-**Windows:** written and compile-checked, waiting on the first installer build and a hands-on test. **Linux:** written, waiting on its first build on GitHub and a test on Ubuntu.
+**Windows** and **Linux:** built on GitHub (`.exe`, `.msi`, `.deb`, `.AppImage`), waiting on hands-on tests.
 
 ## What converts to what
 
@@ -32,59 +34,26 @@ The wheel only shows formats that every dragged file can become. The new file la
 
 A notification says when a drop is done or why it failed. Video also gets a "Converting…" notification first, because it can take a while.
 
-## Install
+## On Windows and Linux
 
-```sh
-./scripts/install-macos.sh
-```
+Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS:
 
-It builds the app, quits a running copy, puts `Convert Wheel.app` in `/Applications` and starts it. Run it again after pulling changes to update.
+**Windows** (`src-tauri/src/win32.rs`)
 
-The app is signed ad hoc (no Apple developer account), so it runs on the Mac that built it. On another Mac, Gatekeeper blocks it until it's signed and notarized with a company Developer ID.
-
-## Windows
-
-Install the converters once, in a terminal:
-
-```
-winget install Gyan.FFmpeg ImageMagick.ImageMagick JohnMacFarlane.Pandoc TheDocumentFoundation.LibreOffice
-```
-
-The installers are built on GitHub: Actions > Build > Run workflow (or `gh workflow run build.yml -f platform=windows`). When it finishes, download `convert-wheel-windows` from the run. It holds two installers:
-
-- **`Convert Wheel_<version>_x64-setup.exe`**: installs for the signed-in user, no admin rights needed. For one person's PC.
-- **`Convert Wheel_<version>_x64_en-US.msi`**: installs for all users in Program Files, needs admin rights. For Intune or other management tools (`msiexec /i "Convert Wheel_<version>_x64_en-US.msi" /qn` installs silently).
-
-They are not code-signed yet, so SmartScreen asks once ("More info" > "Run anyway").
-
-How it differs from macOS:
-
-- **Trigger** (`src-tauri/src/win32.rs`): Windows has no shared drag pasteboard to watch, so the wheel opens when a drag that started in File Explorer, on the desktop or in an Open/Save dialog has Shift held. Which files are dragged becomes known when the drag reaches the wheel; until then it says "Drop here".
+- **Trigger:** Windows has no shared drag pasteboard to watch, so the wheel opens when a drag that started in File Explorer, on the desktop or in an Open/Save dialog has Shift held. Which files are dragged becomes known when the drag reaches the wheel; until then it says "Drop here".
 - **Drop target:** our own, on the wheel window and the windows WebView2 creates inside it. It always reports "copy" (or "refuse" in the middle). Tauri's built-in drop handler leaves the result unset, so Windows hands File Explorer the source's own allowed effects back, which can include "move" and so delete the original. That is why it is not used here.
 - **Look:** no system glass, so the page draws a solid disc with a shadow. No file icon in the middle.
 - **Open at Login:** a value under the user's Run key in the registry.
 - **No console windows:** the converters run without flashing a console.
 
-## Linux
-
-Install the converters once:
-
-```
-sudo apt install ffmpeg imagemagick pandoc libreoffice
-```
-
-pandoc must be 2.15 or newer (Ubuntu 24.04 has 3.1; Ubuntu 22.04's 2.9 is too old, take a newer one from pandoc's releases page). The packages are built on GitHub: Actions > Build > Run workflow, platform `linux` (or `gh workflow run build.yml -f platform=linux`). The run gives a `.deb` and an `.AppImage` in `convert-wheel-linux`.
-
-How it opens:
+**Linux** (`src-tauri/src/linux.rs`)
 
 - **X11:** like Windows. A drag that starts in a file manager (Files/Nautilus, Nemo, Caja, Thunar, Dolphin, PCManFM) or on the desktop, with Shift held, opens the wheel at the cursor.
-- **Wayland** (the default on current Ubuntu and Fedora): apps can't watch the pointer, so the wheel opens from a keyboard shortcut instead. In Settings > Keyboard > Custom Shortcuts, add one that runs `convert-wheel --show` (for the AppImage, the full path to the `.AppImage` followed by `--show`). Press it, then drag a file onto the wheel. Esc or a click in the middle closes it; it also closes by itself after 20 seconds.
-- **Drop target** (`src-tauri/src/linux.rs`): our own GTK handlers instead of WebKit's. They answer "copy" over a format and nothing elsewhere, never "move" even with Shift held, and never ask the file manager to delete the original.
-- **Menu bar icon:** shown through AppIndicator. Ubuntu has it on by default; plain GNOME needs the AppIndicator extension.
+- **Wayland:** apps can't watch the pointer, so the wheel opens from a keyboard shortcut running `convert-wheel --show`, which reaches the running app over a socket in `XDG_RUNTIME_DIR`. That wheel waits for a file; Esc, a click in the middle or 20 seconds close it.
+- **Drop target:** our own GTK handlers instead of WebKit's. They answer "copy" over a format and nothing elsewhere, never "move" even with Shift held, and never ask the file manager to delete the original.
+- **Menu bar icon:** shown through AppIndicator.
 - **Open at Login:** an entry in `~/.config/autostart`.
-- **Fonts:** Aptos stands in as Noto Sans.
-
-Known gaps: ImageMagick 6 on Ubuntu blocks writing PDF by policy, and may lack HEIC and AVIF.
+- **Converter:** falls back to ImageMagick 6's `convert` and the `libreoffice` command, checks pandoc is 2.15 or newer, and Aptos stands in as Noto Sans.
 
 ## The menu
 
@@ -163,24 +132,26 @@ Word's default font since 2023, Aptos, ships inside Word only, and its licence l
 ## Layout
 
 ```
-src/                 wheel UI (index.html, wheel.css, wheel.js)
-src-tauri/           Rust app
-  src/main.rs        app setup, menu bar icon, drop queue, notifications, --convert
-  src/trigger.rs     Shift+drag detection (macOS)
-  src/drop_view.rs   the drop target over the wheel (macOS)
-  src/wheel_window.rs  glass, hub icon, placement, fades (macOS)
-  src/menu.rs        menu bar icon and menu
-  src/settings.rs    saved choices (where files go, hidden formats)
-  src/login.rs       Open at Login through the system's login items
-  src/win32.rs       Windows: trigger, placement, drop target
-  src/linux.rs       Linux: X11 trigger, Wayland shortcut, placement, drop target
-  Info.plist         marks it a menu bar app (no Dock icon)
-  tauri.windows.conf.json  Windows window settings and installer type
+src/                       wheel UI (index.html, wheel.css, wheel.js)
+src-tauri/                 Rust app
+  src/main.rs              app setup, drop queue, notifications, --convert, --show
+  src/trigger.rs           Shift+drag on macOS; opening, closing and dropping for all
+  src/wheel.rs             wheel geometry: which segment is under a point
+  src/formats.rs           formats offered per file type
+  src/convert.rs           the conversions
+  src/menu.rs              menu bar icon and menu
+  src/settings.rs          saved choices (where files go, hidden formats)
+  src/login.rs             Open at Login on each system
+  src/drop_view.rs         macOS: the drop target over the wheel
+  src/wheel_window.rs      macOS: glass, hub icon, placement, fades
+  src/win32.rs             Windows: trigger, placement, drop target
+  src/linux.rs             Linux: X11 trigger, Wayland shortcut, placement, drop target
+  tauri.conf.json          window and bundle settings
+  tauri.windows.conf.json  Windows window settings and installer types
   tauri.linux.conf.json    Linux window settings and package types
-.github/workflows/build.yml  Windows installer and Linux packages, started by hand
-scripts/install-macos.sh   build and install in /Applications
-  src/wheel.rs       wheel geometry: which segment is under a point
-  src/formats.rs     formats offered per file type
-  src/convert.rs     the conversions
-  tauri.conf.json    window and bundle settings
+  Info.plist               marks it a menu bar app on macOS (no Dock icon)
+.github/workflows/build.yml  Windows and Linux builds; a version tag publishes a release
+scripts/install-macos.sh   build and install in /Applications on this Mac
+scripts/release-macos.sh   add the macOS .dmg to a release
+INSTALL.md                 installing, updating, uninstalling, making a release
 ```

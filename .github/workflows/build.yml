@@ -1,10 +1,18 @@
-# Builds the Windows installer and the Linux packages. Started by hand only
-# (Actions > Build > Run workflow, or `gh workflow run build.yml -f platform=linux`),
-# so it spends build minutes only when asked.
+# Builds the Windows installers and the Linux packages.
+#
+# - Pushing a version tag (v0.2.0, ...) builds both and publishes a GitHub Release
+#   with every installer attached. The tag must match the version in tauri.conf.json.
+#   The macOS .dmg is added afterwards from a Mac: scripts/release-macos.sh.
+# - Actions > Build > Run workflow (or `gh workflow run build.yml -f platform=linux`)
+#   builds without releasing; the files stay on the run page for 14 days.
+#
+# Nothing runs on ordinary pushes, so build minutes are spent only when asked.
 # Actions are pinned to exact commits; the comment names the release.
 name: Build
 
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       platform:
@@ -18,13 +26,20 @@ permissions:
 
 jobs:
   windows:
-    if: inputs.platform != 'linux'
+    if: github.event_name == 'push' || inputs.platform != 'linux'
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      - name: Check the tag matches the app version
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "Tag $GITHUB_REF_NAME does not match version $version in tauri.conf.json"; exit 1; }
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -59,7 +74,7 @@ jobs:
           retention-days: 14
 
   linux:
-    if: inputs.platform != 'windows'
+    if: github.event_name == 'push' || inputs.platform != 'windows'
     # The oldest supported Ubuntu, so the AppImage also runs on older systems.
     runs-on: ubuntu-22.04
     timeout-minutes: 45
@@ -67,6 +82,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      - name: Check the tag matches the app version
+        if: github.event_name == 'push'
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "Tag $GITHUB_REF_NAME does not match version $version in tauri.conf.json"; exit 1; }
 
       - name: Install the system libraries Tauri builds against
         run: |
@@ -103,3 +124,49 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage
           retention-days: 14
 
+  release:
+    if: github.event_name == 'push'
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # The only job that may write: it creates the release.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: built
+
+      - name: Collect the installers and their checksums
+        run: |
+          mkdir release
+          find built -type f -exec mv {} release/ \;
+          cd release
+          # GitHub turns spaces in file names into dots on upload; do it first so the
+          # checksum list matches the names people download.
+          for f in *; do
+            case "$f" in *" "*) mv -- "$f" "${f// /.}" ;; esac
+          done
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cat > notes.md <<EOF
+          Convert Wheel $version. Install steps for each system are in [INSTALL.md](https://github.com/$REPO/blob/$GITHUB_REF_NAME/INSTALL.md).
+
+          | System | File |
+          |---|---|
+          | Windows, one user, no admin | \`Convert.Wheel_${version}_x64-setup.exe\` |
+          | Windows, all users / Intune | \`Convert.Wheel_${version}_x64_en-US.msi\` |
+          | Ubuntu, Debian | \`Convert.Wheel_${version}_amd64.deb\` |
+          | Other Linux | \`Convert.Wheel_${version}_amd64.AppImage\` |
+          | macOS (Apple silicon) | \`Convert.Wheel_${version}_aarch64.dmg\`, added from a Mac after the build |
+
+          None of the files is code-signed yet. SHA256SUMS.txt lists their checksums.
+          EOF
+          gh release create "$GITHUB_REF_NAME" release/* --repo "$REPO" --title "Convert Wheel $version" --notes-file notes.md
