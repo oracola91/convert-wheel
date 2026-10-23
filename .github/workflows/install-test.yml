@@ -52,6 +52,7 @@ jobs:
           [ "$(gsettings get $keys.custom-keybinding:$mine binding)" = "'<Shift><Super>c'" ]
           grep -qx 'Exec="/usr/bin/convert-wheel"' "$HOME/.config/autostart/convert-wheel.desktop"
           pandoc --version | head -n 1
+          command -v mutool
           EOF
           dbus-run-session -- sh "$RUNNER_TEMP/check.sh"
 
