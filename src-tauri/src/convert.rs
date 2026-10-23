@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
 
 use crate::formats::{self, Kind};
 
@@ -107,7 +108,7 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
     // Multi-page outputs keep every frame; the rest take the first one.
     let frame = if matches!(target, "pdf" | "tiff" | "gif") { "" } else { "[0]" };
-    let mut cmd = Command::new(tool("magick")?);
+    let mut cmd = Command::new(magick()?);
     cmd.arg(format!("{coder}:{}{frame}", src.display())).arg("-auto-orient");
     if target == "jpg" {
         // JPEG has no transparency; without this, transparent areas turn black.
@@ -226,7 +227,9 @@ fn pandoc(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String>
         "epub" => "epub3",
         other => other,
     };
-    let mut cmd = Command::new(tool("pandoc")?);
+    let pandoc = tool("pandoc")?;
+    check_pandoc_version(&pandoc)?;
+    let mut cmd = Command::new(pandoc);
     // --sandbox: pandoc reads only the input file, never the network or other files.
     cmd.args(["--sandbox", "-f", reader, "-t", writer]);
     if target == "html" {
@@ -240,7 +243,7 @@ fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     let outdir = out.parent().ok_or("no work folder")?.join("libreoffice");
     fs::create_dir_all(&outdir).map_err(|e| format!("work folder: {e}"))?;
     let mut cmd = Command::new(soffice()?);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     cmd.env("FONTCONFIG_FILE", font_config()?);
     // A profile of our own, so it works while LibreOffice is also open in the normal way.
     cmd.arg(format!("-env:UserInstallation={}", file_url(&cache_dir().join("libreoffice"))))
@@ -379,6 +382,28 @@ fn extra_tool_dirs() -> Vec<PathBuf> {
     vec!["/usr/local/bin".into()]
 }
 
+/// ImageMagick 7 is `magick`. Linux distributions that still ship ImageMagick 6 call
+/// it `convert`, with the same options. (On Windows `convert` is a disk tool, so no.)
+fn magick() -> Result<PathBuf, String> {
+    tool("magick").or_else(|e| if cfg!(target_os = "linux") { tool("convert").map_err(|_| e) } else { Err(e) })
+}
+
+/// `--sandbox` arrived in pandoc 2.15; older pandoc stops at the unknown option with a
+/// confusing message, so say it plainly. Ubuntu 22.04, for one, ships 2.9.
+fn check_pandoc_version(pandoc: &Path) -> Result<(), String> {
+    static VERSION: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+    let version = *VERSION.get_or_init(|| {
+        let out = Command::new(pandoc).arg("--version").stdin(Stdio::null()).output().ok()?;
+        let first = String::from_utf8_lossy(&out.stdout).lines().next()?.to_string();
+        let mut numbers = first.split_whitespace().nth(1)?.split('.').map(|n| n.parse::<u32>().ok());
+        Some((numbers.next()??, numbers.next()??))
+    });
+    match version {
+        Some(v) if v < (2, 15) => Err(format!("pandoc {}.{} is too old: 2.15 or newer is needed", v.0, v.1)),
+        _ => Ok(()),
+    }
+}
+
 fn install_hint(name: &str) -> String {
     let (brew, winget) = match name {
         "magick" => ("imagemagick", "ImageMagick.ImageMagick"),
@@ -392,7 +417,12 @@ fn install_hint(name: &str) -> String {
     } else if cfg!(windows) {
         format!("winget install {winget}")
     } else {
-        format!("install {name} with your package manager")
+        let package = match name {
+            "magick" => "imagemagick",
+            "soffice" => "libreoffice",
+            other => other,
+        };
+        format!("sudo apt install {package}, or your distribution's package manager")
     }
 }
 
@@ -415,7 +445,11 @@ fn soffice() -> Result<PathBuf, String> {
         .into_iter()
         .find(|p| p.is_file())
         .map(Ok)
-        .unwrap_or_else(|| tool("soffice").map_err(|_| format!("LibreOffice is not installed ({})", install_hint("soffice"))))
+        .unwrap_or_else(|| {
+            tool("soffice")
+                .or_else(|_| tool("libreoffice"))
+                .map_err(|_| format!("LibreOffice is not installed ({})", install_hint("soffice")))
+        })
 }
 
 /// Our own working files: LibreOffice's profile and, on macOS, the font list.
@@ -432,10 +466,10 @@ fn cache_dir() -> PathBuf {
     }
 }
 
-/// Stand-ins for fonts a document asks for but this Mac doesn't have. Aptos, Word's
-/// default since 2023, ships inside Word only and its licence limits it to Microsoft
-/// products, so a similar macOS font stands in. Calibri and Cambria need nothing:
-/// LibreOffice bundles look-alikes for them.
+/// Stand-ins for fonts a document asks for but this computer doesn't have. Aptos,
+/// Word's default since 2023, ships inside Word only and its licence limits it to
+/// Microsoft products, so a similar font that comes with the system stands in.
+/// Calibri and Cambria need nothing: LibreOffice bundles look-alikes for them.
 #[cfg(target_os = "macos")]
 const FONT_SWAPS: &[(&str, &str)] = &[
     ("Aptos", "Helvetica Neue"),
@@ -448,31 +482,47 @@ const FONT_SWAPS: &[(&str, &str)] = &[
     ("Aptos Serif", "Georgia"),
     ("Aptos Mono", "Menlo"),
 ];
+#[cfg(target_os = "linux")]
+const FONT_SWAPS: &[(&str, &str)] = &[
+    ("Aptos", "Noto Sans"),
+    ("Aptos Display", "Noto Sans"),
+    ("Aptos Narrow", "Noto Sans"),
+    ("Aptos Light", "Noto Sans"),
+    ("Aptos SemiBold", "Noto Sans"),
+    ("Aptos ExtraBold", "Noto Sans"),
+    ("Aptos Black", "Noto Sans"),
+    ("Aptos Serif", "Noto Serif"),
+    ("Aptos Mono", "DejaVu Sans Mono"),
+];
 
-/// Font setup for LibreOffice. Without a window it finds fonts through its own copy
-/// of fontconfig, which knows only LibreOffice's bundled fonts: every macOS font is
-/// missing and documents come out in a serif fallback. This file adds the macOS font
-/// folders and the stand-ins above. ("accept" means the real font still wins when
-/// it is installed.)
-#[cfg(target_os = "macos")]
+/// Font setup for LibreOffice. On macOS, without a window it finds fonts through its
+/// own copy of fontconfig, which knows only LibreOffice's bundled fonts: every macOS
+/// font is missing and documents come out in a serif fallback, so this file adds the
+/// macOS font folders. On Linux it builds on the system's own setup. Both add the
+/// stand-ins above ("accept" means the real font still wins when it is installed).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn font_config() -> Result<PathBuf, String> {
     let dir = cache_dir().join("fontconfig");
-    let mut conf = String::from(
-        "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n\
-         <dir>/System/Library/Fonts</dir>\n<dir>/Library/Fonts</dir>\n<dir>~/Library/Fonts</dir>\n",
-    );
-    conf.push_str(&format!("<cachedir>{}</cachedir>\n", dir.join("cache").display()));
+    let mut conf = String::from("<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n");
+    if cfg!(target_os = "macos") {
+        conf.push_str("<dir>/System/Library/Fonts</dir>\n<dir>/Library/Fonts</dir>\n<dir>~/Library/Fonts</dir>\n");
+        conf.push_str(&format!("<cachedir>{}</cachedir>\n", dir.join("cache").display()));
+    } else {
+        conf.push_str("<include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>\n");
+    }
     for (font, stand_in) in FONT_SWAPS {
         conf.push_str(&format!(
             "<alias binding=\"same\"><family>{font}</family><accept><family>{stand_in}</family></accept></alias>\n"
         ));
     }
-    conf.push_str(
-        "<alias><family>sans-serif</family><prefer><family>Helvetica Neue</family></prefer></alias>\n\
-         <alias><family>serif</family><prefer><family>Times New Roman</family></prefer></alias>\n\
-         <alias><family>monospace</family><prefer><family>Menlo</family></prefer></alias>\n\
-         </fontconfig>\n",
-    );
+    if cfg!(target_os = "macos") {
+        conf.push_str(
+            "<alias><family>sans-serif</family><prefer><family>Helvetica Neue</family></prefer></alias>\n\
+             <alias><family>serif</family><prefer><family>Times New Roman</family></prefer></alias>\n\
+             <alias><family>monospace</family><prefer><family>Menlo</family></prefer></alias>\n",
+        );
+    }
+    conf.push_str("</fontconfig>\n");
     let file = dir.join("fonts.conf");
     if fs::read_to_string(&file).ok().as_deref() != Some(conf.as_str()) {
         fs::create_dir_all(&dir)

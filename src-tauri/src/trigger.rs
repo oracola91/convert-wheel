@@ -28,7 +28,14 @@ struct WheelShow {
     /// The system draws frosted glass behind the ring (macOS); otherwise the page
     /// draws its own solid disc.
     glass: bool,
+    /// Opened from the keyboard shortcut: stays open until a drop, Esc or a click in
+    /// the middle, instead of closing when the mouse button goes up.
+    pinned: bool,
 }
+
+/// How long a wheel opened from the shortcut waits for a file.
+#[cfg(target_os = "linux")]
+const PINNED_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[cfg(target_os = "macos")]
 pub fn start(app: AppHandle) {
@@ -72,7 +79,12 @@ pub fn start(app: AppHandle) {
     crate::win32::start_trigger(app);
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+pub fn start(app: AppHandle) {
+    crate::linux::start_trigger(app);
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 pub fn start(_app: AppHandle) {}
 
 fn formats_for(app: &AppHandle, paths: &[String]) -> Vec<&'static str> {
@@ -81,36 +93,57 @@ fn formats_for(app: &AppHandle, paths: &[String]) -> Vec<&'static str> {
 }
 
 pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>) {
+    open_wheel(app, paths, false);
+}
+
+/// Opens the wheel from the keyboard shortcut and closes it again if no file comes.
+#[cfg(target_os = "linux")]
+pub(crate) fn show_pinned(app: &AppHandle) {
+    let generation = open_wheel(app, Vec::new(), true);
+    let app = app.clone();
+    thread::spawn(move || {
+        thread::sleep(PINNED_TIMEOUT);
+        if app.state::<WheelState>().generation.load(Ordering::SeqCst) == generation {
+            hide_wheel(&app, false);
+        }
+    });
+}
+
+/// Opens the wheel and returns its generation.
+fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool) -> u64 {
     let formats = formats_for(app, &paths);
     let state = app.state::<WheelState>();
     if let Ok(mut shown) = state.formats.lock() {
         *shown = formats.clone();
     }
-    state.generation.fetch_add(1, Ordering::SeqCst);
+    let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     state.open.store(true, Ordering::SeqCst);
     let first = paths.first().cloned();
     let pending = paths.is_empty();
     let glass = cfg!(target_os = "macos");
-    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass });
+    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned });
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
         crate::wheel_window::open(&handle, first.as_deref());
         #[cfg(windows)]
         crate::win32::open(&handle);
-        let _ = (&handle, &first);
+        #[cfg(target_os = "linux")]
+        crate::linux::open(&handle, pinned);
+        let _ = (&handle, &first, pinned);
     });
+    generation
 }
 
 /// The files reached the wheel on a system that couldn't tell earlier which files
 /// were being dragged: work out their formats and redraw the wheel.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
     let formats = formats_for(app, &paths);
     if let Ok(mut shown) = app.state::<WheelState>().formats.lock() {
         *shown = formats.clone();
     }
-    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false });
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false });
 }
 
 /// A drop on the wheel. Converts when it landed on a format and says whether it did.
@@ -159,6 +192,8 @@ pub fn hide_wheel(app: &AppHandle, accepted: bool) {
         crate::wheel_window::close(&handle, generation);
         #[cfg(windows)]
         crate::win32::close(&handle, generation);
+        #[cfg(target_os = "linux")]
+        crate::linux::close(&handle, generation);
         let _ = (&handle, generation);
     });
 }

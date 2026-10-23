@@ -1,0 +1,27 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "wheel",
+        "title": "Convert Wheel",
+        "width": 340,
+        "height": 340,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "dragDropEnabled": false
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "category": "Utility",
+    "shortDescription": "Hold Shift while dragging a file to convert it"
+  }
+}

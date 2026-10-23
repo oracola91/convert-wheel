@@ -15,7 +15,7 @@ This is our own build, written from scratch. The idea comes from what the paid T
 | 5. Testing with real files | Not started |
 | 6. Install as an app | Done: `scripts/install-macos.sh` |
 
-**Windows:** written and compile-checked, waiting on the first installer build and a hands-on test. **Linux:** not started.
+**Windows:** written and compile-checked, waiting on the first installer build and a hands-on test. **Linux:** written, waiting on its first build on GitHub and a test on Ubuntu.
 
 ## What converts to what
 
@@ -59,6 +59,27 @@ How it differs from macOS:
 - **Look:** no system glass, so the page draws a solid disc with a shadow. No file icon in the middle.
 - **Open at Login:** a value under the user's Run key in the registry.
 - **No console windows:** the converters run without flashing a console.
+
+## Linux
+
+Install the converters once:
+
+```
+sudo apt install ffmpeg imagemagick pandoc libreoffice
+```
+
+pandoc must be 2.15 or newer (Ubuntu 24.04 has 3.1; Ubuntu 22.04's 2.9 is too old, take a newer one from pandoc's releases page). The packages are built on GitHub: Actions > Build > Run workflow, platform `linux` (or `gh workflow run build.yml -f platform=linux`). The run gives a `.deb` and an `.AppImage` in `convert-wheel-linux`.
+
+How it opens:
+
+- **X11:** like Windows. A drag that starts in a file manager (Files/Nautilus, Nemo, Caja, Thunar, Dolphin, PCManFM) or on the desktop, with Shift held, opens the wheel at the cursor.
+- **Wayland** (the default on current Ubuntu and Fedora): apps can't watch the pointer, so the wheel opens from a keyboard shortcut instead. In Settings > Keyboard > Custom Shortcuts, add one that runs `convert-wheel --show` (for the AppImage, the full path to the `.AppImage` followed by `--show`). Press it, then drag a file onto the wheel. Esc or a click in the middle closes it; it also closes by itself after 20 seconds.
+- **Drop target** (`src-tauri/src/linux.rs`): our own GTK handlers instead of WebKit's. They answer "copy" over a format and nothing elsewhere, never "move" even with Shift held, and never ask the file manager to delete the original.
+- **Menu bar icon:** shown through AppIndicator. Ubuntu has it on by default; plain GNOME needs the AppIndicator extension.
+- **Open at Login:** an entry in `~/.config/autostart`.
+- **Fonts:** Aptos stands in as Noto Sans.
+
+Known gaps: ImageMagick 6 on Ubuntu blocks writing PDF by policy, and may lack HEIC and AVIF.
 
 ## The menu
 
@@ -147,9 +168,11 @@ src-tauri/           Rust app
   src/settings.rs    saved choices (where files go, hidden formats)
   src/login.rs       Open at Login through the system's login items
   src/win32.rs       Windows: trigger, placement, drop target
+  src/linux.rs       Linux: X11 trigger, Wayland shortcut, placement, drop target
   Info.plist         marks it a menu bar app (no Dock icon)
   tauri.windows.conf.json  Windows window settings and installer type
-.github/workflows/build.yml  Windows installer, started by hand
+  tauri.linux.conf.json    Linux window settings and package types
+.github/workflows/build.yml  Windows installer and Linux packages, started by hand
 scripts/install-macos.sh   build and install in /Applications
   src/wheel.rs       wheel geometry: which segment is under a point
   src/formats.rs     formats offered per file type
