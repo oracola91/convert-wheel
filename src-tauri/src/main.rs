@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod convert;
+#[cfg(target_os = "macos")]
+mod drop_view;
 mod formats;
 mod trigger;
+mod wheel;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
@@ -10,7 +13,7 @@ use std::thread;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 struct Job {
@@ -18,16 +21,9 @@ struct Job {
     format: String,
 }
 
-/// The wheel got a drop: queue the conversion and close the wheel straight away.
-#[tauri::command]
-fn wheel_dropped(app: AppHandle, queue: State<Sender<Job>>, paths: Vec<String>, format: Option<String>) {
-    trigger::hide_wheel(&app);
-    match format {
-        Some(format) => {
-            let _ = queue.send(Job { paths, format });
-        }
-        None => eprintln!("convert-wheel: drop cancelled"),
-    }
+/// Queues a drop on the wheel for conversion.
+pub(crate) fn enqueue(app: &AppHandle, paths: Vec<String>, format: String) {
+    let _ = app.state::<Sender<Job>>().send(Job { paths, format });
 }
 
 /// One worker converts the queued drops in order, so LibreOffice never runs twice at once.
@@ -147,10 +143,12 @@ fn main() {
             tray.build(app)?;
 
             app.manage(start_worker(app.handle().clone()));
+            app.manage(wheel::Shown::default());
+            #[cfg(target_os = "macos")]
+            drop_view::install(app.handle())?;
             trigger::start(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![wheel_dropped])
         .run(tauri::generate_context!())
         .expect("error while running convert-wheel");
 }

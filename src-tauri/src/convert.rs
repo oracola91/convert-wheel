@@ -214,7 +214,8 @@ fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     fs::create_dir_all(&outdir).map_err(|e| format!("work folder: {e}"))?;
     let mut cmd = Command::new(soffice()?);
     // A profile of our own, so it works while LibreOffice is also open in the normal way.
-    cmd.arg(format!("-env:UserInstallation={}", file_url(&libreoffice_profile())))
+    cmd.env("FONTCONFIG_FILE", font_config()?)
+        .arg(format!("-env:UserInstallation={}", file_url(&cache_dir().join("libreoffice"))))
         .args(["--headless", "--norestore", "--nolockcheck", "--convert-to", target, "--outdir"])
         .arg(&outdir)
         .arg(src);
@@ -333,9 +334,57 @@ fn soffice() -> Result<PathBuf, String> {
     })
 }
 
-fn libreoffice_profile() -> PathBuf {
+fn cache_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    home.join("Library/Caches/local.convertwheel/libreoffice")
+    home.join("Library/Caches/local.convertwheel")
+}
+
+/// Stand-ins for fonts a document asks for but this Mac doesn't have. Aptos, Word's
+/// default since 2023, ships inside Word only and its licence limits it to Microsoft
+/// products, so a similar macOS font stands in. Calibri and Cambria need nothing:
+/// LibreOffice bundles look-alikes for them.
+const FONT_SWAPS: &[(&str, &str)] = &[
+    ("Aptos", "Helvetica Neue"),
+    ("Aptos Display", "Helvetica Neue"),
+    ("Aptos Narrow", "Helvetica Neue"),
+    ("Aptos Light", "Helvetica Neue"),
+    ("Aptos SemiBold", "Helvetica Neue"),
+    ("Aptos ExtraBold", "Helvetica Neue"),
+    ("Aptos Black", "Helvetica Neue"),
+    ("Aptos Serif", "Georgia"),
+    ("Aptos Mono", "Menlo"),
+];
+
+/// Font setup for LibreOffice. Without a window it finds fonts through its own copy
+/// of fontconfig, which knows only LibreOffice's bundled fonts: every macOS font is
+/// missing and documents come out in a serif fallback. This file adds the macOS font
+/// folders and the stand-ins above. ("accept" means the real font still wins when
+/// it is installed.)
+fn font_config() -> Result<PathBuf, String> {
+    let dir = cache_dir().join("fontconfig");
+    let mut conf = String::from(
+        "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n\
+         <dir>/System/Library/Fonts</dir>\n<dir>/Library/Fonts</dir>\n<dir>~/Library/Fonts</dir>\n",
+    );
+    conf.push_str(&format!("<cachedir>{}</cachedir>\n", dir.join("cache").display()));
+    for (font, stand_in) in FONT_SWAPS {
+        conf.push_str(&format!(
+            "<alias binding=\"same\"><family>{font}</family><accept><family>{stand_in}</family></accept></alias>\n"
+        ));
+    }
+    conf.push_str(
+        "<alias><family>sans-serif</family><prefer><family>Helvetica Neue</family></prefer></alias>\n\
+         <alias><family>serif</family><prefer><family>Times New Roman</family></prefer></alias>\n\
+         <alias><family>monospace</family><prefer><family>Menlo</family></prefer></alias>\n\
+         </fontconfig>\n",
+    );
+    let file = dir.join("fonts.conf");
+    if fs::read_to_string(&file).ok().as_deref() != Some(conf.as_str()) {
+        fs::create_dir_all(&dir)
+            .and_then(|_| fs::write(&file, conf))
+            .map_err(|e| format!("font settings: {e}"))?;
+    }
+    Ok(file)
 }
 
 fn file_url(path: &Path) -> String {
@@ -378,6 +427,15 @@ mod tests {
         assert_eq!(sniff_image(b"<svg xmlns="), None);
         assert_eq!(sniff_image(b"%!PS-Adobe"), None);
         assert_eq!(sniff_image(b""), None);
+    }
+
+    #[test]
+    fn font_config_lists_mac_fonts_and_keeps_real_aptos_first() {
+        let conf = fs::read_to_string(font_config().unwrap()).unwrap();
+        assert!(conf.contains("<dir>/System/Library/Fonts</dir>"));
+        // "accept" puts the stand-in after Aptos, so an installed Aptos is still used
+        assert!(conf.contains("<family>Aptos</family><accept><family>Helvetica Neue</family></accept>"));
+        assert!(!conf.contains("Microsoft Word.app"));
     }
 
     #[test]
