@@ -1,21 +1,33 @@
+/* The frosted glass under the ring is native (wheel_window.rs). These fills are kept
+   light so it shows through; colour sits only on the chosen segment. */
 :root {
-  --seg: rgba(246, 246, 248, 0.94);
-  --seg-text: #1d1d1f;
-  --seg-active: #f28c28;
-  --seg-active-text: #ffffff;
-  --hub: rgba(255, 255, 255, 0.97);
+  --seg: rgba(255, 255, 255, 0.38);
+  --seg-edge: rgba(0, 0, 0, 0.07);
+  --text: #1d1d1f;
+  --hub: rgba(255, 255, 255, 0.55);
   --hub-text: #3a3a3c;
-  --stroke: rgba(0, 0, 0, 0.12);
+  --cancel: rgba(0, 0, 0, 0.10);
+  --accent: #f28c28;
+  --accent-text: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --seg: rgba(44, 44, 46, 0.94);
-    --seg-text: #f5f5f7;
-    --hub: rgba(28, 28, 30, 0.97);
+    --seg: rgba(255, 255, 255, 0.07);
+    --seg-edge: rgba(255, 255, 255, 0.10);
+    --text: #f5f5f7;
+    --hub: rgba(0, 0, 0, 0.22);
     --hub-text: #d1d1d6;
-    --stroke: rgba(255, 255, 255, 0.14);
+    --cancel: rgba(255, 255, 255, 0.14);
   }
+}
+
+@media (prefers-contrast: more) {
+  :root { --seg-edge: rgba(0, 0, 0, 0.55); --hub-text: #1d1d1f; }
+}
+
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root { --seg-edge: rgba(255, 255, 255, 0.6); --hub-text: #f5f5f7; }
 }
 
 html,
@@ -27,56 +39,104 @@ body {
   cursor: default;
   -webkit-user-select: none;
   user-select: none;
-  font: 600 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 
 svg {
   display: block;
   width: 100vw;
   height: 100vh;
+  overflow: visible;
   transform-origin: 50% 50%;
 }
 
-svg.pop {
-  animation: pop 140ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+/* Open and close follow the same path: out from the cursor, back into it. No bounce,
+   because nothing was thrown. The window's own fade runs alongside (0.12 s / 0.14 s). */
+svg.opening {
+  animation: open 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-@keyframes pop {
-  from { transform: scale(0.82); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
+svg.closing {
+  transform: scale(0.92);
+  transition: transform 140ms cubic-bezier(0.4, 0, 1, 1);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  svg.pop { animation: none; }
+@keyframes open {
+  from { transform: scale(0.92); }
+  to { transform: scale(1); }
+}
+
+.seg {
+  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* The segment under the cursor moves out toward it. */
+.seg.active {
+  transform: translate(var(--dx, 0), var(--dy, 0));
 }
 
 .seg path {
   fill: var(--seg);
-  stroke: var(--stroke);
+  stroke: var(--seg-edge);
   stroke-width: 1;
-  transition: fill 80ms linear;
+  transition: fill 90ms linear;
+}
+
+.seg.active path {
+  fill: var(--accent);
+  stroke: transparent;
 }
 
 .seg text {
-  fill: var(--seg-text);
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   text-anchor: middle;
   dominant-baseline: central;
-  letter-spacing: 0.03em;
 }
 
-.seg.active path { fill: var(--seg-active); }
-.seg.active text { fill: var(--seg-active-text); }
+.seg.active text {
+  fill: var(--accent-text);
+}
 
 .hub {
   fill: var(--hub);
-  stroke: var(--stroke);
+  stroke: var(--seg-edge);
   stroke-width: 1;
+  transition: fill 90ms linear;
+}
+
+.hub.cancel {
+  fill: var(--cancel);
 }
 
 .hub-label {
   fill: var(--hub-text);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   text-anchor: middle;
   dominant-baseline: central;
-  font-size: 12px;
-  font-weight: 500;
+}
+
+.hub-label.strong {
+  fill: var(--text);
+  font-weight: 650;
+}
+
+/* Reduce Motion: no movement, only the colour and the window's fade. */
+@media (prefers-reduced-motion: reduce) {
+  svg.opening { animation: none; }
+  svg.closing { transform: none; transition: none; }
+  .seg, .seg.active { transform: none; transition: none; }
+}
+
+/* Reduce Transparency: macOS already makes the glass solid; make the fills solid too. */
+@media (prefers-reduced-transparency: reduce) {
+  :root { --seg: #f2f2f7; --hub: #ffffff; }
+}
+
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
+  :root { --seg: #2c2c2e; --hub: #1c1c1e; }
 }

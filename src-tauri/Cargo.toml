@@ -18,4 +18,4 @@ serde_json = "1"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSDictionary", "NSURL", "NSGeometry", "block2"] }
-objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSPasteboard", "NSPasteboardItem", "NSDragging", "NSDraggingItem", "NSGraphics", "NSImage", "NSResponder", "NSView", "NSWindow", "NSWorkspace", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSAnimation", "NSAnimationContext", "NSBezierPath", "NSCell", "NSColor", "NSControl", "NSDragging", "NSDraggingItem", "NSEvent", "NSGraphics", "NSHapticFeedback", "NSImage", "NSImageCell", "NSImageView", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSScreen", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "block2"] }
