@@ -50,7 +50,12 @@ Install the converters once, in a terminal:
 winget install Gyan.FFmpeg ImageMagick.ImageMagick JohnMacFarlane.Pandoc TheDocumentFoundation.LibreOffice
 ```
 
-The installer is built on GitHub: Actions > Build > Run workflow (or `gh workflow run build.yml`). When it finishes, download `convert-wheel-windows` from the run and start the `.exe` inside. It is not code-signed yet, so SmartScreen asks once ("More info" > "Run anyway").
+The installers are built on GitHub: Actions > Build > Run workflow (or `gh workflow run build.yml -f platform=windows`). When it finishes, download `convert-wheel-windows` from the run. It holds two installers:
+
+- **`Convert Wheel_<version>_x64-setup.exe`**: installs for the signed-in user, no admin rights needed. For one person's PC.
+- **`Convert Wheel_<version>_x64_en-US.msi`**: installs for all users in Program Files, needs admin rights. For Intune or other management tools (`msiexec /i "Convert Wheel_<version>_x64_en-US.msi" /qn` installs silently).
+
+They are not code-signed yet, so SmartScreen asks once ("More info" > "Run anyway").
 
 How it differs from macOS:
 
