@@ -76,17 +76,22 @@ Sign out and back in afterwards, so apps started from the Start menu see the new
 curl -fsSL https://raw.githubusercontent.com/oracola91/convert-wheel/main/scripts/install-linux.sh | sh
 ```
 
-It asks for your password, then installs the converters (and a newer pandoc on Ubuntu 22.04), installs the newest release after checking it against the release's checksums, turns on Open at Login, adds the keyboard shortcut Super+Shift+C on Ubuntu's desktop, and starts the app. Running it again is safe. To read it before it runs: `curl -fsSLO <the same address>`, open `install-linux.sh`, then `sh install-linux.sh`.
+It asks for your password, then installs the converters (pandoc from pandoc's own releases, see below), installs the newest release after checking it against the release's checksums, turns on Open at Login, adds the keyboard shortcut Super+Shift+C on Ubuntu's desktop, and starts the app. Running it again is safe. To read it before it runs: `curl -fsSLO <the same address>`, open `install-linux.sh`, then `sh install-linux.sh`.
 
 The steps it takes, by hand:
 
 **1. The converters** (Ubuntu and Debian):
 
 ```sh
-sudo apt install ffmpeg imagemagick pandoc libreoffice
+sudo apt install ffmpeg imagemagick libreoffice
 ```
 
-pandoc must be 2.15 or newer: check with `pandoc --version`. Ubuntu 24.04 is fine; Ubuntu 22.04 ships 2.9, so take a newer `.deb` from [pandoc's releases](https://github.com/jgm/pandoc/releases).
+pandoc comes from [pandoc's own releases](https://github.com/jgm/pandoc/releases), not from Ubuntu or Debian. The app runs pandoc in its sandbox, which needs 2.15 or newer (Ubuntu 22.04 has 2.9), and Ubuntu's and Debian's builds can't write Word files there because they keep pandoc's data files outside the program:
+
+```sh
+curl -fsSLO https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-1-amd64.deb
+sudo apt install ./pandoc-3.12.1-1-amd64.deb
+```
 
 **2. The app:**
 
