@@ -138,6 +138,7 @@ Also worth trying: several files at once, a file with no extension, text dragged
 - ImageMagick gets memory, disk, size and time limits, so a small file claiming to be a huge picture can't take the machine down.
 - Each conversion works in its own private temporary folder (random name, owner-only on macOS and Linux), deleted afterwards whether it succeeded or not.
 - The web page in the wheel may only listen for the app's events; its content security policy allows nothing from outside the app.
+- Every build runs `cargo audit` against the RustSec database. It reports, without blocking, a few notices from Tauri's own Linux libraries: gtk-rs 0.18 and the D-Bus crates are marked unmaintained, and glib 0.18 has an unsoundness note in an iterator this app doesn't use. They go away when Tauri moves to newer versions. The updater is built without its zip support, so the zip crate with open advisories isn't in the app at all.
 
 ## Fonts in PDFs
 

@@ -110,11 +110,13 @@ fn redact(message: &str, src: &Path, work: &Path) -> String {
     if let Some(name) = src.file_name().map(|n| n.to_string_lossy().into_owned()) {
         text = text.replace(&src.display().to_string(), &name);
     }
-    if let Some(dir) = src.parent() {
-        text = text.replace(&format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR), "");
+    // Tools write either separator, whatever the system's own is.
+    for dir in [src.parent(), Some(work)].into_iter().flatten() {
+        for sep in ['/', '\\'] {
+            text = text.replace(&format!("{}{sep}", dir.display()), "");
+        }
     }
-    text.replace(&format!("{}{}", work.display(), std::path::MAIN_SEPARATOR), "")
-        .replace("file:", "")
+    text.replace("file:", "")
 }
 
 /// The original's folder can't take the result (read-only, or a name too long for
