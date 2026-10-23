@@ -7,7 +7,8 @@
   --hub: rgba(255, 255, 255, 0.55);
   --hub-text: #3a3a3c;
   --cancel: rgba(0, 0, 0, 0.10);
-  --accent: #f28c28;
+  /* Dark enough for white 12px text (4.7:1). */
+  --accent: #b85a00;
   --accent-text: #ffffff;
   --disc: rgba(246, 246, 248, 0.97);
 }
@@ -100,6 +101,12 @@ svg.closing {
 .seg.active path {
   fill: var(--accent);
   stroke: transparent;
+}
+
+/* Labels never catch the mouse, so a click on "Cancel" reaches the hub under it. */
+.seg text,
+.hub-label {
+  pointer-events: none;
 }
 
 .seg text {

@@ -4,7 +4,17 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-npx tauri build --bundles app
+# Sign the update file when this Mac has the update key; otherwise build without one.
+key="$HOME/.tauri/convert-wheel-updater.key"
+if [ -f "$key" ]; then
+  TAURI_SIGNING_PRIVATE_KEY=$(cat "$key")
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(security find-generic-password -a convert-wheel -s convert-wheel-updater-key -w)
+  export TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+  npx tauri build --bundles app
+  unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+else
+  npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+fi
 built="src-tauri/target/release/bundle/macos/Convert Wheel.app"
 target="/Applications/Convert Wheel.app"
 

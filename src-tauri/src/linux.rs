@@ -8,17 +8,18 @@
 //! until a file is dropped on it. The shortcut works on X11 too.
 
 use std::cell::RefCell;
-use std::ffi::CStr;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
-use std::{fs, ptr, thread, time::Duration};
+use std::{fs, thread, time::Duration};
 
 use gtk::prelude::*;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
-use x11_dl::xlib::{self, Xlib};
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, KeyButMask, Window};
+use x11rb::rust_connection::RustConnection;
 
 use crate::trigger;
 use crate::wheel::{self, Hover, WheelState};
@@ -29,10 +30,10 @@ const CLOSE: Duration = Duration::from_millis(140);
 /// GTK's default distance before a press counts as a drag.
 const DRAG_THRESHOLD: i32 = 8;
 
-/// Window classes of file managers and desktops (lower case, matched as substrings).
+/// Window class names of file managers and desktops, matched whole and in lower case.
 const FILE_MANAGERS: &[&str] = &[
-    "nautilus", "nemo", "caja", "thunar", "dolphin", "pcmanfm", "spacefm", "konqueror", "xfdesktop", "ding",
-    "desktopicons", "plasmashell",
+    "nautilus", "org.gnome.nautilus", "nemo", "caja", "thunar", "dolphin", "pcmanfm", "pcmanfm-qt", "spacefm",
+    "konqueror", "xfdesktop", "ding", "plasmashell",
 ];
 
 pub fn is_wayland() -> bool {
@@ -47,40 +48,46 @@ pub fn start_trigger(app: AppHandle) {
     }
 }
 
+/// Polls the pointer through a connection of its own. Every X error comes back as a
+/// value here, so a window that closes between two calls just ends that look, and a
+/// lost connection ends the trigger instead of the app.
 fn start_x11(app: AppHandle) {
     thread::spawn(move || {
-        let Ok(x) = Xlib::open() else {
-            eprintln!("convert-wheel: libX11 not found, Shift+drag is off");
-            return;
+        let (conn, screen) = match x11rb::connect(None) {
+            Ok(c) => c,
+            Err(e) => {
+                crate::log::line(&format!("no X display ({e}); Shift+drag is off, the --show shortcut still works"));
+                return;
+            }
         };
-        // A connection of our own, used only by this thread.
-        let display = unsafe { (x.XOpenDisplay)(ptr::null()) };
-        if display.is_null() {
-            eprintln!("convert-wheel: no X display, Shift+drag is off");
-            return;
-        }
-        let root = unsafe { (x.XDefaultRootWindow)(display) };
+        let root = conn.setup().roots[screen].root;
         let (mut was_down, mut start, mut from_files, mut shown) = (false, (0, 0), false, false);
         loop {
             thread::sleep(POLL);
-            let Some((px, py, mask, _)) = pointer(&x, display, root) else {
-                continue;
+            let pointer = match conn.query_pointer(root).map(|c| c.reply()) {
+                Ok(Ok(p)) => p,
+                Ok(Err(_)) => continue,
+                Err(e) => {
+                    crate::log::line(&format!("X connection lost ({e}); Shift+drag is off until restart"));
+                    return;
+                }
             };
             // X reports buttons after any left/right swap, so button 1 is the dragging one.
-            if mask & xlib::Button1Mask == 0 {
+            if !pointer.mask.contains(KeyButMask::BUTTON1) {
                 if shown {
                     trigger::released(&app);
                 }
                 (was_down, from_files, shown) = (false, false, false);
                 continue;
             }
+            let (px, py) = (i32::from(pointer.root_x), i32::from(pointer.root_y));
             if !was_down {
                 was_down = true;
                 start = (px, py);
-                from_files = starts_in_file_manager(&x, display, root);
+                from_files = starts_in_file_manager(&conn, root);
             }
             let moved = (px - start.0).abs() > DRAG_THRESHOLD || (py - start.1).abs() > DRAG_THRESHOLD;
-            if from_files && !shown && mask & xlib::ShiftMask != 0 && moved {
+            if from_files && !shown && pointer.mask.contains(KeyButMask::SHIFT) && moved {
                 trigger::show_wheel(&app, Vec::new());
                 shown = true;
             }
@@ -88,69 +95,78 @@ fn start_x11(app: AppHandle) {
     });
 }
 
-/// Pointer position on the screen, the button and modifier mask, and the child of
-/// `window` that the pointer is over (0 for none).
-fn pointer(x: &Xlib, display: *mut xlib::Display, window: xlib::Window) -> Option<(i32, i32, u32, xlib::Window)> {
-    let (mut root, mut child, mut rx, mut ry, mut wx, mut wy, mut mask) = (0, 0, 0, 0, 0, 0, 0);
-    let ok = unsafe {
-        (x.XQueryPointer)(display, window, &mut root, &mut child, &mut rx, &mut ry, &mut wx, &mut wy, &mut mask)
-    };
-    (ok != 0).then_some((rx, ry, mask, child))
-}
-
 /// Walks down from the root to the first window under the pointer that names its
 /// app (the window manager's frame around it has no name) and checks the name.
-fn starts_in_file_manager(x: &Xlib, display: *mut xlib::Display, root: xlib::Window) -> bool {
+fn starts_in_file_manager(conn: &RustConnection, root: Window) -> bool {
     let mut window = root;
     for _ in 0..8 {
-        let Some((_, _, _, child)) = pointer(x, display, window) else {
+        let Ok(Ok(pointer)) = conn.query_pointer(window).map(|c| c.reply()) else {
             return false;
         };
-        if child == 0 {
+        if pointer.child == x11rb::NONE {
             return false;
         }
-        if let Some(class) = class_hint(x, display, child) {
-            return FILE_MANAGERS.iter().any(|f| class.contains(f));
+        if let Some(names) = class_names(conn, pointer.child) {
+            return names.iter().any(|n| FILE_MANAGERS.contains(&n.as_str()));
         }
-        window = child;
+        window = pointer.child;
     }
     false
 }
 
-fn class_hint(x: &Xlib, display: *mut xlib::Display, window: xlib::Window) -> Option<String> {
-    let mut hint = xlib::XClassHint { res_name: ptr::null_mut(), res_class: ptr::null_mut() };
-    if unsafe { (x.XGetClassHint)(display, window, &mut hint) } == 0 {
+/// The two names in a window's WM_CLASS (instance and class), in lower case.
+fn class_names(conn: &RustConnection, window: Window) -> Option<Vec<String>> {
+    let reply = conn
+        .get_property(false, window, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
+        .ok()?
+        .reply()
+        .ok()?;
+    if reply.value.is_empty() {
         return None;
     }
-    let mut class = String::new();
-    for part in [hint.res_name, hint.res_class] {
-        if !part.is_null() {
-            class.push_str(&unsafe { CStr::from_ptr(part) }.to_string_lossy().to_lowercase());
-            class.push(' ');
-            unsafe { (x.XFree)(part.cast()) };
-        }
-    }
-    Some(class)
+    Some(
+        reply
+            .value
+            .split(|&b| b == 0)
+            .filter(|part| !part.is_empty())
+            .map(|part| String::from_utf8_lossy(part).to_lowercase())
+            .collect(),
+    )
 }
 
-/// Where the running app listens for `convert-wheel --show`. XDG_RUNTIME_DIR is the
-/// user's own private folder.
-fn socket_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("convert-wheel.sock")
+/// Where the running app listens for `convert-wheel --show`: the user's private
+/// runtime folder. Without one there is no listener: a shared folder such as /tmp
+/// would let other users squat the name.
+fn socket_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("convert-wheel.sock"))
 }
 
 fn start_listener(app: AppHandle) {
-    let path = socket_path();
-    // A socket file left by a crash blocks the name; nobody answers on it, so it can go.
-    if UnixStream::connect(&path).is_err() {
-        let _ = fs::remove_file(&path);
-    }
-    let Ok(listener) = UnixListener::bind(&path) else {
-        eprintln!("convert-wheel: can't listen on {}", path.display());
+    let Some(path) = socket_path() else {
+        crate::log::line("XDG_RUNTIME_DIR is not set; the --show shortcut is off");
         return;
     };
+    // A socket left by a crash blocks the name. Remove it only if nobody answers on it
+    // and it really is our own socket.
+    if UnixStream::connect(&path).is_err() {
+        let ours = fs::symlink_metadata(&path)
+            .is_ok_and(|m| m.file_type().is_socket() && m.uid() == unsafe { libc::getuid() });
+        if ours {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    let listener = match UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            crate::log::line(&format!("can't listen for --show ({e})"));
+            return;
+        }
+    };
+    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
+            // A client that connects and says nothing must not block the next one.
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
             let mut line = String::new();
             let _ = BufReader::new(stream.take(64)).read_line(&mut line);
             if line.trim() == "show" {
@@ -162,7 +178,8 @@ fn start_listener(app: AppHandle) {
 
 /// `convert-wheel --show`: asks the running app to open the wheel.
 pub fn send_show() -> Result<(), String> {
-    UnixStream::connect(socket_path())
+    let path = socket_path().ok_or("XDG_RUNTIME_DIR is not set")?;
+    UnixStream::connect(path)
         .and_then(|mut s| s.write_all(b"show\n"))
         .map_err(|_| "Convert Wheel isn't running".into())
 }
@@ -204,7 +221,7 @@ pub fn close(app: &AppHandle, generation: u64) {
         thread::sleep(CLOSE);
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
-            if handle.state::<WheelState>().generation.load(Ordering::SeqCst) == generation {
+            if handle.state::<WheelState>().is_current(generation) {
                 if let Some(win) = handle.get_webview_window("wheel") {
                     let _ = win.hide();
                 }
@@ -238,15 +255,19 @@ fn connect_drop(app: AppHandle, webview: webkit2gtk::WebView) {
 
     let (a, s, list) = (app.clone(), state.clone(), uri_list.clone());
     webview.connect_drag_motion(move |w, ctx, x, y, time| {
-        let mut st = s.borrow_mut();
-        if !st.requested {
-            st.requested = true;
+        // Ask for the file list once per drag. The borrow ends first, in case GTK
+        // answers straight away.
+        let ask = !std::mem::replace(&mut s.borrow_mut().requested, true);
+        if ask {
             w.drag_get_data(ctx, &list, time);
         }
         let hover = hover_at(&a, x, y);
+        let mut st = s.borrow_mut();
         set_hover(&a, &mut st, hover);
-        // Copy over a format, nothing anywhere else. Never "move", even with Shift held.
-        let action = if hover.segment.is_some() && !st.paths.is_empty() {
+        // Copy over a format, nothing anywhere else. Never "move", even with Shift held,
+        // and only if the source allows a copy.
+        let can_copy = ctx.actions().contains(gdk::DragAction::COPY);
+        let action = if hover.segment.is_some() && !st.paths.is_empty() && can_copy {
             gdk::DragAction::COPY
         } else {
             gdk::DragAction::empty()

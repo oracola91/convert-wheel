@@ -55,6 +55,14 @@ Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS
 - **Open at Login:** an entry in `~/.config/autostart`.
 - **Converter:** falls back to ImageMagick 6's `convert` and the `libreoffice` command, checks pandoc is 2.15 or newer, and Aptos stands in as Noto Sans.
 
+## Updates
+
+From version 0.1.1 the app updates itself from this repo's [Releases page](https://github.com/oracola91/convert-wheel/releases). Shortly after it starts, and then once a day, it reads `latest.json` from the newest release. When there is a newer version, a notification says so and the menu shows **Install Update … and Restart**. Nothing installs until the user chooses it (or runs `convert-wheel --update`).
+
+Every update file is signed with the project's update key (a minisign key, separate from any code-signing certificate). The public half is built into the app (`plugins.updater.pubkey` in `tauri.conf.json`), and the app refuses an update whose signature doesn't match. The private key is a GitHub Actions secret and, for the macOS build, a file in `~/.tauri/` on the release Mac with its password in the Keychain. **If the private key is lost, installed copies can no longer be updated** and need one manual reinstall of a build with a new key, so keep a backup of `~/.tauri/convert-wheel-updater.key` and its password somewhere safe.
+
+On Windows the update runs the installer in passive mode (a progress bar, no questions). On Linux both the AppImage and the `.deb` update; the `.deb` asks for the admin password. Files the app downloads itself carry no "downloaded from the internet" mark, so updates don't trigger the SmartScreen or Gatekeeper warnings that a first install does.
+
 ## The menu
 
 The ring icon in the menu bar opens:
@@ -62,9 +70,13 @@ The ring icon in the menu bar opens:
 - **Open at Login**: adds or removes Convert Wheel in System Settings > General > Login Items. Only works for the installed app.
 - **Save Converted Files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
 - **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
+- **Last: …**: how the last drop went, for when notifications are off.
+- **Check for Updates… / Install Update … and Restart**.
 - **Quit Convert Wheel**.
 
-Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json`.
+Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json` (Windows: `%APPDATA%\local.convertwheel`, Linux: `~/.config/local.convertwheel`). A settings file that can't be read is kept aside as `settings.json.bad` instead of being overwritten. A log of conversions and errors (file names only, never full paths) is in `~/Library/Logs/local.convertwheel/convert-wheel.log` (Windows: `%LOCALAPPDATA%\local.convertwheel\logs`, Linux: `~/.local/share/local.convertwheel/logs`).
+
+Only one copy runs at a time: starting the app again just says it is already running.
 
 ## Run it from the source
 
@@ -107,11 +119,16 @@ Also worth trying: several files at once, a file with no extension, text dragged
 ## Safety
 
 - Tools get the file paths as separate arguments, never through a shell, so odd file names can't run commands.
+- Except audio and video (too big), each file is first copied into a private work folder under a neutral name, so characters like `%` or `[1]` in a name can't confuse a tool, and the file can't change between the checks and the conversion.
+- Only regular files are converted: a folder, device or pipe is refused.
 - ImageMagick is told the real image format, read from the file's first bytes. Only plain raster formats are accepted, so a disguised SVG or PostScript file is refused instead of decoded.
-- pandoc runs with `--sandbox`. It reads only the file it was given, never the network or other files.
+- ffmpeg may read only local files, and only the containers the wheel accepts. A playlist or concat list disguised as a video is refused instead of being followed to other files or the network.
+- pandoc runs with `--sandbox`. It reads only the file it was given, never the network or other files. HTML goes to PDF through pandoc for this reason. A pandoc older than 2.15, or one whose version can't be read, is refused.
+- LibreOffice uses its own profile in the app's cache folder, so it doesn't interfere with a LibreOffice window you have open. In that profile, macros never run and content linked from outside a document (a web address, a network share) is not fetched.
 - Office files must really be zip archives. Otherwise LibreOffice would quietly turn a broken file into a PDF of garbage.
-- LibreOffice uses its own profile in `~/Library/Caches/local.convertwheel`, so it doesn't interfere with a LibreOffice window you have open.
-- Each conversion works in its own temporary folder, which is deleted afterwards whether it succeeded or not.
+- Every tool has a time limit (2 minutes for images and documents, 3 for LibreOffice, 10 for audio, 60 for video). A tool that hangs is stopped with everything it started, so it can't block later conversions.
+- Each conversion works in its own private temporary folder (random name, owner-only on macOS and Linux), deleted afterwards whether it succeeded or not.
+- The web page in the wheel may only listen for the app's events; its content security policy allows nothing from outside the app.
 
 ## Fonts in PDFs
 
@@ -134,7 +151,9 @@ Word's default font since 2023, Aptos, ships inside Word only, and its licence l
 ```
 src/                       wheel UI (index.html, wheel.css, wheel.js)
 src-tauri/                 Rust app
-  src/main.rs              app setup, drop queue, notifications, --convert, --show
+  src/main.rs              app setup, drop queue, notifications, --convert, --show, --update
+  src/update.rs            update checks and installs
+  src/log.rs               the log file
   src/trigger.rs           Shift+drag on macOS; opening, closing and dropping for all
   src/wheel.rs             wheel geometry: which segment is under a point
   src/formats.rs           formats offered per file type

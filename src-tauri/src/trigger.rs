@@ -3,27 +3,35 @@
 //! macOS has no "drag started" notification for other apps, so this polls three
 //! things the window server shares with everyone: the drag pasteboard's change
 //! count, the mouse buttons and the modifier keys. No permission prompt is needed.
-//! The Windows trigger lives in win32.rs. Opening, closing and dropping are shared.
+//! The Windows and Linux triggers live in win32.rs and linux.rs. Opening, closing
+//! and dropping are shared.
 
-use std::sync::atomic::Ordering;
 use std::{thread, time::Duration};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::formats;
-use crate::wheel::{Hover, WheelState};
+use crate::wheel::{self, Hover, WheelState};
 
 #[cfg(target_os = "macos")]
 const POLL: Duration = Duration::from_millis(30);
 /// How long the wheel stays after the button is released, so a drop on it can land.
 const HIDE_DELAY: Duration = Duration::from_millis(400);
+/// A wheel opened before its files were known (Windows, Linux) closes if the drag
+/// never reaches it, for example after a Shift+drag selection in an empty area.
+#[cfg(any(windows, target_os = "linux"))]
+const PENDING_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long a wheel opened from the shortcut waits for a file.
+#[cfg(target_os = "linux")]
+const PINNED_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Serialize)]
 struct WheelShow {
     paths: Vec<String>,
     formats: Vec<&'static str>,
-    /// The files aren't known yet (Windows learns them when the drag reaches the wheel).
+    /// The files aren't known yet (Windows and Linux learn them when the drag
+    /// reaches the wheel).
     pending: bool,
     /// The system draws frosted glass behind the ring (macOS); otherwise the page
     /// draws its own solid disc.
@@ -32,10 +40,6 @@ struct WheelShow {
     /// the middle, instead of closing when the mouse button goes up.
     pinned: bool,
 }
-
-/// How long a wheel opened from the shortcut waits for a file.
-#[cfg(target_os = "linux")]
-const PINNED_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[cfg(target_os = "macos")]
 pub fn start(app: AppHandle) {
@@ -46,30 +50,34 @@ pub fn start(app: AppHandle) {
         let mut shown = false;
         loop {
             thread::sleep(POLL);
-            let button_down = macos::left_button_down();
-            let count = macos::drag_change_count();
-            if count != last_count {
-                last_count = count;
-                dragging = button_down;
-            }
-            if !button_down {
-                if shown {
-                    released(&app);
+            // AppKit hands back autoreleased objects; without a pool on this thread
+            // they would pile up for as long as the app runs.
+            objc2::rc::autoreleasepool(|_| {
+                let button_down = macos::left_button_down();
+                let count = macos::drag_change_count();
+                if count != last_count {
+                    last_count = count;
+                    dragging = button_down;
                 }
-                dragging = false;
-                shown = false;
-                continue;
-            }
-            if dragging && !shown && macos::shift_down() {
-                let paths = macos::dragged_files();
-                // Not a file drag (text, a tab, ...): ignore it until the next drag.
-                if paths.is_empty() {
+                if !button_down {
+                    if shown {
+                        released(&app);
+                    }
                     dragging = false;
-                    continue;
+                    shown = false;
+                    return;
                 }
-                show_wheel(&app, paths);
-                shown = true;
-            }
+                if dragging && !shown && macos::shift_down() {
+                    let paths = macos::dragged_files();
+                    // Not a file drag (text, a tab, ...): ignore it until the next drag.
+                    if paths.is_empty() {
+                        dragging = false;
+                        return;
+                    }
+                    show_wheel(&app, paths);
+                    shown = true;
+                }
+            });
         }
     });
 }
@@ -93,18 +101,31 @@ fn formats_for(app: &AppHandle, paths: &[String]) -> Vec<&'static str> {
 }
 
 pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>) {
-    open_wheel(app, paths, false);
+    let pending = paths.is_empty();
+    let generation = open_wheel(app, paths, false);
+    #[cfg(any(windows, target_os = "linux"))]
+    if pending {
+        close_later(app, generation, PENDING_TIMEOUT, true);
+    }
+    let _ = (generation, pending);
 }
 
 /// Opens the wheel from the keyboard shortcut and closes it again if no file comes.
 #[cfg(target_os = "linux")]
 pub(crate) fn show_pinned(app: &AppHandle) {
     let generation = open_wheel(app, Vec::new(), true);
+    close_later(app, generation, PINNED_TIMEOUT, false);
+}
+
+/// Closes wheel `generation` after `delay`, unless it closed or a newer one opened
+/// in the meantime. With `only_if_waiting`, only while it still has no files.
+#[cfg(any(windows, target_os = "linux"))]
+fn close_later(app: &AppHandle, generation: u64, delay: Duration, only_if_waiting: bool) {
     let app = app.clone();
     thread::spawn(move || {
-        thread::sleep(PINNED_TIMEOUT);
-        if app.state::<WheelState>().generation.load(Ordering::SeqCst) == generation {
-            hide_wheel(&app, false);
+        thread::sleep(delay);
+        if !only_if_waiting || app.state::<WheelState>().still_waiting(generation) {
+            hide_wheel(&app, false, Some(generation));
         }
     });
 }
@@ -113,13 +134,10 @@ pub(crate) fn show_pinned(app: &AppHandle) {
 fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool) -> u64 {
     let formats = formats_for(app, &paths);
     let state = app.state::<WheelState>();
-    if let Ok(mut shown) = state.formats.lock() {
-        *shown = formats.clone();
-    }
-    let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    state.open.store(true, Ordering::SeqCst);
-    let first = paths.first().cloned();
+    *wheel::lock(&state.formats) = formats.clone();
     let pending = paths.is_empty();
+    let generation = state.open(pending);
+    let first = paths.first().cloned();
     let glass = cfg!(target_os = "macos");
     let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned });
     let handle = app.clone();
@@ -140,9 +158,9 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool) -> u64 {
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
     let formats = formats_for(app, &paths);
-    if let Ok(mut shown) = app.state::<WheelState>().formats.lock() {
-        *shown = formats.clone();
-    }
+    let state = app.state::<WheelState>();
+    *wheel::lock(&state.formats) = formats.clone();
+    state.files_known();
     let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false });
 }
 
@@ -150,41 +168,38 @@ pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
 pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -> bool {
     let format = hover
         .segment
-        .and_then(|i| app.state::<WheelState>().formats.lock().ok()?.get(i).copied());
+        .and_then(|i| wheel::lock(&app.state::<WheelState>().formats).get(i).copied());
     match format {
         Some(format) if !paths.is_empty() => {
-            hide_wheel(app, true);
+            hide_wheel(app, true, None);
             crate::enqueue(app, paths, format.to_string());
             true
         }
         _ => {
-            hide_wheel(app, false);
+            hide_wheel(app, false, None);
             false
         }
     }
 }
 
 /// The mouse button went up during a drag that opened the wheel. Closes that wheel
-/// shortly after, unless a newer one has opened since.
+/// shortly after, unless it closed already or a newer one has opened since.
 pub(crate) fn released(app: &AppHandle) {
     let app = app.clone();
-    let generation = app.state::<WheelState>().generation.load(Ordering::SeqCst);
+    let generation = app.state::<WheelState>().generation();
     thread::spawn(move || {
         thread::sleep(HIDE_DELAY);
-        if app.state::<WheelState>().generation.load(Ordering::SeqCst) == generation {
-            hide_wheel(&app, false);
-        }
+        hide_wheel(&app, false, Some(generation));
     });
 }
 
 /// Closes the wheel. `accepted` tells the page a format was chosen, so it can keep
-/// that segment lit while the wheel shrinks away. Closing twice does nothing.
-pub fn hide_wheel(app: &AppHandle, accepted: bool) {
-    let state = app.state::<WheelState>();
-    if !state.open.swap(false, Ordering::SeqCst) {
+/// that segment lit while the wheel shrinks away. With `expected`, only that wheel.
+/// Closing twice does nothing.
+pub fn hide_wheel(app: &AppHandle, accepted: bool, expected: Option<u64>) {
+    let Some(generation) = app.state::<WheelState>().close(expected) else {
         return;
-    }
-    let generation = state.generation.load(Ordering::SeqCst);
+    };
     let _ = app.emit("wheel-close", accepted);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {

@@ -1,5 +1,6 @@
 // Draws the format wheel. The drop itself is handled natively (drop_view.rs), which
 // says what is under the cursor. The glass and the file icon in the hub are native too.
+if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
 const { listen } = window.__TAURI__.event;
 const { invoke } = window.__TAURI__.core;
 
@@ -29,6 +30,9 @@ let pinned = false;
 let segments = [];
 let hub = null;
 let hubLabel = null;
+// Between wheel-show and wheel-close. Late events for a closed wheel are ignored.
+let open = false;
+let lastHover = { segment: null, hub: false };
 
 function el(name, attrs) {
   const node = document.createElementNS(NS, name);
@@ -87,7 +91,16 @@ function build() {
   show({ segment: null, hub: false });
 }
 
-function show(hover) {
+// Hover messages come from native code; anything unexpected counts as no hover.
+function clean(hover) {
+  const seg = Number.isInteger(hover?.segment) && hover.segment < formats.length ? hover.segment : null;
+  return { segment: seg, hub: hover?.hub === true };
+}
+
+function show(raw) {
+  if (!hub) return;
+  const hover = clean(raw);
+  lastHover = hover;
   segments.forEach((g, i) => g.classList.toggle('active', i === hover.segment));
   hub.classList.toggle('cancel', hover.hub);
   hubLabel.classList.toggle('strong', hover.segment !== null || hover.hub);
@@ -95,7 +108,7 @@ function show(hover) {
     hubLabel.textContent = 'Cancel';
   } else if (hover.segment !== null) {
     const f = formats[hover.segment];
-    hubLabel.textContent = `To ${NAMES[f] ?? f.toUpperCase()}`;
+    hubLabel.textContent = `To ${Object.hasOwn(NAMES, f) ? NAMES[f] : f.toUpperCase()}`;
   } else if (pending) {
     hubLabel.textContent = pinned ? 'Drag a file here' : 'Drop here';
   } else if (formats.length === 0) {
@@ -113,26 +126,47 @@ function restart(className) {
 
 listen('wheel-show', (event) => {
   ({ paths, formats, pending, pinned } = event.payload);
+  open = true;
   document.documentElement.classList.toggle('solid', !event.payload.glass);
   build();
   restart('opening');
 });
 
-// The files arrived (Windows): draw their formats, without replaying the open.
+// The files arrived (Windows, Linux): draw their formats without replaying the open,
+// and keep lit whatever the cursor is already over.
 listen('wheel-formats', (event) => {
+  if (!open) return;
+  const keep = lastHover;
   ({ paths, formats, pending } = event.payload);
   build();
+  show(keep);
 });
 
-listen('wheel-hover', (event) => show(event.payload));
+listen('wheel-hover', (event) => {
+  if (open) show(event.payload);
+});
 
-// The chosen segment stays lit while the wheel shrinks back to where it opened.
-listen('wheel-close', () => restart('closing'));
+// A chosen segment stays lit while the wheel shrinks back to where it opened. If
+// nothing was chosen, nothing stays lit.
+listen('wheel-close', (event) => {
+  open = false;
+  if (event.payload !== true) show({ segment: null, hub: false });
+  restart('closing');
+});
+
+// The native code takes every drop. Should one ever reach the page, it must not make
+// the webview open the file.
+for (const type of ['dragover', 'drop']) {
+  document.addEventListener(type, (event) => event.preventDefault());
+}
 
 // A wheel opened from the shortcut closes with Esc or a click in the middle.
+function cancel() {
+  invoke('wheel_cancel').catch((e) => console.error('wheel_cancel failed', e));
+}
 document.addEventListener('keydown', (event) => {
-  if (pinned && event.key === 'Escape') invoke('wheel_cancel');
+  if (open && pinned && event.key === 'Escape') cancel();
 });
 svg.addEventListener('click', (event) => {
-  if (pinned && event.target === hub) invoke('wheel_cancel');
+  if (open && pinned && event.target === hub) cancel();
 });

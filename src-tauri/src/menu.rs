@@ -1,17 +1,18 @@
-//! The menu bar icon and its menu: Open at Login, where converted files go, and which
-//! formats the wheel offers.
+//! The menu bar icon and its menu: how the last conversion went, updates, Open at
+//! Login, where converted files go, and which formats the wheel offers.
 
 use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Manager, Wry};
 
-use crate::formats;
-use crate::login;
 use crate::settings::{self, SaveTo, Store};
+use crate::{formats, login, update};
 
 const SAVE_NEXT: &str = "save:next";
 const SAVE_DOWNLOADS: &str = "save:downloads";
 const LOGIN: &str = "login";
+const LAST: &str = "last";
+const UPDATE: &str = "update";
 const QUIT: &str = "quit";
 /// Format switches are "fmt:" followed by the settings key, e.g. "fmt:image:avif".
 const FORMAT: &str = "fmt:";
@@ -23,6 +24,9 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let version = format!("Convert Wheel {}", app.package_info().version);
     let title = MenuItem::with_id(app, "version", version, false, None::<&str>)?;
     let hint = MenuItem::with_id(app, "hint", "Hold Shift while dragging a file", false, None::<&str>)?;
+    // Feedback that stays put even when notifications are off.
+    let last = MenuItem::with_id(app, LAST, "Last: nothing converted yet", false, None::<&str>)?;
+    let update = MenuItem::with_id(app, UPDATE, "Check for Updates…", true, None::<&str>)?;
 
     let login_label = if login::available() { "Open at Login" } else { "Open at Login (installed app only)" };
     let login = CheckMenuItem::with_id(app, LOGIN, login_label, login::available(), login::is_enabled(), None::<&str>)?;
@@ -48,7 +52,10 @@ pub fn build(app: &App) -> tauri::Result<()> {
 
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
-    let menu = Menu::with_items(app, &[&title, &hint, &sep()?, &login, &save, &shown, &sep()?, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&title, &hint, &last, &sep()?, &update, &login, &save, &shown, &sep()?, &quit],
+    )?;
 
     // macOS: a template icon it tints to match the menu bar, light or dark. Windows'
     // tray can be light or dark too, so it gets the coloured app icon instead.
@@ -66,6 +73,31 @@ pub fn build(app: &App) -> tauri::Result<()> {
         .build(app)?;
     app.manage(TrayMenu(menu));
     Ok(())
+}
+
+/// Puts the outcome of the last drop in the menu, for example "Last: Converted to PDF".
+pub fn show_last_result(app: &AppHandle, text: &str) {
+    set_text(app, LAST, &format!("Last: {text}"));
+}
+
+/// Turns the update item into "Install Update 0.2.0 and Restart" when one is waiting.
+pub fn show_update(app: &AppHandle, version: Option<&str>) {
+    let text = match version {
+        Some(v) => format!("Install Update {v} and Restart"),
+        None => "Check for Updates…".to_string(),
+    };
+    set_text(app, UPDATE, &text);
+}
+
+fn set_text(app: &AppHandle, id: &str, text: &str) {
+    let Some(menu) = app.try_state::<TrayMenu>() else {
+        return;
+    };
+    if let Some(item) = find(menu.0.items().unwrap_or_default(), id) {
+        if let Some(item) = item.as_menuitem() {
+            let _ = item.set_text(text);
+        }
+    }
 }
 
 fn set_check(app: &AppHandle, id: &str, checked: bool) {
@@ -97,6 +129,13 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
     let store = app.state::<Store>();
     match id {
         QUIT => app.exit(0),
+        UPDATE => {
+            if update::pending(app).is_some() {
+                update::install_soon(app);
+            } else {
+                update::check_soon(app);
+            }
+        }
         LOGIN => {
             if let Err(e) = login::set_enabled(!login::is_enabled()) {
                 crate::notify(app, "Couldn't change Open at Login", &e);
@@ -104,20 +143,25 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             set_check(app, LOGIN, login::is_enabled());
         }
         SAVE_NEXT | SAVE_DOWNLOADS => {
-            let save_to = if id == SAVE_NEXT { SaveTo::NextToOriginal } else { SaveTo::Downloads };
-            store.update(|s| s.save_to = save_to);
-            // Two choices, exactly one ticked.
+            let wanted = if id == SAVE_NEXT { SaveTo::NextToOriginal } else { SaveTo::Downloads };
+            if let Err(e) = store.update(|s| s.save_to = wanted) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            // Two choices, exactly one ticked, matching what is saved.
+            let save_to = store.get().save_to;
             set_check(app, SAVE_NEXT, save_to == SaveTo::NextToOriginal);
             set_check(app, SAVE_DOWNLOADS, save_to == SaveTo::Downloads);
         }
         _ => {
             if let Some(key) = id.strip_prefix(FORMAT) {
-                let now = store.update(|s| {
+                if let Err(e) = store.update(|s| {
                     if !s.hidden.remove(key) {
                         s.hidden.insert(key.to_string());
                     }
-                });
-                set_check(app, id, !now.hidden.contains(key));
+                }) {
+                    crate::notify(app, "Couldn't save the setting", &e);
+                }
+                set_check(app, id, !store.get().hidden.contains(key));
             }
         }
     }

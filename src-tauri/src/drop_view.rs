@@ -64,7 +64,16 @@ define_class!(
         #[unsafe(method(performDragOperation:))]
         fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
             let paths = trigger::file_paths(&sender.draggingPasteboard());
-            trigger::drop_on_wheel(&self.ivars().app, self.hover(sender), paths)
+            let hover = self.hover(sender);
+            // AppKit sends no "exited" after a drop; forget the hover so the next
+            // drag lights up and ticks again from the start.
+            self.forget_hover();
+            trigger::drop_on_wheel(&self.ivars().app, hover, paths)
+        }
+
+        #[unsafe(method(draggingEnded:))]
+        fn dragging_ended(&self, _sender: &ProtocolObject<dyn NSDraggingInfo>) {
+            self.forget_hover();
         }
     }
 );
@@ -92,6 +101,10 @@ impl DropView {
         } else {
             NSDragOperation::None
         }
+    }
+
+    fn forget_hover(&self) {
+        self.ivars().hover.set(Hover::NONE);
     }
 
     /// Tells the page what to light up, only when it changes. Moving onto a new format

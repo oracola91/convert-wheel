@@ -1,8 +1,7 @@
 //! Wheel geometry and state, shared by the trigger and the drop target.
 
 use std::f64::consts::TAU;
-use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 
@@ -11,14 +10,72 @@ pub const SIZE: f64 = 340.0;
 pub const R_IN: f64 = 62.0;
 pub const R_OUT: f64 = 160.0;
 
+/// A poisoned lock still holds valid data here, so carry on with it.
+pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[derive(Default)]
 pub struct WheelState {
     /// Formats on the wheel right now, in drawing order.
     pub formats: Mutex<Vec<&'static str>>,
+    phase: Mutex<Phase>,
+}
+
+#[derive(Default)]
+struct Phase {
     /// Bumped each time the wheel opens, so a late close can't hide a newer wheel.
-    pub generation: AtomicU64,
+    generation: u64,
     /// Open and not yet closing.
-    pub open: AtomicBool,
+    open: bool,
+    /// Opened before the dragged files were known (Windows, Linux).
+    pending: bool,
+}
+
+impl WheelState {
+    /// Marks a new wheel open and returns its generation.
+    pub fn open(&self, pending: bool) -> u64 {
+        let mut p = lock(&self.phase);
+        p.generation += 1;
+        p.open = true;
+        p.pending = pending;
+        p.generation
+    }
+
+    /// Marks the open wheel as closing and returns its generation. With `expected`,
+    /// only that wheel: a timer started for an earlier wheel then closes nothing.
+    /// Checking and closing happen under one lock, so a wheel that opens in between
+    /// can't be caught by an old timer.
+    pub fn close(&self, expected: Option<u64>) -> Option<u64> {
+        let mut p = lock(&self.phase);
+        if !p.open || expected.is_some_and(|g| g != p.generation) {
+            return None;
+        }
+        p.open = false;
+        Some(p.generation)
+    }
+
+    pub fn generation(&self) -> u64 {
+        lock(&self.phase).generation
+    }
+
+    /// No newer wheel has opened since `generation`.
+    pub fn is_current(&self, generation: u64) -> bool {
+        lock(&self.phase).generation == generation
+    }
+
+    /// The dragged files reached the wheel.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn files_known(&self) {
+        lock(&self.phase).pending = false;
+    }
+
+    /// Wheel `generation` is still open and still waiting for its files.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn still_waiting(&self, generation: u64) -> bool {
+        let p = lock(&self.phase);
+        p.open && p.pending && p.generation == generation
+    }
 }
 
 /// What is under the cursor, as the page needs it to light things up.
@@ -72,5 +129,25 @@ mod tests {
         assert_eq!(hover_at(0.0, 0.0, 4), Hover { segment: None, hub: true });
         assert_eq!(hover_at(R_OUT + 20.0, 0.0, 4), Hover::NONE);
         assert_eq!(hover_at(0.0, 100.0, 0), Hover::NONE);
+    }
+
+    #[test]
+    fn an_old_timer_cannot_close_a_newer_wheel() {
+        let state = WheelState::default();
+        let first = state.open(false);
+        let second = state.open(false);
+        assert_eq!(state.close(Some(first)), None);
+        assert_eq!(state.close(Some(second)), Some(second));
+        // Closing twice does nothing.
+        assert_eq!(state.close(None), None);
+    }
+
+    #[test]
+    fn a_pending_wheel_stops_waiting_once_files_arrive() {
+        let state = WheelState::default();
+        let g = state.open(true);
+        assert!(state.still_waiting(g));
+        state.files_known();
+        assert!(!state.still_waiting(g));
     }
 }

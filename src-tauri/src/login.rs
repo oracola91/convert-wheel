@@ -24,7 +24,13 @@ mod imp {
         } else {
             unsafe { service.unregisterAndReturnError() }
         };
-        result.map_err(|e| e.localizedDescription().to_string())
+        result.map_err(|e| e.localizedDescription().to_string())?;
+        // macOS can accept the request but want the user's OK first.
+        if on && unsafe { service.status() } == SMAppServiceStatus::RequiresApproval {
+            unsafe { SMAppService::openSystemSettingsLoginItems() };
+            return Err("Allow Convert Wheel in System Settings > General > Login Items.".into());
+        }
+        Ok(())
     }
 }
 
@@ -32,6 +38,7 @@ mod imp {
 #[cfg(windows)]
 mod imp {
     use windows::core::{w, PCWSTR};
+    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
     use windows::Win32::System::Registry::{
         RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
     };
@@ -44,14 +51,38 @@ mod imp {
         !cfg!(debug_assertions)
     }
 
+    /// The command Windows should run at sign-in: this copy of the app, quoted.
+    fn command() -> Result<String, String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        Ok(format!("\"{}\"", exe.display()))
+    }
+
+    /// On only if the entry starts this copy; an entry left by a moved or removed copy
+    /// counts as off, and turning it on rewrites it.
     pub fn is_enabled() -> bool {
-        unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN, NAME, RRF_RT_REG_SZ, None, None, None) }.is_ok()
+        let mut buf = [0u16; 1024];
+        let mut size = (buf.len() * 2) as u32;
+        let read = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                RUN,
+                NAME,
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut size),
+            )
+        };
+        if read.is_err() {
+            return false;
+        }
+        let len = (size as usize / 2).saturating_sub(1).min(buf.len());
+        command().is_ok_and(|c| String::from_utf16_lossy(&buf[..len]).eq_ignore_ascii_case(&c))
     }
 
     pub fn set_enabled(on: bool) -> Result<(), String> {
         let result = if on {
-            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let value: Vec<u16> = format!("\"{}\"", exe.display()).encode_utf16().chain([0]).collect();
+            let value: Vec<u16> = command()?.encode_utf16().chain([0]).collect();
             unsafe {
                 RegSetKeyValueW(
                     HKEY_CURRENT_USER,
@@ -63,7 +94,11 @@ mod imp {
                 )
             }
         } else {
-            unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, NAME) }
+            match unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, NAME) } {
+                // Already off.
+                e if e == ERROR_FILE_NOT_FOUND => return Ok(()),
+                e => e,
+            }
         };
         result.ok().map_err(|e| e.message())
     }
@@ -74,6 +109,8 @@ mod imp {
 mod imp {
     use std::fs;
     use std::path::PathBuf;
+
+    use super::exec_quote;
 
     fn entry() -> Option<PathBuf> {
         let config = std::env::var_os("XDG_CONFIG_HOME")
@@ -102,14 +139,43 @@ mod imp {
         // An AppImage runs from a temporary mount; $APPIMAGE is the file itself.
         let exe = std::env::var_os("APPIMAGE")
             .map(PathBuf::from)
+            .filter(|p| p.is_file())
             .map_or_else(|| std::env::current_exe().map_err(|e| e.to_string()), Ok)?;
         let desktop = format!(
-            "[Desktop Entry]\nType=Application\nName=Convert Wheel\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
-            exe.display()
+            "[Desktop Entry]\nType=Application\nName=Convert Wheel\nExec={}\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
+            exec_quote(&exe.to_string_lossy())
         );
         fs::create_dir_all(entry.parent().ok_or("no autostart folder")?)
             .and_then(|_| fs::write(&entry, desktop))
             .map_err(|e| e.to_string())
+    }
+}
+
+/// Quotes a path for a desktop file's Exec line, as the Desktop Entry spec asks:
+/// double quotes, a backslash before `"` `` ` `` `$` `\`, and `%` doubled.
+#[cfg(any(target_os = "linux", test))]
+fn exec_quote(path: &str) -> String {
+    let mut out = String::from("\"");
+    for c in path.chars() {
+        match c {
+            '"' | '`' | '$' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '%' => out.push_str("%%"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn exec_lines_are_quoted_per_the_spec() {
+        assert_eq!(super::exec_quote("/opt/a b/app"), "\"/opt/a b/app\"");
+        assert_eq!(super::exec_quote("/x/100%/\"q\"/$HOME"), "\"/x/100%%/\\\"q\\\"/\\$HOME\"");
     }
 }
 
