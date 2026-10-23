@@ -502,6 +502,9 @@ name = "convert-wheel"
 version = "0.1.0"
 dependencies = [
  "block2",
+ "gdk",
+ "glib",
+ "gtk",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -511,8 +514,10 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-notification",
+ "webkit2gtk",
  "windows",
  "windows-core",
+ "x11-dl",
 ]
 
 [[package]]
