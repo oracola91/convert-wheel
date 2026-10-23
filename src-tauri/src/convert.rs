@@ -13,7 +13,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::formats::{self, Kind};
 
 /// Converts `src` to `target` (a format from the wheel) and returns the new file.
-pub fn convert(src: &Path, target: &str) -> Result<PathBuf, String> {
+/// It goes in `save_in`, or next to the original when that is None. If the original's
+/// folder can't be written to (a mounted disk image, another app's folder), it goes to
+/// Downloads instead.
+pub fn convert(src: &Path, target: &str, save_in: Option<&Path>) -> Result<PathBuf, String> {
     let ext = formats::extension(src).ok_or("the file has no extension")?;
     let kind = formats::kind_of(&ext).ok_or_else(|| format!(".{ext} files are not supported"))?;
     if !formats::outputs_for(&ext).contains(&target) {
@@ -43,7 +46,23 @@ pub fn convert(src: &Path, target: &str) -> Result<PathBuf, String> {
     if !out.is_file() {
         return Err("the converter finished but wrote no file".into());
     }
-    place(&out, src, stem, target)
+    let dir = match save_in {
+        Some(dir) => dir.to_path_buf(),
+        None => src.parent().ok_or("the file has no folder")?.to_path_buf(),
+    };
+    let placed = match place(&out, &dir, stem, target) {
+        Err(e) if save_in.is_none() && is_no_write(&e) => place(&out, &downloads(), stem, target),
+        other => other,
+    };
+    placed.map_err(|e| format!("can't save the result: {e}"))
+}
+
+fn is_no_write(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem)
+}
+
+pub fn downloads() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Downloads")
 }
 
 /// The image format a file really is, from its first bytes. Only plain raster
@@ -255,9 +274,8 @@ fn run(mut cmd: Command) -> Result<(), String> {
     Err(format!("{name} failed: {}", last.trim()))
 }
 
-/// Moves the result next to the original without replacing anything there.
-fn place(tmp: &Path, src: &Path, stem: &str, target: &str) -> Result<PathBuf, String> {
-    let dir = src.parent().ok_or("the file has no folder")?;
+/// Moves the result into `dir` without replacing anything there.
+fn place(tmp: &Path, dir: &Path, stem: &str, target: &str) -> io::Result<PathBuf> {
     for n in 1..1000 {
         let name = if n == 1 {
             format!("{stem}.{target}")
@@ -269,20 +287,19 @@ fn place(tmp: &Path, src: &Path, stem: &str, target: &str) -> Result<PathBuf, St
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&dest) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("can't write in {}: {e}", dir.display())),
+            Err(e) => return Err(e),
         };
         // Same disk: swap our placeholder for the result. Other disk: copy the bytes.
         if fs::rename(tmp, &dest).is_ok() {
             return Ok(dest);
         }
-        let copied = fs::File::open(tmp).and_then(|mut f| io::copy(&mut f, &mut file));
-        if let Err(e) = copied {
+        if let Err(e) = fs::File::open(tmp).and_then(|mut f| io::copy(&mut f, &mut file)) {
             let _ = fs::remove_file(&dest);
-            return Err(format!("can't write in {}: {e}", dir.display()));
+            return Err(e);
         }
         return Ok(dest);
     }
-    Err("too many files with that name already".into())
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "too many files with that name already"))
 }
 
 /// A temporary folder that is removed when the conversion ends, however it ends.
@@ -411,7 +428,7 @@ mod tests {
         let tmp = work.path.join("result.tmp");
         fs::write(&tmp, "new").unwrap();
 
-        let dest = place(&tmp, &src, "report", "pdf").unwrap();
+        let dest = place(&tmp, &work.path, "report", "pdf").unwrap();
         assert_eq!(dest, work.path.join("report 2.pdf"));
         assert_eq!(fs::read_to_string(work.path.join("report.pdf")).unwrap(), "keep me");
         assert_eq!(fs::read_to_string(dest).unwrap(), "new");
@@ -445,9 +462,9 @@ mod tests {
 
     #[test]
     fn unsupported_files_are_refused_before_any_tool_runs() {
-        assert!(convert(Path::new("/tmp/a.xyz"), "pdf").is_err());
-        assert!(convert(Path::new("/tmp/Makefile"), "pdf").is_err());
-        assert!(convert(Path::new("/tmp/a.png"), "mp3").is_err());
+        assert!(convert(Path::new("/tmp/a.xyz"), "pdf", None).is_err());
+        assert!(convert(Path::new("/tmp/Makefile"), "pdf", None).is_err());
+        assert!(convert(Path::new("/tmp/a.png"), "mp3", None).is_err());
     }
 
     #[test]
