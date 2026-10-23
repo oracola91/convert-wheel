@@ -211,8 +211,8 @@ main() {
     step "4/5 Keyboard shortcut"
     key=""
     if gnome_shortcut; then
-        key=$(gsettings get "$KEYS.custom-keybinding:$SLOT" binding)
-        [ "$key" = "'$SHORTCUT'" ] && key="Super+Shift+C"
+        key=$(gsettings get "$KEYS.custom-keybinding:$SLOT" binding | tr -d "'")
+        [ "$key" = "$SHORTCUT" ] && key="Super+Shift+C"
         echo "$key opens the wheel."
     else
         echo "Not set here. Add one in your desktop's keyboard settings: command '$EXE --show', key Super+Shift+C."
