@@ -4,12 +4,14 @@
 //! things the window server shares with everyone: the drag pasteboard's change
 //! count, the mouse buttons and the modifier keys. No permission prompt is needed.
 
+use std::sync::atomic::Ordering;
 use std::{thread, time::Duration};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, LogicalPosition, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{formats, wheel};
+use crate::formats;
+use crate::wheel::WheelState;
 
 const POLL: Duration = Duration::from_millis(30);
 /// How long the wheel stays after the button is released, so a drop on it can land.
@@ -38,10 +40,14 @@ pub fn start(app: AppHandle) {
             }
             if !button_down {
                 if shown {
+                    // Close only the wheel this drag opened, not one opened since.
                     let app = app.clone();
+                    let generation = app.state::<WheelState>().generation.load(Ordering::SeqCst);
                     thread::spawn(move || {
                         thread::sleep(HIDE_DELAY);
-                        hide_wheel(&app);
+                        if app.state::<WheelState>().generation.load(Ordering::SeqCst) == generation {
+                            hide_wheel(&app, false);
+                        }
                     });
                 }
                 dragging = false;
@@ -67,34 +73,31 @@ pub fn start(_app: AppHandle) {}
 
 #[cfg(target_os = "macos")]
 fn show_wheel(app: &AppHandle, paths: Vec<String>) {
-    let Some(win) = app.get_webview_window("wheel") else {
-        return;
-    };
-    let (x, y_from_bottom) = macos::mouse_location();
-    // AppKit measures y up from the bottom of the main screen, Tauri down from the top.
-    let screen_height = app
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .map(|m| m.size().height as f64 / m.scale_factor())
-        .unwrap_or(0.0);
-    let pos = LogicalPosition::new(
-        x - wheel::SIZE / 2.0,
-        screen_height - y_from_bottom - wheel::SIZE / 2.0,
-    );
     let formats = formats::formats_for(&paths);
-    if let Ok(mut shown) = app.state::<wheel::Shown>().0.lock() {
+    let state = app.state::<WheelState>();
+    if let Ok(mut shown) = state.formats.lock() {
         *shown = formats.clone();
     }
-    let _ = win.set_position(pos);
-    let _ = win.emit("wheel-show", WheelShow { paths, formats });
-    let _ = win.show();
+    state.generation.fetch_add(1, Ordering::SeqCst);
+    state.open.store(true, Ordering::SeqCst);
+    let first = paths.first().cloned();
+    let _ = app.emit("wheel-show", WheelShow { paths, formats });
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || crate::wheel_window::open(&handle, first.as_deref()));
 }
 
-pub fn hide_wheel(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("wheel") {
-        let _ = win.hide();
+/// Closes the wheel. `accepted` tells the page a format was chosen, so it can keep
+/// that segment lit while the wheel shrinks away. Closing twice does nothing.
+#[cfg(target_os = "macos")]
+pub fn hide_wheel(app: &AppHandle, accepted: bool) {
+    let state = app.state::<WheelState>();
+    if !state.open.swap(false, Ordering::SeqCst) {
+        return;
     }
+    let generation = state.generation.load(Ordering::SeqCst);
+    let _ = app.emit("wheel-close", accepted);
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || crate::wheel_window::close(&handle, generation));
 }
 
 #[cfg(target_os = "macos")]
@@ -122,11 +125,6 @@ mod macos {
 
     pub fn shift_down() -> bool {
         NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Shift)
-    }
-
-    pub fn mouse_location() -> (f64, f64) {
-        let p = NSEvent::mouseLocation();
-        (p.x, p.y)
     }
 
     pub fn dragged_files() -> Vec<String> {
