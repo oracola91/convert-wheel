@@ -190,4 +190,5 @@ scripts/install-macos.sh   build and install in /Applications on this Mac
 scripts/install-linux.sh   one-command setup on Ubuntu and Debian
 scripts/release-macos.sh   add the macOS .dmg to a release
 INSTALL.md                 installing, updating, uninstalling, making a release
+ROADMAP.md                 what comes next, in order
 ```
