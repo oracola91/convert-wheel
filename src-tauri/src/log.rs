@@ -1,11 +1,12 @@
 //! A small log file, so there is a trace when a notification can't be shown or
-//! something fails with no window to say so. File names only, never full paths.
+//! something fails with no window to say so. File names only: tool messages are
+//! stripped of folders before they get here. Readable by the user only.
 //! macOS: ~/Library/Logs/local.convertwheel; Windows: %LOCALAPPDATA%\local.convertwheel\logs;
 //! Linux: ~/.local/share/local.convertwheel/logs.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,9 +16,29 @@ const MAX_BYTES: u64 = 512 * 1024;
 static FILE: OnceLock<PathBuf> = OnceLock::new();
 static WRITE: Mutex<()> = Mutex::new(());
 
-pub fn init(dir: PathBuf) {
-    let _ = fs::create_dir_all(&dir);
+/// Uses `dir`, or a folder in the temporary directory if `dir` can't be made.
+pub fn init(dir: Option<PathBuf>) {
+    let usable = |d: &Path| make_private_dir(d).is_ok();
+    let dir = dir
+        .filter(|d| usable(d))
+        .unwrap_or_else(|| std::env::temp_dir().join("convert-wheel-logs"));
+    let _ = make_private_dir(&dir);
     let _ = FILE.set(dir.join("convert-wheel.log"));
+}
+
+/// The log file, for "Show Log" in the menu.
+pub fn path() -> Option<PathBuf> {
+    FILE.get().cloned()
+}
+
+fn make_private_dir(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 pub fn line(message: &str) {
@@ -29,7 +50,14 @@ pub fn line(message: &str) {
     if fs::metadata(file).is_ok_and(|m| m.len() > MAX_BYTES) {
         let _ = fs::rename(file, file.with_extension("log.old"));
     }
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(file) {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut f) = options.open(file) {
         let _ = writeln!(f, "{} {message}", timestamp());
     }
 }

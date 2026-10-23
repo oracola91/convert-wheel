@@ -9,6 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{ptr, thread, time::Duration};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -40,9 +41,10 @@ const POLL: Duration = Duration::from_millis(30);
 /// Matches the close animation in src/wheel.css.
 const CLOSE: Duration = Duration::from_millis(140);
 
-/// Window classes that hold a file list: File Explorer, the desktop, and the
-/// file view inside Open/Save dialogs.
-const FILE_VIEWS: &[&str] = &["SHELLDLL_DefView", "CabinetWClass", "ExploreWClass", "Progman", "WorkerW"];
+/// The window class that holds a file list in File Explorer, on the desktop and in
+/// Open/Save dialogs. Only drags that start inside it count, not ones on a title
+/// bar, the address bar or the empty desktop wallpaper.
+const FILE_VIEWS: &[&str] = &["SHELLDLL_DefView"];
 
 pub fn start_trigger(app: AppHandle) {
     thread::spawn(move || {
@@ -156,6 +158,7 @@ fn make_bare_popup(hwnd: HWND) {
 /// taskbar never covers it. Runs on the main thread.
 pub fn open(app: &AppHandle) {
     let Some(hwnd) = wheel_hwnd(app) else {
+        crate::log::line("the wheel window is missing");
         return;
     };
     // Again on every open, in case Tauri reapplied its own styles in the meantime.
@@ -222,10 +225,18 @@ fn register_drop_targets(app: &AppHandle, wheel: HWND) {
         let target: IDropTarget =
             WheelDropTarget { app: app.clone(), wheel, hover: Cell::new(Hover::NONE), has_files: Cell::new(false) }.into();
         let _ = unsafe { RevokeDragDrop(hwnd) };
-        if unsafe { RegisterDragDrop(hwnd, &target) }.is_ok() {
-            REGISTERED.with(|r| r.borrow_mut().insert(key));
-            TARGETS.with(|t| t.borrow_mut().push(target));
+        match unsafe { RegisterDragDrop(hwnd, &target) } {
+            Ok(()) => {
+                REGISTERED.with(|r| r.borrow_mut().insert(key));
+                TARGETS.with(|t| t.borrow_mut().push(target));
+            }
+            Err(e) => crate::log::line(&format!("drop target not registered on a wheel window: {e}")),
         }
+    }
+    // Without any drop target the wheel would open and take nothing. Say so once.
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if REGISTERED.with(|r| r.borrow().is_empty()) && !WARNED.swap(true, Ordering::SeqCst) {
+        crate::notify(app, "Convert Wheel can't take drops", "Quit Convert Wheel and open it again.");
     }
 }
 
@@ -243,7 +254,7 @@ impl WheelDropTarget {
         let _ = unsafe { ScreenToClient(self.wheel, &mut p) };
         let scale = unsafe { GetDpiForWindow(self.wheel) }.max(96) as f64 / 96.0;
         let (x, y) = (p.x as f64 / scale, p.y as f64 / scale);
-        let n = self.app.state::<WheelState>().formats.lock().map(|f| f.len()).unwrap_or(0);
+        let n = wheel::lock(&self.app.state::<WheelState>().formats).len();
         wheel::hover_at(x - wheel::SIZE / 2.0, wheel::SIZE / 2.0 - y, n)
     }
 

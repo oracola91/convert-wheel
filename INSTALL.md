@@ -2,13 +2,13 @@
 
 Every version is on the repo's [Releases page](https://github.com/oracola91/convert-wheel/releases).
 
-**From version 0.1.1 the app updates itself.** It checks once a day; when a new version is out, a notification says so and the menu offers **Install Update … and Restart**. So install once, by hand, and later versions arrive through the app. Copies of 0.1.0 have no updater and need one manual install of 0.1.1 or newer.
+**From version 0.1.1 the app updates itself.** It asks github.com for the newest version shortly after it starts and then once a day; when a new version is out, a notification says so and the menu offers **Install Update … and Restart**. So install once, by hand, and later versions arrive through the app. Copies of 0.1.0 have no updater and need one manual install of 0.1.1 or newer.
 
 | System | File |
 |---|---|
 | macOS, Apple silicon | `Convert.Wheel_<version>_aarch64.dmg` |
 | Windows, one user, no admin rights | `Convert.Wheel_<version>_x64-setup.exe` |
-| Windows, all users, Intune | `Convert.Wheel_<version>_x64_en-US.msi` |
+| Windows, all users, management tools | `Convert.Wheel_<version>_x64_en-US.msi` |
 | Ubuntu, Debian | `Convert.Wheel_<version>_amd64.deb` |
 | Other Linux | `Convert.Wheel_<version>_amd64.AppImage` |
 
@@ -39,7 +39,7 @@ xattr -dr com.apple.quarantine "/Applications/Convert Wheel.app"
 
 **Update:** the app updates itself (menu > Install Update). By hand: install the new `.dmg` the same way, or run the script again.
 
-**Uninstall:** turn off Open at Login in the menu, quit, and delete Convert Wheel from Applications. Its settings and working files are in `~/Library/Application Support/local.convertwheel` and `~/Library/Caches/local.convertwheel`.
+**Uninstall:** turn off Open at Login in the menu, quit, and delete Convert Wheel from Applications. Its settings, working files and log are in `~/Library/Application Support/local.convertwheel`, `~/Library/Caches/local.convertwheel` and `~/Library/Logs/local.convertwheel`; delete them too for a clean removal.
 
 ## Windows
 
@@ -54,7 +54,7 @@ Sign out and back in afterwards, so apps started from the Start menu see the new
 **2. The app**, one of:
 
 - **`.exe`**: double-click it. It installs for the signed-in user, without admin rights.
-- **`.msi`**: installs for all users in Program Files and needs admin rights. Silently, for Intune or a script:
+- **`.msi`**: installs for all users in Program Files and needs admin rights. Silently, for a management tool or a script:
 
   ```
   msiexec /i "Convert.Wheel_<version>_x64_en-US.msi" /qn
@@ -66,7 +66,7 @@ Sign out and back in afterwards, so apps started from the Start menu see the new
 
 **Update:** the app updates itself (menu > Install Update). By hand: run the new installer over the old one.
 
-**Uninstall:** turn off Open at Login in the icon's menu first, then Settings > Apps > Installed apps > Convert Wheel > Uninstall (for the `.msi`: `msiexec /x "Convert.Wheel_<version>_x64_en-US.msi" /qn`). Settings are in `%APPDATA%\local.convertwheel`, working files in `%LOCALAPPDATA%\convertwheel`.
+**Uninstall:** turn off Open at Login in the icon's menu first (the uninstaller doesn't remove it), then Settings > Apps > Installed apps > Convert Wheel > Uninstall (for the `.msi`: `msiexec /x "Convert.Wheel_<version>_x64_en-US.msi" /qn`). Settings are in `%APPDATA%\local.convertwheel`, working files in `%LOCALAPPDATA%\convertwheel`, the log in `%LOCALAPPDATA%\local.convertwheel\logs`.
 
 ## Linux
 
@@ -102,9 +102,9 @@ pandoc must be 2.15 or newer: check with `pandoc --version`. Ubuntu 24.04 is fin
 
 The menu icon needs AppIndicator support: on by default in Ubuntu, an extension on plain GNOME.
 
-**Update:** the app updates itself (menu > Install Update; the `.deb` asks for the admin password). By hand: install the newer `.deb` the same way.
+**Update:** the app updates itself (menu > Install Update). For the `.deb` this installs as root, so it asks for your password: normally in the system's own dialog; where that isn't available, in a plain box titled "Authentication Required". Enter it only right after you chose Install Update. By hand: install the newer `.deb` the same way.
 
-**Uninstall:** turn off Open at Login in the icon's menu, then `sudo apt remove convert-wheel` (or delete the AppImage). Settings are in `~/.config/local.convertwheel`, working files in `~/.cache/convertwheel`.
+**Uninstall:** turn off Open at Login in the icon's menu (the package doesn't remove it), then `sudo apt remove convert-wheel` (or delete the AppImage). Settings are in `~/.config/local.convertwheel`, working files in `~/.cache/convertwheel`, the log in `~/.local/share/local.convertwheel/logs`.
 
 **Known gaps:** Ubuntu's ImageMagick 6 refuses to write PDFs (a security policy) and may lack HEIC and AVIF support.
 
@@ -129,7 +129,7 @@ On Windows, compare `Get-FileHash .\<file> -Algorithm SHA256` with the file's li
    git push origin v0.2.0
    ```
 
-3. GitHub builds the Windows and Linux files (about 20 minutes) and publishes the release with them, `latest.json` (what installed copies read to find the update) and `SHA256SUMS.txt`. The build stops early if the tag and the version don't match.
-4. On the release Mac, with the tag checked out and nothing uncommitted, add the macOS files: `./scripts/release-macos.sh`. It adds the `.dmg`, the signed macOS update file and its entry in `latest.json`. It needs the update signing key (`~/.tauri/convert-wheel-updater.key`, password in the Keychain).
+3. GitHub builds the Windows and Linux files (about 20 minutes), signs the update files in a separate step, and creates the release as a **draft** with them, `latest.json` (what installed copies read to find the update) and `SHA256SUMS.txt`. Installed copies don't see a draft. The build stops early if the tag and the version don't match.
+4. On the release Mac, with the tag checked out and nothing uncommitted, run `./scripts/release-macos.sh`. It builds and signs the macOS files, adds them and their entry in `latest.json`, checks every system is listed, and publishes the release. It needs the update signing key (`~/.tauri/convert-wheel-updater.key`, password in the Keychain).
 
 A build without a release, for testing: Actions > Build > Run workflow, or `gh workflow run build.yml -f platform=windows` (`linux`, `both`). Its files stay on the run's page for 14 days.

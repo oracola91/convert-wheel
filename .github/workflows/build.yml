@@ -2,10 +2,13 @@
 #
 # - Pushing a version tag (v0.2.0, ...) builds both and publishes a GitHub Release
 #   with every installer attached, plus latest.json: the file the app's updater reads.
-#   The tag must match the version in tauri.conf.json. The macOS .dmg and update file
-#   are added afterwards from a Mac: scripts/release-macos.sh.
-# - Update files are signed with the project's update key (repository secrets); the
-#   app checks that signature before it installs anything.
+#   The tag must match the version in tauri.conf.json. The release starts as a draft,
+#   so installed copies don't see it yet; scripts/release-macos.sh adds the macOS files
+#   from a Mac and then publishes it.
+# - Update files are signed with the project's update key, with the version recorded
+#   in the signature; the app checks both before it installs anything. The key lives
+#   in the "release" environment, which only v* tags can use, and only the release
+#   job's signing step sees it: the builds themselves never do.
 # - Actions > Build > Run workflow (or `gh workflow run build.yml -f platform=linux`)
 #   builds without releasing; the files stay on the run page for 14 days.
 #
@@ -53,7 +56,9 @@ jobs:
         with:
           toolchain: 1.99.1
 
+      # Not for release builds: a cache from a branch build must not end up in a release.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: github.event_name != 'push'
         with:
           workspaces: src-tauri
 
@@ -67,19 +72,14 @@ jobs:
       # The .exe installs for the signed-in user without admin rights; the .msi installs
       # for all users in Program Files, the form Intune and other management tools expect.
       - name: Build the installers
-        run: npx tauri build --bundles nsis,msi
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx --no-install tauri build --bundles nsis,msi -- --locked
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: convert-wheel-windows
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/nsis/*.sig
             src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/msi/*.sig
           retention-days: 14
 
   linux:
@@ -111,7 +111,9 @@ jobs:
         with:
           toolchain: 1.99.1
 
+      # Not for release builds: a cache from a branch build must not end up in a release.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: github.event_name != 'push'
         with:
           workspaces: src-tauri
 
@@ -123,48 +125,87 @@ jobs:
         run: cargo test --locked
 
       - name: Build the packages
-        run: npx tauri build --bundles deb,appimage
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx --no-install tauri build --bundles deb,appimage -- --locked
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: convert-wheel-linux
           path: |
             src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/deb/*.sig
             src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/release/bundle/appimage/*.sig
           retention-days: 14
+
+  # Reports known vulnerabilities in the Rust dependencies; doesn't block a build.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-audit
+      - name: Check the dependencies against the RustSec advisory database
+        run: cargo audit --file src-tauri/Cargo.lock
 
   release:
     if: github.event_name == 'push'
     needs: [windows, linux]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The signing key is an environment secret that only v* tags can reach.
+    environment: release
     permissions:
       # The only job that may write: it creates the release.
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Install the Tauri CLI (for signing)
+        run: npm ci --ignore-scripts
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: built
 
-      - name: Collect the installers, the update manifest and the checksums
-        env:
-          REPO: ${{ github.repository }}
+      - name: Collect the installers
         run: |
-          mkdir release sigs
-          find built -type f -name '*.sig' -exec mv {} sigs/ \;
+          mkdir release
           find built -type f -exec mv {} release/ \;
           # GitHub turns spaces in file names into dots on upload; do it first so the
           # checksums and update links match the names people download.
-          for dir in release sigs; do
-            for f in "$dir"/*; do
-              case "$f" in *" "*) mv -- "$f" "${f// /.}" ;; esac
-            done
+          for f in release/*; do
+            case "$f" in *" "*) mv -- "$f" "${f// /.}" ;; esac
           done
+          ls -l release
+
+      # The only step that sees the key. The signature records the version, which the
+      # app checks against latest.json, so an older build can't be relabelled as newer.
+      - name: Sign the update files
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir sigs
+          for f in release/*.exe release/*.msi release/*.AppImage release/*.deb; do
+            npx --no-install tauri signer sign --app-version "$version" "$f" > /dev/null
+            mv "$f.sig" sigs/
+          done
+          ls sigs
+
+      - name: Write the update manifest and the checksums
+        env:
+          REPO: ${{ github.repository }}
+        run: |
           version="${GITHUB_REF_NAME#v}"
           python3 - "$version" "$REPO" "$GITHUB_REF_NAME" <<'PY'
           import json, os, sys, datetime
@@ -186,8 +227,7 @@ jobs:
           for plain, preferred in (("windows-x86_64", "windows-x86_64-nsis"), ("linux-x86_64", "linux-x86_64-appimage")):
               if preferred in platforms:
                   platforms[plain] = platforms[preferred]
-          # A .deb update needs a signed .deb; the others must always be there.
-          missing = [k for k in files if k not in platforms and k != "linux-x86_64-deb"]
+          missing = [k for k in files if k not in platforms]
           if missing:
               sys.exit(f"no signed update file for: {', '.join(missing)}")
           manifest = {
@@ -203,14 +243,14 @@ jobs:
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Publish the release
+      - name: Create the release as a draft
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           cat > notes.md <<EOF
-          Convert Wheel $version. Install steps for each system are in [INSTALL.md](https://github.com/$REPO/blob/$GITHUB_REF_NAME/INSTALL.md). Installed copies from 0.1.1 on update themselves: they find this release through \`latest.json\`.
+          Convert Wheel $version. Install steps for each system are in [INSTALL.md](https://github.com/$REPO/blob/$GITHUB_REF_NAME/INSTALL.md). Copies from 0.1.1 on update themselves: they find this release through \`latest.json\`.
 
           | System | File |
           |---|---|
@@ -218,8 +258,8 @@ jobs:
           | Windows, all users | \`Convert.Wheel_${version}_x64_en-US.msi\` |
           | Ubuntu, Debian | \`Convert.Wheel_${version}_amd64.deb\` |
           | Other Linux | \`Convert.Wheel_${version}_amd64.AppImage\` |
-          | macOS (Apple silicon) | \`Convert.Wheel_${version}_aarch64.dmg\`, added from a Mac after the build |
+          | macOS (Apple silicon) | \`Convert.Wheel_${version}_aarch64.dmg\` |
 
-          The installers are not code-signed yet. Updates are signed with the project's update key, and the app refuses an update whose signature doesn't match. SHA256SUMS.txt lists the files' checksums.
+          The installers are not code-signed yet. Updates are signed with the project's update key, with the version recorded in the signature, and the app refuses an update that doesn't match. SHA256SUMS.txt lists the files' checksums.
           EOF
-          gh release create "$GITHUB_REF_NAME" release/* --repo "$REPO" --title "Convert Wheel $version" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" release/* --repo "$REPO" --draft --title "Convert Wheel $version" --notes-file notes.md

@@ -46,8 +46,7 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "signingIdentity": "-"
-    },
-    "createUpdaterArtifacts": true
+    }
   },
   "plugins": {
     "updater": {
@@ -57,7 +56,8 @@
       ],
       "windows": {
         "installMode": "passive"
-      }
+      },
+      "requireSignedVersion": true
     }
   }
 }

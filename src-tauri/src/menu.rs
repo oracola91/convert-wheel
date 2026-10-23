@@ -1,6 +1,9 @@
 //! The menu bar icon and its menu: how the last conversion went, updates, Open at
 //! Login, where converted files go, and which formats the wheel offers.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Manager, Wry};
@@ -13,6 +16,9 @@ const SAVE_DOWNLOADS: &str = "save:downloads";
 const LOGIN: &str = "login";
 const LAST: &str = "last";
 const UPDATE: &str = "update";
+const SHOW_LOG: &str = "log";
+/// Longest "Last: …" line, so the menu stays a sensible width.
+const LAST_MAX_CHARS: usize = 70;
 const QUIT: &str = "quit";
 /// Format switches are "fmt:" followed by the settings key, e.g. "fmt:image:avif".
 const FORMAT: &str = "fmt:";
@@ -27,6 +33,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
     // Feedback that stays put even when notifications are off.
     let last = MenuItem::with_id(app, LAST, "Last: nothing converted yet", false, None::<&str>)?;
     let update = MenuItem::with_id(app, UPDATE, "Check for Updates…", true, None::<&str>)?;
+    let show_log = MenuItem::with_id(app, SHOW_LOG, "Show Log", true, None::<&str>)?;
 
     let login_label = if login::available() { "Open at Login" } else { "Open at Login (installed app only)" };
     let login = CheckMenuItem::with_id(app, LOGIN, login_label, login::available(), login::is_enabled(), None::<&str>)?;
@@ -54,7 +61,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let sep = || PredefinedMenuItem::separator(app);
     let menu = Menu::with_items(
         app,
-        &[&title, &hint, &last, &sep()?, &update, &login, &save, &shown, &sep()?, &quit],
+        &[&title, &hint, &last, &sep()?, &update, &login, &save, &shown, &sep()?, &show_log, &quit],
     )?;
 
     // macOS: a template icon it tints to match the menu bar, light or dark. Windows'
@@ -75,29 +82,84 @@ pub fn build(app: &App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Puts the outcome of the last drop in the menu, for example "Last: Converted to PDF".
+/// Puts how the last drop went in the menu, for example "Last: Converted to PDF:
+/// report.pdf", cut short to keep the menu narrow.
 pub fn show_last_result(app: &AppHandle, text: &str) {
-    set_text(app, LAST, &format!("Last: {text}"));
+    let mut line = format!("Last: {text}");
+    if line.chars().count() > LAST_MAX_CHARS {
+        line = line.chars().take(LAST_MAX_CHARS - 1).collect::<String>() + "…";
+    }
+    set_text(app, LAST, &line, true);
 }
 
-/// Turns the update item into "Install Update 0.2.0 and Restart" when one is waiting.
-pub fn show_update(app: &AppHandle, version: Option<&str>) {
-    let text = match version {
-        Some(v) => format!("Install Update {v} and Restart"),
-        None => "Check for Updates…".to_string(),
+pub enum UpdateState<'a> {
+    UpToDate,
+    CheckFailed,
+    Available(&'a str),
+    Installing,
+}
+
+/// The update item says what the last check found, so it is clear without a
+/// notification.
+pub fn show_update(app: &AppHandle, state: UpdateState) {
+    let (text, enabled) = match state {
+        UpdateState::UpToDate => ("Check for Updates… (up to date)".to_string(), true),
+        UpdateState::CheckFailed => ("Check for Updates… (last check failed)".to_string(), true),
+        UpdateState::Available(v) => (format!("Install Update {v} and Restart"), true),
+        UpdateState::Installing => ("Installing Update…".to_string(), false),
     };
-    set_text(app, UPDATE, &text);
+    set_text(app, UPDATE, &text, enabled);
 }
 
-fn set_text(app: &AppHandle, id: &str, text: &str) {
+fn set_text(app: &AppHandle, id: &str, text: &str, enabled: bool) {
     let Some(menu) = app.try_state::<TrayMenu>() else {
         return;
     };
     if let Some(item) = find(menu.0.items().unwrap_or_default(), id) {
         if let Some(item) = item.as_menuitem() {
             let _ = item.set_text(text);
+            if id != LAST {
+                let _ = item.set_enabled(enabled);
+            }
         }
     }
+}
+
+/// Opens the folder with the log file, the file selected where the system allows it.
+fn show_log(app: &AppHandle) {
+    let Some(file) = crate::log::path() else {
+        crate::notify(app, "No log yet", "Convert Wheel hasn't written a log on this computer.");
+        return;
+    };
+    let shown = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg("-R").arg(&file).spawn()
+    } else if cfg!(windows) {
+        std::process::Command::new("explorer").arg(format!("/select,{}", file.display())).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(file.parent().unwrap_or(&file)).spawn()
+    };
+    if let Err(e) = shown {
+        crate::notify(app, "Couldn't open the log folder", &format!("{e}. The log is at {}", file.display()));
+    }
+}
+
+/// Quitting while conversions run asks for a second Quit within 10 seconds.
+fn quit(app: &AppHandle) {
+    static ASKED_AT: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let jobs = crate::busy_jobs();
+    if jobs > 0 && now.saturating_sub(ASKED_AT.swap(now, Ordering::SeqCst)) > 10 {
+        crate::notify(
+            app,
+            &format!("{jobs} conversion(s) still running"),
+            "Choose Quit again to stop them and quit.",
+        );
+        return;
+    }
+    if jobs > 0 {
+        crate::log::line(&format!("quit with {jobs} conversion(s) unfinished"));
+    }
+    app.exit(0);
 }
 
 fn set_check(app: &AppHandle, id: &str, checked: bool) {
@@ -128,7 +190,8 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
     let id = event.id().as_ref();
     let store = app.state::<Store>();
     match id {
-        QUIT => app.exit(0),
+        QUIT => quit(app),
+        SHOW_LOG => show_log(app),
         UPDATE => {
             if update::pending(app).is_some() {
                 update::install_soon(app);

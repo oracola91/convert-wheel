@@ -40,27 +40,46 @@ impl Settings {
 pub struct Store {
     path: PathBuf,
     current: Mutex<Settings>,
+    /// The file exists but couldn't be read: never save over it.
+    locked: bool,
 }
 
 impl Store {
-    /// Reads the settings file. A missing file gives the defaults. A file that can't
-    /// be read as settings is kept aside as settings.json.bad, so the next save
-    /// doesn't silently destroy it, and the problem is logged.
-    pub fn load(path: PathBuf) -> Self {
-        let current = match fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-                let bad = path.with_extension("json.bad");
-                let _ = fs::rename(&path, &bad);
-                crate::log::line(&format!("settings unreadable ({e}), kept as settings.json.bad; using defaults"));
-                Settings::default()
-            }),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Settings::default(),
+    /// Reads the settings file. A missing file gives the defaults. Otherwise, when the
+    /// file can't be used, the defaults apply and the second value says why, for a
+    /// notification: a file that isn't valid settings is kept aside as
+    /// settings.json.bad; a file that can't be read at all is left alone and never
+    /// saved over.
+    pub fn load(path: PathBuf) -> (Self, Option<String>) {
+        let mut locked = false;
+        let (current, problem) = match fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(settings) => (settings, None),
+                Err(e) => {
+                    let bad = path.with_extension("json.bad");
+                    let problem = match fs::rename(&path, &bad) {
+                        Ok(()) => format!("Your settings were reset: the file was damaged ({e}). It is kept as settings.json.bad."),
+                        Err(r) => {
+                            locked = true;
+                            format!("Your settings were reset: the file was damaged ({e}) and couldn't be set aside ({r}), so it won't be saved over.")
+                        }
+                    };
+                    (Settings::default(), Some(problem))
+                }
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (Settings::default(), None),
             Err(e) => {
-                crate::log::line(&format!("settings can't be read ({e}); using defaults"));
-                Settings::default()
+                locked = true;
+                (
+                    Settings::default(),
+                    Some(format!("Your settings couldn't be read ({e}); defaults are in use and the file won't be saved over.")),
+                )
             }
         };
-        Self { path, current: Mutex::new(current) }
+        if let Some(problem) = &problem {
+            crate::log::line(problem);
+        }
+        (Self { path, current: Mutex::new(current), locked }, problem)
     }
 
     pub fn get(&self) -> Settings {
@@ -70,6 +89,9 @@ impl Store {
     /// Changes the settings and saves them straight away. If saving fails, nothing
     /// changes, so what the menu shows always matches what is on disk.
     pub fn update(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
+        if self.locked {
+            return Err("the settings file couldn't be read, so it isn't saved over".into());
+        }
         let mut current = lock(&self.current);
         let mut next = current.clone();
         change(&mut next);
@@ -98,8 +120,9 @@ mod tests {
     fn settings_survive_a_restart_and_bad_files_are_kept_aside() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        let store = Store::load(path.clone());
+        let (store, problem) = Store::load(path.clone());
         assert_eq!(store.get(), Settings::default());
+        assert!(problem.is_none());
 
         store
             .update(|s| {
@@ -107,13 +130,15 @@ mod tests {
                 s.hidden.insert(key(Kind::Image, "avif"));
             })
             .unwrap();
-        let again = Store::load(path.clone()).get();
+        let again = Store::load(path.clone()).0.get();
         assert_eq!(again.save_to, SaveTo::Downloads);
         assert!(!again.shows(Kind::Image, "avif"));
         assert!(again.shows(Kind::Image, "png"));
 
         fs::write(&path, "not json").unwrap();
-        assert_eq!(Store::load(path.clone()).get(), Settings::default());
+        let (store, problem) = Store::load(path.clone());
+        assert_eq!(store.get(), Settings::default());
+        assert!(problem.unwrap().contains("settings.json.bad"));
         assert!(path.with_extension("json.bad").exists());
     }
 
@@ -123,7 +148,7 @@ mod tests {
         // A folder where the settings file should be: the save must fail.
         let path = dir.path().join("settings.json");
         fs::create_dir(&path).unwrap();
-        let store = Store { path, current: Mutex::new(Settings::default()) };
+        let store = Store { path, current: Mutex::new(Settings::default()), locked: false };
         assert!(store.update(|s| s.save_to = SaveTo::Downloads).is_err());
         assert_eq!(store.get().save_to, SaveTo::NextToOriginal);
     }
