@@ -32,12 +32,23 @@ const VIDEO: Duration = Duration::from_secs(3600);
 /// being followed to other files or the network.
 const FFMPEG_FORMATS: &str = "mov,mp4,m4a,matroska,webm,avi,mp3,wav,flac,aiff,ogg,aac";
 
-/// Pictures of a PDF's pages: at most this many pages, so a huge PDF can't fill the
-/// disk; print resolution; and a size cap, so a page that claims to be metres wide
-/// can't need gigabytes of memory.
+/// Pictures of a PDF's pages: at most this many pages; print resolution; and a size
+/// cap, so a page that claims to be metres wide can't need gigabytes of memory.
 const MAX_PAGES: usize = 100;
 const PAGE_DPI: &str = "150";
-const PAGE_MAX_PIXELS: &str = "6000";
+const PAGE_MAX_PIXELS: &str = "4000";
+/// Text is small, so many more pages are read for it.
+const MAX_TEXT_PAGES: usize = 2000;
+/// mutool works through a PDF this many pages at a time, and after each batch the
+/// pictures or text so far must fit these budgets, so a PDF built to fill the disk is
+/// stopped early instead of after the fact.
+const PAGE_BATCH: usize = 10;
+const TEXT_BATCH: usize = 200;
+const PAGES_BUDGET: u64 = 1024 * 1024 * 1024;
+const TEXT_BUDGET: u64 = 50 * 1024 * 1024;
+/// Everything a PDF needs (every mutool batch and, for JPG, every page through
+/// ImageMagick) together.
+const PDF_TOTAL: Duration = Duration::from_secs(600);
 
 /// What a converter produced in the work folder.
 enum Output {
@@ -402,48 +413,58 @@ fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
 /// file; the PDF's layout, pictures and tables aren't kept. (LibreOffice can open a PDF
 /// too, but makes every line a separate floating text box.)
 fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, String> {
-    let mutool = tool("mutool")?;
+    let mutool = Mutool { path: tool("mutool")?, src, deadline: Instant::now() + PDF_TOTAL };
+    let count = mutool.page_count(work.path())?;
+    if count == 0 {
+        return Err("this PDF has no pages".into());
+    }
     match target {
         "png" | "jpg" => {
             let dir = work.path().join("pages");
             fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
-            let mut cmd = Command::new(&mutool);
-            // Run inside the pages folder, so the "%d" in the output name is the only
-            // "%" mutool sees, whatever the work folder's path holds.
-            cmd.current_dir(&dir)
-                .args(["draw", "-q", "-r", PAGE_DPI, "-w", PAGE_MAX_PIXELS, "-h", PAGE_MAX_PIXELS, "-o", "%d.png"])
-                .arg(src)
-                .arg(format!("1-{MAX_PAGES}"));
-            run(cmd, OFFICE).map_err(|e| locked_or(e, &mutool, src, work))?;
-            let mut files: Vec<PathBuf> = (1..=MAX_PAGES)
-                .map(|n| dir.join(format!("{n}.png")))
-                .take_while(|p| p.is_file())
-                .collect();
-            if files.is_empty() {
-                return Err("this PDF has no pages".into());
+            let last = count.min(MAX_PAGES);
+            for first in (1..=last).step_by(PAGE_BATCH) {
+                let pages = format!("{first}-{}", (first + PAGE_BATCH - 1).min(last));
+                // Inside the pages folder, so the "%d" in the output name is the only
+                // "%" mutool sees, whatever the work folder's path holds.
+                mutool.run(&dir, &["draw", "-q", "-r", PAGE_DPI, "-w", PAGE_MAX_PIXELS, "-h", PAGE_MAX_PIXELS, "-o", "%d.png"], &pages)?;
+                if folder_size(&dir)? > PAGES_BUDGET {
+                    return Err("this PDF's pages are too large to draw: the pictures would take more than 1 GB".into());
+                }
+            }
+            let mut files: Vec<PathBuf> = (1..=last).map(|n| dir.join(format!("{n}.png"))).collect();
+            if let Some(missing) = files.iter().position(|p| !p.is_file()) {
+                return Err(format!("MuPDF didn't draw page {} of this PDF", missing + 1));
             }
             if target == "jpg" {
-                files = files
-                    .iter()
-                    .map(|png| {
-                        let jpg = png.with_extension("jpg");
-                        image(png, "jpg", &jpg).map(|()| jpg)
-                    })
-                    .collect::<Result<_, _>>()?;
+                for png in &mut files {
+                    mutool.time_left()?;
+                    let jpg = png.with_extension("jpg");
+                    image(png, "jpg", &jpg)?;
+                    *png = jpg;
+                }
             }
             if let [one] = files.as_slice() {
                 fs::rename(one, out).map_err(|e| format!("work folder: {e}"))?;
                 return Ok(Output::File);
             }
-            let cut = files.len() == MAX_PAGES && page_count(&mutool, src, work).is_some_and(|n| n > MAX_PAGES);
-            Ok(Output::Pages { files, cut })
+            Ok(Output::Pages { files, cut: count > MAX_PAGES })
         }
         "txt" | "docx" => {
-            let raw = work.path().join("text.txt");
-            let mut cmd = Command::new(&mutool);
-            cmd.args(["draw", "-q", "-F", "txt", "-o"]).arg(&raw).arg(src);
-            run(cmd, OFFICE).map_err(|e| locked_or(e, &mutool, src, work))?;
-            let bytes = fs::read(&raw).map_err(|e| format!("work folder: {e}"))?;
+            if count > MAX_TEXT_PAGES {
+                return Err(format!("this PDF has {count} pages: the text can be taken out of PDFs up to {MAX_TEXT_PAGES} pages"));
+            }
+            let mut bytes = Vec::new();
+            for first in (1..=count).step_by(TEXT_BATCH) {
+                let pages = format!("{first}-{}", (first + TEXT_BATCH - 1).min(count));
+                mutool.run(work.path(), &["draw", "-q", "-F", "txt", "-o", "text.txt"], &pages)?;
+                let part = work.path().join("text.txt");
+                let size = fs::metadata(&part).map_err(|e| format!("work folder: {e}"))?.len();
+                if bytes.len() as u64 + size > TEXT_BUDGET {
+                    return Err("this PDF holds more than 50 MB of text, too much to take out".into());
+                }
+                bytes.extend(fs::read(&part).map_err(|e| format!("work folder: {e}"))?);
+            }
             let text = paragraphs(&String::from_utf8_lossy(&bytes));
             if text.is_empty() {
                 return Err("this PDF has no text to take out (its pages may be scans)".into());
@@ -461,34 +482,67 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
     }
 }
 
-/// How many pages the PDF says it has, if mutool can tell.
-fn page_count(mutool: &Path, src: &Path, work: &TempDir) -> Option<usize> {
-    let file = work.path().join("pages.txt");
-    let mut cmd = Command::new(mutool);
-    cmd.arg("show").arg("-o").arg(&file).arg(src).arg("trailer/Root/Pages/Count");
-    run(cmd, QUICK).ok()?;
-    fs::read_to_string(&file).ok()?.trim().parse().ok()
+/// mutool for one PDF, within the time all of that PDF's work may take.
+struct Mutool<'a> {
+    path: PathBuf,
+    src: &'a Path,
+    deadline: Instant,
 }
 
-/// mutool's last line on a failure is only "cannot draw ...". If the PDF needs a
-/// password to open, say that instead.
-fn locked_or(error: String, mutool: &Path, src: &Path, work: &TempDir) -> String {
-    let file = work.path().join("encrypt.txt");
-    let mut cmd = Command::new(mutool);
-    cmd.arg("show").arg("-o").arg(&file).arg(src).arg("trailer/Encrypt");
-    let encrypted = run(cmd, QUICK).is_ok()
-        && fs::read_to_string(&file).is_ok_and(|t| !t.trim().is_empty() && t.trim() != "null");
-    if encrypted {
-        "this PDF is password-protected: open it, save a copy without the password, and convert that".into()
-    } else {
-        error
+impl Mutool<'_> {
+    /// The time left for this PDF, or an error once it is used up.
+    fn time_left(&self) -> Result<Duration, String> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(format!("this PDF took longer than {} to convert and was stopped", span(PDF_TOTAL)));
+        }
+        Ok(left)
+    }
+
+    /// Runs `mutool <args> <the PDF> <pages>` in `dir` (output names are relative to it).
+    fn run(&self, dir: &Path, args: &[&str], pages: &str) -> Result<(), String> {
+        let mut cmd = Command::new(&self.path);
+        cmd.current_dir(dir).args(args).arg(self.src).arg(pages);
+        let limit = self.time_left()?.min(OFFICE);
+        // mutool's last line on a failure is only "cannot draw ...": say why when the
+        // reason is a known one.
+        run_tool(cmd, limit).map_err(|f| {
+            if f.output.contains("cannot authenticate password") {
+                "this PDF is password-protected: open it, save a copy without the password, and convert that".into()
+            } else {
+                f.message
+            }
+        })
+    }
+
+    /// The number of pages, as MuPDF reads the PDF.
+    fn page_count(&self, work: &Path) -> Result<usize, String> {
+        self.run(work, &["show", "-o", "count.txt"], "trailer/Root/Pages/Count")?;
+        let text = fs::read_to_string(work.join("count.txt")).unwrap_or_default();
+        parse_count(&text).ok_or_else(|| "MuPDF couldn't tell how many pages this PDF has".to_string())
     }
 }
 
+/// The page count from `mutool show`: the number itself, or, when the PDF keeps it in
+/// an object of its own, the number between "6 0 obj" and "endobj".
+fn parse_count(text: &str) -> Option<usize> {
+    text.lines().map(str::trim).find(|l| !l.is_empty() && !l.ends_with("obj"))?.parse().ok()
+}
+
+/// The total size of the files in a folder.
+fn folder_size(dir: &Path) -> Result<u64, String> {
+    let mut total = 0;
+    for entry in fs::read_dir(dir).map_err(|e| format!("work folder: {e}"))? {
+        total += entry.and_then(|e| e.metadata()).map_err(|e| format!("work folder: {e}"))?.len();
+    }
+    Ok(total)
+}
+
 /// Paragraphs from mutool's text: they are separated by empty lines (and pages by a
-/// form feed), and the lines inside one are joined back up. A line that ends in a
-/// hyphen joins the next without a space, so nothing is lost. Control characters,
-/// which Word files can't hold, are left out.
+/// form feed), and the lines inside one are joined back up. A word broken with a
+/// hyphen at a line end ("conver-" / "sion") joins the next line without a space and
+/// keeps the hyphen, so nothing is lost; a dash after a space or a digit ("2020 -")
+/// keeps its space. Control characters, which Word files can't hold, are left out.
 fn paragraphs(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -501,7 +555,11 @@ fn paragraphs(text: &str) -> Vec<String> {
             }
             continue;
         }
-        if !current.is_empty() && !current.ends_with('-') {
+        let broken_word = current
+            .strip_suffix('-')
+            .and_then(|before| before.chars().last())
+            .is_some_and(char::is_alphabetic);
+        if !current.is_empty() && !broken_word {
             current.push(' ');
         }
         current.push_str(line);
@@ -531,10 +589,28 @@ fn read_head(path: &Path) -> Result<Vec<u8>, String> {
     Ok(head)
 }
 
+/// A tool that didn't finish well: the message for the notification, and the end of
+/// its error output, for callers that look for a known cause in it.
+struct Failure {
+    message: String,
+    output: String,
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Failure { message, output: String::new() }
+    }
+}
+
 /// Runs a tool to the end or until `limit`, whichever comes first. On a timeout the
 /// tool and everything it started are stopped. Only the last line of its error
 /// output is kept, for the notification.
-fn run(mut cmd: Command, limit: Duration) -> Result<(), String> {
+fn run(cmd: Command, limit: Duration) -> Result<(), String> {
+    run_tool(cmd, limit).map_err(|f| f.message)
+}
+
+/// `run`, keeping the end of the tool's error output on a failure.
+fn run_tool(mut cmd: Command, limit: Duration) -> Result<(), Failure> {
     let name = Path::new(cmd.get_program())
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -573,7 +649,7 @@ pub fn stop_all() {
     }
 }
 
-fn wait(child: &mut Child, name: &str, limit: Duration, errors: &mut fs::File) -> Result<(), String> {
+fn wait(child: &mut Child, name: &str, limit: Duration, errors: &mut fs::File) -> Result<(), Failure> {
     let deadline = Instant::now() + limit;
     let status = loop {
         match child.try_wait() {
@@ -581,11 +657,11 @@ fn wait(child: &mut Child, name: &str, limit: Duration, errors: &mut fs::File) -
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(100)),
             Ok(None) => {
                 stop(child);
-                return Err(format!("{name} took longer than {} min and was stopped", limit.as_secs() / 60));
+                return Err(format!("{name} took longer than {} and was stopped", span(limit)).into());
             }
             Err(e) => {
                 stop(child);
-                return Err(format!("{name}: {e}"));
+                return Err(format!("{name}: {e}").into());
             }
         }
     };
@@ -598,9 +674,18 @@ fn wait(child: &mut Child, name: &str, limit: Duration, errors: &mut fs::File) -
     let mut text = String::new();
     let _ = errors.read_to_string(&mut text);
     let last = text.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim);
-    match last {
-        Some(line) => Err(format!("{name} failed: {line}")),
-        None => Err(format!("{name} failed ({status})")),
+    let message = match last {
+        Some(line) => format!("{name} failed: {line}"),
+        None => format!("{name} failed ({status})"),
+    };
+    Err(Failure { message, output: text })
+}
+
+/// "2 min", or "45 s" for less than a minute.
+fn span(limit: Duration) -> String {
+    match limit.as_secs() {
+        s if s < 60 => format!("{s} s"),
+        s => format!("{} min", s / 60),
     }
 }
 
@@ -683,13 +768,22 @@ fn place_pages(files: &[PathBuf], cut: bool, dir: &Path, stem: &str, target: &st
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
+        let mut placed = Vec::new();
         let filled = files.iter().enumerate().try_for_each(|(i, page)| {
             let dest = folder.join(format!("{stem} {:0width$}.{target}", i + 1));
             let file = OpenOptions::new().write(true).create_new(true).open(&dest)?;
-            move_into(page, file, &dest)
+            move_into(page, file, &dest)?;
+            placed.push((page, dest));
+            Ok(())
         });
         if let Err(e) = filled {
-            // Our own new folder, so nothing else is in it.
+            // Pages that were moved go back, so saving them elsewhere (Downloads) still
+            // has them. Then the folder goes: it is our own new one, nothing else is in it.
+            for (page, dest) in placed {
+                if !page.exists() {
+                    let _ = fs::rename(dest, page);
+                }
+            }
             let _ = fs::remove_dir_all(&folder);
             return Err(e);
         }
@@ -1053,8 +1147,18 @@ mod tests {
             ["Quarterly report", "The first line and the sec-ond line.", "Next page text"]
         );
         assert!(paragraphs("\n \n\u{c}\n").is_empty());
+        // A dash after a space or a digit is not a broken word.
+        assert_eq!(paragraphs("From 2020 -\n2021, and 3-\n4"), ["From 2020 - 2021, and 3- 4"]);
         let html = paragraphs_html(&["a < b & c".to_string()]);
         assert!(html.contains("<p>a &lt; b &amp; c</p>"), "{html}");
+    }
+
+    #[test]
+    fn page_counts_are_read_direct_or_from_their_own_object() {
+        assert_eq!(parse_count("4\n"), Some(4));
+        assert_eq!(parse_count("6 0 obj\n12\nendobj\n"), Some(12));
+        assert_eq!(parse_count("null\n"), None);
+        assert_eq!(parse_count(""), None);
     }
 
     #[test]
@@ -1147,6 +1251,49 @@ mod tests {
         let one = work.path().join("one.pdf");
         fs::write(&one, tiny_pdf(&["Only page"])).unwrap();
         assert_eq!(convert(&one, "png", None, work.path()).unwrap(), work.path().join("one.png"));
+
+        let empty = work.path().join("empty.pdf");
+        fs::write(&empty, tiny_pdf(&[])).unwrap();
+        let err = convert(&empty, "png", None, work.path()).unwrap_err();
+        assert!(err.contains("no pages"), "{err}");
+
+        // More pages than are drawn: the first 100, and the folder says so.
+        let many = work.path().join("long.pdf");
+        let lines: Vec<String> = (1..=101).map(|n| format!("Page {n}")).collect();
+        fs::write(&many, tiny_pdf(&lines.iter().map(String::as_str).collect::<Vec<_>>())).unwrap();
+        let folder = convert(&many, "png", None, work.path()).unwrap();
+        assert_eq!(folder, work.path().join("long (PNG, pages 1-100)"));
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 100);
+        assert!(folder.join("long 001.png").is_file() && folder.join("long 100.png").is_file());
+        let text = fs::read_to_string(convert(&many, "txt", None, work.path()).unwrap()).unwrap();
+        assert!(text.starts_with("Page 1\n\nPage 2\n") && text.ends_with("Page 101\n"), "{text}");
+
+        // A PDF that needs a password says so.
+        let locked = work.path().join("locked.pdf");
+        let mut clean = Command::new(tool("mutool").unwrap());
+        clean.args(["clean", "-E", "aes-256", "-U", "secret", "-O", "owner"]).arg(&src).arg(&locked);
+        run(clean, QUICK).unwrap();
+        let err = convert(&locked, "txt", None, work.path()).unwrap_err();
+        assert!(err.contains("password-protected"), "{err}");
+    }
+
+    /// Needs MuPDF and a pandoc that works in its sandbox. Where they aren't installed
+    /// this passes without checking anything, unless REQUIRE_PANDOC is set.
+    #[test]
+    fn pdf_text_becomes_a_word_file() {
+        let ready = tool("mutool").is_ok() && tool("pandoc").is_ok_and(|p| check_pandoc_version(&p).is_ok());
+        if !ready {
+            let required = std::env::var_os("REQUIRE_PANDOC").is_some_and(|v| !v.is_empty());
+            assert!(!required, "mutool and pandoc should be installed here");
+            eprintln!("mutool or pandoc isn't installed: PDF to Word not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("letter.pdf");
+        fs::write(&src, tiny_pdf(&["Dear reader", "Kind regards"])).unwrap();
+        let docx = convert(&src, "docx", None, work.path()).unwrap();
+        assert_eq!(docx, work.path().join("letter.docx"));
+        assert!(fs::read(&docx).unwrap().starts_with(b"PK"));
     }
 
     #[test]

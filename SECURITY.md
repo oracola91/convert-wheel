@@ -8,7 +8,7 @@ Please report security problems privately, not in a public issue: on GitHub, ope
 
 Anything that lets a file, a web page, an update or another program make Convert Wheel do something the user didn't ask for: run code, read or send files, overwrite or delete them, or install an update that wasn't signed with the project's key.
 
-Problems in the converters it runs (ffmpeg, ImageMagick, pandoc, LibreOffice) belong to those projects; tell us too if Convert Wheel makes one worse.
+Problems in the converters it runs (ffmpeg, ImageMagick, pandoc, LibreOffice, MuPDF) belong to those projects; tell us too if Convert Wheel makes one worse.
 
 ## Supported versions
 

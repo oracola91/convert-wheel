@@ -1,8 +1,10 @@
 # Runs scripts/install-linux.sh on clean Ubuntu 22.04 and 24.04 machines whenever the
-# script changes. It installs the newest release; a GNOME settings store stands in for
-# the desktop, so the keyboard shortcut is checked too, next to a shortcut that was
-# there before. The script runs twice, as people will, and the installed app then
-# converts an image and documents through each tool from the command line.
+# script changes, and once a week, so a release, a package or a download that stops
+# working shows up. It installs the newest release (checking its signature); a GNOME
+# settings store stands in for the desktop, so the keyboard shortcut is checked too,
+# next to a shortcut that was there before. The script runs again with the installed
+# version named, as people will run it twice, and the installed app then converts
+# through each tool from the command line (PDFs once the release has PDF input).
 name: Linux setup script
 
 on:
@@ -10,6 +12,8 @@ on:
     paths:
       - scripts/install-linux.sh
       - .github/workflows/install-test.yml
+  schedule:
+    - cron: "17 5 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -23,7 +27,7 @@ jobs:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,11 +49,13 @@ jobs:
           theirs=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/
           gsettings set $keys custom-keybindings "['$theirs']"
           sh scripts/install-linux.sh
-          sh scripts/install-linux.sh
+          # A key the user picked must survive a second run.
+          gsettings set $keys.custom-keybinding:$mine binding '<Super>w'
+          sh scripts/install-linux.sh "$(dpkg-query -W -f='${Version}' convert-wheel)"
           gsettings get $keys custom-keybindings
           [ "$(gsettings get $keys custom-keybindings)" = "['$theirs', '$mine']" ]
-          [ "$(gsettings get $keys.custom-keybinding:$mine command)" = "'convert-wheel --show'" ]
-          [ "$(gsettings get $keys.custom-keybinding:$mine binding)" = "'<Shift><Super>c'" ]
+          [ "$(gsettings get $keys.custom-keybinding:$mine command)" = "'/usr/bin/convert-wheel --show'" ]
+          [ "$(gsettings get $keys.custom-keybinding:$mine binding)" = "'<Super>w'" ]
           grep -qx 'Exec="/usr/bin/convert-wheel"' "$HOME/.config/autostart/convert-wheel.desktop"
           pandoc --version | head -n 1
           command -v mutool
@@ -58,6 +64,7 @@ jobs:
 
       - name: The installed app converts
         run: |
+          set -eu
           cd "$RUNNER_TEMP"
           convert -size 64x48 xc:orange in.png
           printf '# Title\n\nSome *text*.\n' > notes.md
@@ -67,4 +74,15 @@ jobs:
           convert-wheel --convert pdf "$PWD/notes.docx"
           file in.jpg notes.docx notes.html notes.pdf
           file in.jpg | grep -q JPEG
-          file notes.pdf | grep -q PDF
+          head -c 2 notes.docx | grep -q PK
+          grep -q '<h1' notes.html
+          head -c 5 notes.pdf | grep -q '%PDF-'
+          version=$(dpkg-query -W -f='${Version}' convert-wheel)
+          if dpkg --compare-versions "$version" ge 0.2.0; then
+            convert-wheel --convert png "$PWD/notes.pdf"
+            convert-wheel --convert txt "$PWD/notes.pdf"
+            file notes.png | grep -q PNG
+            grep -q 'Some text' notes.txt
+          else
+            echo "Convert Wheel $version has no PDF input yet: PDF conversion not tested"
+          fi
