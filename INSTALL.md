@@ -14,14 +14,14 @@ Every version is on the repo's [Releases page](https://github.com/oracola91/conv
 
 None of the files is code-signed yet, so each system warns once on first launch. The steps below say how to get past that.
 
-Convert Wheel does the converting with four free tools that are installed separately: **ffmpeg** (audio, video), **ImageMagick** (images), **pandoc** (documents) and **LibreOffice** (PDF and office files). Install them first; the commands are in each section. A format whose tool is missing fails with a notification that names the install command.
+Convert Wheel does the converting with five free tools that are installed separately: **ffmpeg** (audio, video), **ImageMagick** (images), **pandoc** (documents), **LibreOffice** (office files, and documents to PDF) and **MuPDF** (PDFs to pictures and text). Install them first; the commands are in each section. A format whose tool is missing fails with a notification that names the install command.
 
 ## macOS
 
 **1. The converters** ([Homebrew](https://brew.sh) needed):
 
 ```sh
-brew install ffmpeg imagemagick pandoc
+brew install ffmpeg imagemagick pandoc mupdf-tools
 brew install --cask libreoffice
 ```
 
@@ -46,7 +46,7 @@ xattr -dr com.apple.quarantine "/Applications/Convert Wheel.app"
 **1. The converters**, in a terminal:
 
 ```
-winget install Gyan.FFmpeg ImageMagick.ImageMagick JohnMacFarlane.Pandoc TheDocumentFoundation.LibreOffice
+winget install Gyan.FFmpeg ImageMagick.ImageMagick JohnMacFarlane.Pandoc TheDocumentFoundation.LibreOffice ArtifexSoftware.mutool
 ```
 
 Sign out and back in afterwards, so apps started from the Start menu see the new tools.
@@ -83,7 +83,7 @@ The steps it takes, by hand:
 **1. The converters** (Ubuntu and Debian):
 
 ```sh
-sudo apt install ffmpeg imagemagick libreoffice
+sudo apt install ffmpeg imagemagick libreoffice mupdf-tools
 ```
 
 pandoc comes from [pandoc's own releases](https://github.com/jgm/pandoc/releases), not from Ubuntu or Debian. The app runs pandoc in its sandbox, which needs 2.15 or newer (Ubuntu 22.04 has 2.9), and Ubuntu's and Debian's builds can't write Word files there because they keep pandoc's data files outside the program:

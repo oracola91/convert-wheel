@@ -10,6 +10,7 @@ pub enum Kind {
     Doc,
     Sheet,
     Slides,
+    Pdf,
 }
 
 impl Kind {
@@ -22,6 +23,7 @@ impl Kind {
             Kind::Doc => "doc",
             Kind::Sheet => "sheet",
             Kind::Slides => "slides",
+            Kind::Pdf => "pdf",
         }
     }
 
@@ -34,6 +36,7 @@ impl Kind {
             Kind::Doc => "Documents",
             Kind::Sheet => "Spreadsheets",
             Kind::Slides => "Presentations",
+            Kind::Pdf => "PDFs",
         }
     }
 }
@@ -62,6 +65,9 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
     ),
     (Kind::Sheet, &["xlsx", "xls", "ods", "csv"], &["pdf", "xlsx", "ods", "csv"]),
     (Kind::Slides, &["pptx", "ppt", "odp"], &["pdf", "pptx", "odp"]),
+    // Pictures of the pages, or the text (as a Word file it is text only: the PDF's
+    // layout isn't kept).
+    (Kind::Pdf, &["pdf"], &["docx", "jpg", "png", "txt"]),
 ];
 
 /// Every kind with the formats it can become, in menu order.
