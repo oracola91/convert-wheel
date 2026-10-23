@@ -6,6 +6,8 @@ mod drop_view;
 mod formats;
 mod trigger;
 mod wheel;
+#[cfg(target_os = "macos")]
+mod wheel_window;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
@@ -143,9 +145,13 @@ fn main() {
             tray.build(app)?;
 
             app.manage(start_worker(app.handle().clone()));
-            app.manage(wheel::Shown::default());
+            app.manage(wheel::WheelState::default());
             #[cfg(target_os = "macos")]
-            drop_view::install(app.handle())?;
+            {
+                let mtm = objc2::MainThreadMarker::new().expect("setup runs on the main thread");
+                wheel_window::install(app.handle(), mtm);
+                drop_view::install(app.handle())?;
+            }
             trigger::start(app.handle().clone());
             Ok(())
         })

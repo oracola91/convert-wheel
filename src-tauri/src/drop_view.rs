@@ -14,20 +14,22 @@ use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSDragOperation, NSDraggingInfo, NSDraggingItem,
-    NSDraggingItemEnumerationOptions, NSPasteboardTypeFileURL, NSView, NSWindow, NSWindowOrderingMode,
-    NSWorkspace,
+    NSDraggingItemEnumerationOptions, NSHapticFeedbackManager, NSHapticFeedbackPattern,
+    NSHapticFeedbackPerformanceTime, NSHapticFeedbackPerformer, NSPasteboardTypeFileURL, NSView,
+    NSWindowOrderingMode, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSInteger, NSPoint, NSRect, NSSize, NSURL};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{trigger, wheel};
+use crate::wheel::{self, Hover, WheelState};
+use crate::{trigger, wheel_window};
 
 /// Size of the dragged icon while it is over the wheel.
 const ICON: f64 = 28.0;
 
 pub struct Ivars {
     app: AppHandle,
-    hover: Cell<Option<usize>>,
+    hover: Cell<Hover>,
 }
 
 define_class!(
@@ -51,7 +53,7 @@ define_class!(
 
         #[unsafe(method(draggingExited:))]
         fn dragging_exited(&self, _sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
-            self.set_hover(None);
+            self.set_hover(Hover::NONE);
         }
 
         #[unsafe(method(prepareForDragOperation:))]
@@ -63,18 +65,18 @@ define_class!(
         fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
             let app = &self.ivars().app;
             let format = self
-                .segment(sender)
-                .and_then(|i| app.state::<wheel::Shown>().0.lock().ok()?.get(i).copied());
+                .hover(sender)
+                .segment
+                .and_then(|i| app.state::<WheelState>().formats.lock().ok()?.get(i).copied());
             let paths = trigger::file_paths(&sender.draggingPasteboard());
-            self.set_hover(None);
-            trigger::hide_wheel(app);
             match format {
                 Some(format) if !paths.is_empty() => {
+                    trigger::hide_wheel(app, true);
                     crate::enqueue(app, paths, format.to_string());
                     true
                 }
                 _ => {
-                    eprintln!("convert-wheel: drop cancelled");
+                    trigger::hide_wheel(app, false);
                     false
                 }
             }
@@ -84,34 +86,42 @@ define_class!(
 
 impl DropView {
     fn new(mtm: MainThreadMarker, frame: NSRect, app: AppHandle) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(Ivars { app, hover: Cell::new(None) });
+        let this = Self::alloc(mtm).set_ivars(Ivars { app, hover: Cell::new(Hover::NONE) });
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
-    fn segment(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> Option<usize> {
+    fn hover(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> Hover {
         let p = self.convertPoint_fromView(sender.draggingLocation(), None);
         let size = self.bounds().size;
-        let n = self.ivars().app.state::<wheel::Shown>().0.lock().ok()?.len();
-        wheel::segment_at(p.x - size.width / 2.0, p.y - size.height / 2.0, n)
+        let n = self.ivars().app.state::<WheelState>().formats.lock().map(|f| f.len()).unwrap_or(0);
+        wheel::hover_at(p.x - size.width / 2.0, p.y - size.height / 2.0, n)
     }
 
     /// Lights up the segment under the cursor and accepts the drop only there. Anywhere
     /// else (the middle, the corners) the drop is refused, so macOS slides the file back.
     fn track(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
-        let segment = self.segment(sender);
-        self.set_hover(segment);
-        if segment.is_some() {
+        let hover = self.hover(sender);
+        self.set_hover(hover);
+        if hover.segment.is_some() {
             NSDragOperation::Copy
         } else {
             NSDragOperation::None
         }
     }
 
-    /// Tells the page which segment to light up, only when it changes.
-    fn set_hover(&self, segment: Option<usize>) {
+    /// Tells the page what to light up, only when it changes. Moving onto a new format
+    /// also gives a light tick on a Force Touch trackpad, at the same moment.
+    fn set_hover(&self, hover: Hover) {
         let ivars = self.ivars();
-        if ivars.hover.replace(segment) != segment {
-            let _ = ivars.app.emit("wheel-hover", segment);
+        if ivars.hover.replace(hover) == hover {
+            return;
+        }
+        let _ = ivars.app.emit("wheel-hover", hover);
+        if hover.segment.is_some() {
+            NSHapticFeedbackManager::defaultPerformer().performFeedbackPattern_performanceTime(
+                NSHapticFeedbackPattern::Alignment,
+                NSHapticFeedbackPerformanceTime::Now,
+            );
         }
     }
 
@@ -157,10 +167,9 @@ impl DropView {
 /// Puts the drop view over the wheel window's web page. Call on the main thread.
 pub fn install(app: &AppHandle) -> tauri::Result<()> {
     let mtm = MainThreadMarker::new().expect("the drop view is installed on the main thread");
-    let Some(win) = app.get_webview_window("wheel") else {
+    let Some(ns_window) = wheel_window::ns_window(app) else {
         return Ok(());
     };
-    let ns_window: &NSWindow = unsafe { &*win.ns_window()?.cast() };
     let Some(content) = ns_window.contentView() else {
         return Ok(());
     };

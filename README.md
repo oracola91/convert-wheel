@@ -10,7 +10,7 @@ This is our own build, written from scratch. The idea comes from what the paid T
 |---|---|
 | 1. Proof: Shift+drag shows the wheel, a drop hands over the file path | Done, tested by hand |
 | 2. Converter core (ImageMagick, ffmpeg, pandoc, LibreOffice) | Done. All 49 format pairs pass from the command line; Word to PDF tested by hand |
-| 3. Finished wheel | Not started |
+| 3. Finished wheel: glass, motion, hub icon, haptics, screen edges | Built, waiting on a hands-on test |
 | 4. Menu bar app: start at login, settings | Quit menu only |
 | 5. Testing with real files | Not started |
 | 6. Install as an app | Not started |
@@ -64,7 +64,7 @@ The same converter runs from the command line. It prints the path of each new fi
 
 1. Start it from Terminal as above.
 2. Drag a file in Finder and hold Shift while dragging. The wheel appears under the cursor.
-3. Over the wheel, the dragged file shrinks to a small icon so its name doesn't cover the wheel. Move over the segments. The one under the cursor turns orange.
+3. Over the wheel, the dragged file shrinks to a small icon so its name doesn't cover the wheel. Move over the segments. The one under the cursor turns orange, moves out toward the cursor, and the middle says what it will become ("To PDF"). On a Force Touch trackpad each new segment gives a light tick. Over the middle it says "Cancel".
 4. Drop on a segment. The new file appears next to the original and a notification confirms it.
 5. Drop in the middle. The file slides back and nothing happens. Outside the wheel the drop works as usual in macOS: it slides back, or Finder moves the file if you let go over a folder.
 
@@ -88,11 +88,12 @@ Word's default font since 2023, Aptos, ships inside Word only, and its licence l
 ## How it works
 
 - **Trigger** (`src-tauri/src/trigger.rs`): every 30 ms it reads the drag pasteboard's change count, the mouse buttons and the Shift key. These are shared by the window server, so no permission prompt is needed.
+- **Wheel window** (`src-tauri/src/wheel_window.rs`): the native parts. Frosted glass behind the ring (the system material, so it follows light/dark mode and Reduce Transparency), the dragged file's icon in the middle, placement at the cursor kept inside the screen, and the fade in and out.
 - **Drop target** (`src-tauri/src/drop_view.rs`): a transparent native view on top of the wheel takes the drop. It shrinks the dragged file to a small icon, tells the page which segment to light up, and queues the conversion.
 - **Formats** (`src-tauri/src/formats.rs`): what each kind of file can become.
 - **Converter** (`src-tauri/src/convert.rs`): picks the tool and its settings, then places the result safely.
 - **Queue** (`src-tauri/src/main.rs`): one worker converts drops in order, then posts the notification.
-- **Wheel** (`src/`): plain HTML, CSS and JavaScript in a transparent window. No frontend framework and no npm runtime packages.
+- **Wheel** (`src/`): plain HTML, CSS and JavaScript in a transparent window. No frontend framework and no npm runtime packages. It opens and closes along the same path with no bounce, and follows Reduce Motion, Increase Contrast and dark mode.
 
 ## Layout
 
@@ -102,6 +103,7 @@ src-tauri/           Rust app
   src/main.rs        app setup, menu bar icon, drop queue, notifications, --convert
   src/trigger.rs     Shift+drag detection (macOS)
   src/drop_view.rs   the drop target over the wheel (macOS)
+  src/wheel_window.rs  glass, hub icon, placement, fades (macOS)
   src/wheel.rs       wheel geometry: which segment is under a point
   src/formats.rs     formats offered per file type
   src/convert.rs     the conversions
