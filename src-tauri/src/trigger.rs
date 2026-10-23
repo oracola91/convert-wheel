@@ -73,7 +73,8 @@ pub fn start(_app: AppHandle) {}
 
 #[cfg(target_os = "macos")]
 fn show_wheel(app: &AppHandle, paths: Vec<String>) {
-    let formats = formats::formats_for(&paths);
+    let settings = app.state::<crate::settings::Store>().get();
+    let formats = formats::formats_for(&paths, |kind, f| settings.shows(kind, f));
     let state = app.state::<WheelState>();
     if let Ok(mut shown) = state.formats.lock() {
         *shown = formats.clone();

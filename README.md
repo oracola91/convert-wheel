@@ -10,10 +10,10 @@ This is our own build, written from scratch. The idea comes from what the paid T
 |---|---|
 | 1. Proof: Shift+drag shows the wheel, a drop hands over the file path | Done, tested by hand |
 | 2. Converter core (ImageMagick, ffmpeg, pandoc, LibreOffice) | Done. All 49 format pairs pass from the command line; Word to PDF tested by hand |
-| 3. Finished wheel: glass, motion, hub icon, haptics, screen edges | Built, waiting on a hands-on test |
-| 4. Menu bar app: start at login, settings | Quit menu only |
+| 3. Finished wheel: glass, motion, hub icon, haptics, screen edges | Done, tested by hand |
+| 4. Menu bar app: Open at Login, where files go, which formats show | Built, waiting on a hands-on test |
 | 5. Testing with real files | Not started |
-| 6. Install as an app | Not started |
+| 6. Install as an app | Done: `scripts/install-macos.sh` |
 
 Windows and Linux come after macOS. The trigger in `src-tauri/src/trigger.rs` is the only part that differs per OS.
 
@@ -32,7 +32,28 @@ The wheel only shows formats that every dragged file can become. The new file la
 
 A notification says when a drop is done or why it failed. Video also gets a "Converting…" notification first, because it can take a while.
 
-## Run it
+## Install
+
+```sh
+./scripts/install-macos.sh
+```
+
+It builds the app, quits a running copy, puts `Convert Wheel.app` in `/Applications` and starts it. Run it again after pulling changes to update.
+
+The app is signed ad hoc (no Apple developer account), so it runs on the Mac that built it. On another Mac, Gatekeeper blocks it until it's signed and notarized with a company Developer ID.
+
+## The menu
+
+The ring icon in the menu bar opens:
+
+- **Open at Login**: adds or removes Convert Wheel in System Settings > General > Login Items. Only works for the installed app.
+- **Save Converted Files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
+- **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
+- **Quit Convert Wheel**.
+
+Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json`.
+
+## Run it from the source
 
 Needs Rust, Node.js and the Xcode Command Line Tools, plus the converters:
 
@@ -104,6 +125,11 @@ src-tauri/           Rust app
   src/trigger.rs     Shift+drag detection (macOS)
   src/drop_view.rs   the drop target over the wheel (macOS)
   src/wheel_window.rs  glass, hub icon, placement, fades (macOS)
+  src/menu.rs        menu bar icon and menu
+  src/settings.rs    saved choices (where files go, hidden formats)
+  src/login.rs       Open at Login through the system's login items
+  Info.plist         marks it a menu bar app (no Dock icon)
+scripts/install-macos.sh   build and install in /Applications
   src/wheel.rs       wheel geometry: which segment is under a point
   src/formats.rs     formats offered per file type
   src/convert.rs     the conversions

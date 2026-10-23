@@ -4,6 +4,9 @@ mod convert;
 #[cfg(target_os = "macos")]
 mod drop_view;
 mod formats;
+mod login;
+mod menu;
+mod settings;
 mod trigger;
 mod wheel;
 #[cfg(target_os = "macos")]
@@ -13,8 +16,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::NotificationExt;
 
@@ -40,13 +41,20 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
             if slow {
                 notify(&app, &format!("Converting to {label}…"), "Video can take a while.");
             }
+            let save_in = match app.state::<settings::Store>().get().save_to {
+                settings::SaveTo::NextToOriginal => None,
+                settings::SaveTo::Downloads => Some(convert::downloads()),
+            };
             let mut done: Vec<PathBuf> = Vec::new();
             let mut failed: Vec<(String, String)> = Vec::new();
+            // Results that ended up in Downloads although they were meant to go next to the original.
+            let mut moved = false;
             for p in &job.paths {
                 let src = Path::new(p);
-                match convert::convert(src, &job.format) {
+                match convert::convert(src, &job.format, save_in.as_deref()) {
                     Ok(out) => {
                         eprintln!("convert-wheel: {} -> {}", src.display(), out.display());
+                        moved |= save_in.is_none() && out.parent() != src.parent();
                         done.push(out);
                     }
                     Err(e) => {
@@ -55,7 +63,10 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
                     }
                 }
             }
-            let (title, body) = summary(&label, &done, &failed);
+            let (title, mut body) = summary(&label, &done, &failed);
+            if moved {
+                body.push_str(" (saved in Downloads: the original's folder is read-only)");
+            }
             notify(&app, &title, &body);
         }
     });
@@ -88,7 +99,7 @@ fn summary(label: &str, done: &[PathBuf], failed: &[(String, String)]) -> (Strin
     }
 }
 
-fn notify(app: &AppHandle, title: &str, body: &str) {
+pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
@@ -104,7 +115,7 @@ fn cli(args: &[String]) -> i32 {
     }
     let mut code = 0;
     for f in files {
-        match convert::convert(Path::new(f), format) {
+        match convert::convert(Path::new(f), format, None) {
             Ok(out) => println!("{}", out.display()),
             Err(e) => {
                 eprintln!("{f}: {e}");
@@ -128,22 +139,8 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let quit = MenuItem::with_id(app, "quit", "Quit Convert Wheel", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
-            let mut tray = TrayIconBuilder::new()
-                .tooltip("Convert Wheel: hold Shift while dragging a file")
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| {
-                    if event.id() == "quit" {
-                        app.exit(0);
-                    }
-                });
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
-            }
-            tray.build(app)?;
-
+            app.manage(settings::Store::load(app.path().app_config_dir()?.join("settings.json")));
+            menu::build(app)?;
             app.manage(start_worker(app.handle().clone()));
             app.manage(wheel::WheelState::default());
             #[cfg(target_os = "macos")]
