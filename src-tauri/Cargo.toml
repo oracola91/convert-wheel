@@ -11,7 +11,9 @@ tauri-build = { version = "=2.7.3", features = [] }
 [dependencies]
 tauri = { version = "=2.12.4", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-notification = "=2.7.0"
-tauri-plugin-updater = "=2.14.0"
+# Without the "zip" feature: our updates are the installers themselves, never zip
+# archives, and the zip crate it pulls in has open advisories (RUSTSEC-2026-0367..0369).
+tauri-plugin-updater = { version = "=2.14.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-single-instance = "=2.5.4"
 tempfile = "3.27"
 serde = { version = "1", features = ["derive"] }
