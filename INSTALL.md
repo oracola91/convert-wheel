@@ -76,7 +76,7 @@ Sign out and back in afterwards, so apps started from the Start menu see the new
 curl -fsSL https://raw.githubusercontent.com/oracola91/convert-wheel/main/scripts/install-linux.sh | sh
 ```
 
-It asks for your password, then installs the converters (pandoc from pandoc's own releases, see below), installs the newest release after checking it against the release's checksums, turns on Open at Login, adds the keyboard shortcut Super+Shift+C on Ubuntu's desktop, and starts the app. Running it again is safe. To read it before it runs: `curl -fsSLO <the same address>`, open `install-linux.sh`, then `sh install-linux.sh`.
+It asks for your password, then installs the converters (pandoc from pandoc's own releases, see below) and the newest release, turns on Open at Login, adds the keyboard shortcut Super+Shift+C on GNOME, and starts the app. Before installing the release it checks the release's signature, made with the project's update key (the same check the app makes on every update), and the version in it; a file that fails is not installed. To install a given version instead of the newest, add it at the end: `... | sh -s -- 0.2.0`. Running it again is safe: it installs what's missing and turns Open at Login back on, and keeps a shortcut key you changed. To read it before it runs: `curl -fsSLO <the same address>`, open `install-linux.sh`, then `sh install-linux.sh`.
 
 The steps it takes, by hand:
 
@@ -90,6 +90,7 @@ pandoc comes from [pandoc's own releases](https://github.com/jgm/pandoc/releases
 
 ```sh
 curl -fsSLO https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-1-amd64.deb
+echo "b4217ac7c54067c442f9d4cd38bcd0c184a43f3e7053431a12263a6f92a33ba2  pandoc-3.12.1-1-amd64.deb" | sha256sum -c
 sudo apt install ./pandoc-3.12.1-1-amd64.deb
 ```
 
@@ -119,7 +120,7 @@ The menu icon needs AppIndicator support: on by default in Ubuntu, an extension 
 
 **Update:** the app updates itself (menu > Install Update). For the `.deb` this installs as root, so it asks for your password: normally in the system's own dialog; where that isn't available, in a plain box titled "Authentication Required". Enter it only right after you chose Install Update. By hand: install the newer `.deb` the same way.
 
-**Uninstall:** turn off Open at Login in the icon's menu (the package doesn't remove it), then `sudo apt remove convert-wheel` (or delete the AppImage). Settings are in `~/.config/local.convertwheel`, working files in `~/.cache/convertwheel`, the log in `~/.local/share/local.convertwheel/logs`.
+**Uninstall:** turn off Open at Login in the icon's menu (the package doesn't remove it), then `sudo apt remove convert-wheel` (or delete the AppImage). Remove the Convert Wheel shortcut in Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts, and if nothing else needs them, the converters (`sudo apt remove pandoc mupdf-tools` and so on). Settings are in `~/.config/local.convertwheel`, working files in `~/.cache/convertwheel`, the log in `~/.local/share/local.convertwheel/logs`.
 
 **Known gaps:** Ubuntu's ImageMagick 6 refuses to write PDFs (a security policy) and may lack HEIC and AVIF support.
 
