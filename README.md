@@ -66,7 +66,7 @@ The same converter runs from the command line. It prints the path of each new fi
 2. Drag a file in Finder and hold Shift while dragging. The wheel appears under the cursor.
 3. Over the wheel, the dragged file shrinks to a small icon so its name doesn't cover the wheel. Move over the segments. The one under the cursor turns orange.
 4. Drop on a segment. The new file appears next to the original and a notification confirms it.
-5. Drop in the middle. The file slides back and nothing happens. Let go anywhere else and the wheel closes.
+5. Drop in the middle. The file slides back and nothing happens. Outside the wheel the drop works as usual in macOS: it slides back, or Finder moves the file if you let go over a folder.
 
 Also worth trying: several files at once, a file with no extension, text dragged from a browser (no wheel should appear), a second screen, and LibreOffice open at the same time.
 
