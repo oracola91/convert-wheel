@@ -2,7 +2,7 @@
 # script changes. It installs the newest release; a GNOME settings store stands in for
 # the desktop, so the keyboard shortcut is checked too, next to a shortcut that was
 # there before. The script runs twice, as people will, and the installed app then
-# converts an image and two documents from the command line.
+# converts an image and documents through each tool from the command line.
 name: Linux setup script
 
 on:
@@ -62,7 +62,8 @@ jobs:
           printf '# Title\n\nSome *text*.\n' > notes.md
           convert-wheel --convert jpg "$PWD/in.png"
           convert-wheel --convert docx "$PWD/notes.md"
+          convert-wheel --convert html "$PWD/notes.md"
           convert-wheel --convert pdf "$PWD/notes.docx"
-          file in.jpg notes.docx notes.pdf
+          file in.jpg notes.docx notes.html notes.pdf
           file in.jpg | grep -q JPEG
           file notes.pdf | grep -q PDF

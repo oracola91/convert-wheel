@@ -3,8 +3,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/oracola91/convert-wheel/main/scripts/install-linux.sh | sh
 #
-# 1. the converters: ffmpeg, ImageMagick, pandoc and LibreOffice (Writer, Calc, Impress),
-#    plus a newer pandoc where the system's is too old (Ubuntu 22.04);
+# 1. the converters: ffmpeg, ImageMagick, LibreOffice (Writer, Calc, Impress) and pandoc,
+#    pandoc from its own releases unless a working one is already installed;
 # 2. the newest Convert Wheel release, checked against the release's checksums;
 # 3. Open at Login;
 # 4. on GNOME (Ubuntu's desktop), the keyboard shortcut Super+Shift+C that opens the
@@ -20,8 +20,10 @@
 set -eu
 
 REPO=oracola91/convert-wheel
-# pandoc 2.15 or newer is needed (for its sandbox); Ubuntu 22.04 ships 2.9. This one
-# comes from pandoc's own releases, pinned to its checksum.
+# The app runs pandoc with --sandbox. That needs pandoc 2.15 or newer (Ubuntu 22.04 ships
+# 2.9), built with its data files inside: Ubuntu's and Debian's own builds keep them
+# outside, and in the sandbox they can't write Word files. So pandoc comes from its own
+# releases, pinned to this checksum.
 PANDOC_VERSION=3.12.1
 PANDOC_SHA256=b4217ac7c54067c442f9d4cd38bcd0c184a43f3e7053431a12263a6f92a33ba2
 KEYS=org.gnome.settings-daemon.plugins.media-keys
@@ -45,12 +47,11 @@ matches() { # file, sums file
     [ -n "$expected" ] && [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$expected" ]
 }
 
+# Whether pandoc does what the app asks of it: write a Word file inside its sandbox.
+# That fails both for a pandoc older than 2.15 and for one built without its data files.
 pandoc_ok() {
     command -v pandoc >/dev/null || return 1
-    # Split on purpose: "3 12" becomes $1 and $2.
-    # shellcheck disable=SC2046
-    set -- $(pandoc --version | head -n 1 | sed -n 's/^pandoc[^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
-    [ $# -eq 2 ] && { [ "$1" -gt 2 ] || { [ "$1" -eq 2 ] && [ "$2" -ge 15 ]; }; }
+    printf 'check\n' | pandoc --sandbox -f markdown -t docx -o "$work/check.docx" 2>/dev/null
 }
 
 # Adds the shortcut on GNOME. Returns 1 where that isn't possible (another desktop, or
@@ -86,15 +87,15 @@ main() {
 
     step "1/5 The converters: ffmpeg, ImageMagick, pandoc, LibreOffice (asks for your password)"
     sudo apt-get update </dev/null
-    apt_install ffmpeg imagemagick pandoc libreoffice-writer libreoffice-calc libreoffice-impress
+    apt_install ffmpeg imagemagick libreoffice-writer libreoffice-calc libreoffice-impress
     if ! pandoc_ok; then
-        step "    The system's pandoc is too old: adding pandoc $PANDOC_VERSION"
+        step "    Adding pandoc $PANDOC_VERSION from pandoc's releases"
         pdeb="$work/pandoc-$PANDOC_VERSION-1-amd64.deb"
         curl -fsSL -o "$pdeb" "https://github.com/jgm/pandoc/releases/download/$PANDOC_VERSION/pandoc-$PANDOC_VERSION-1-amd64.deb"
         [ "$(sha256sum "$pdeb" | cut -d' ' -f1)" = "$PANDOC_SHA256" ] || fail "the pandoc download doesn't match its checksum."
         chmod 644 "$pdeb"
         apt_install "$pdeb"
-        pandoc_ok || fail "pandoc is still older than 2.15."
+        pandoc_ok || fail "pandoc still can't write Word files in its sandbox."
     fi
 
     step "2/5 Convert Wheel"
