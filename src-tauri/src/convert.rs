@@ -1,23 +1,41 @@
 //! Turns one file into another format with ImageMagick, ffmpeg, pandoc or LibreOffice.
 //!
-//! Each tool writes into a private work folder. The result is then moved next to the
-//! original under a free name ("report.pdf", "report 2.pdf", ...), so nothing is
-//! ever overwritten. Tools get absolute paths as separate arguments, never a shell line.
+//! Each conversion gets a private work folder. Except for audio and video (too big to
+//! copy), the file is first copied in under a neutral name, so odd characters in the
+//! name can't confuse a tool and the file can't change between the checks and the
+//! conversion. The result is then moved next to the original under a free name
+//! ("report.pdf", "report 2.pdf", ...), so nothing is ever overwritten. Tools get
+//! paths as separate arguments, never a shell line, and each has a time limit.
 
 use std::fs::{self, OpenOptions};
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use tempfile::TempDir;
 
 use crate::formats::{self, Kind};
+
+/// How long each tool may run before it is stopped. Generous: a stuck tool should not
+/// block every later conversion, but a long video must still finish.
+const QUICK: Duration = Duration::from_secs(120);
+const OFFICE: Duration = Duration::from_secs(180);
+const AUDIO: Duration = Duration::from_secs(600);
+const VIDEO: Duration = Duration::from_secs(3600);
+
+/// The only containers ffmpeg may read: the ones the wheel accepts. Anything else, a
+/// playlist or concat list disguised as a video for example, is refused instead of
+/// being followed to other files or the network.
+const FFMPEG_FORMATS: &str = "mov,mp4,m4a,matroska,webm,avi,mp3,wav,flac,aiff,ogg,aac";
 
 /// Converts `src` to `target` (a format from the wheel) and returns the new file.
 /// It goes in `save_in`, or next to the original when that is None. If the original's
 /// folder can't be written to (a mounted disk image, another app's folder), it goes to
-/// Downloads instead.
-pub fn convert(src: &Path, target: &str, save_in: Option<&Path>) -> Result<PathBuf, String> {
+/// `fallback` (Downloads) instead.
+pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
     let ext = formats::extension(src).ok_or("the file has no extension")?;
     let kind = formats::kind_of(&ext).ok_or_else(|| format!(".{ext} files are not supported"))?;
     if !formats::outputs_for(&ext).contains(&target) {
@@ -27,22 +45,39 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>) -> Result<PathB
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or("the file name is not valid text")?;
-    let work = WorkDir::new()?;
-    let out = work.path.join(format!("{stem}.{target}"));
+    // Not a folder, a device or a pipe (a pipe would block the read below forever).
+    let meta = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?;
+    if !meta.is_file() {
+        return Err("this is not a regular file".into());
+    }
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let out = work.path().join(format!("result.{target}"));
+
+    // Audio and video can be huge; ffmpeg reads them in place, locked down instead.
+    let input = if matches!(kind, Kind::Audio | Kind::Video) {
+        src.to_path_buf()
+    } else {
+        let staged = work.path().join(format!("input.{ext}"));
+        fs::copy(src, &staged).map_err(|e| format!("can't read the file: {e}"))?;
+        staged
+    };
 
     // Office files are zip archives. A broken one would otherwise come out as a PDF
     // of its raw bytes, because LibreOffice falls back to reading it as text.
     let zipped = ["docx", "xlsx", "pptx", "odt", "ods", "odp", "epub"];
-    if zipped.contains(&ext.as_str()) && !read_head(src)?.starts_with(b"PK") {
+    if zipped.contains(&ext.as_str()) && !read_head(&input)?.starts_with(b"PK") {
         return Err(format!("this is not a valid .{ext} file"));
     }
 
     match kind {
-        Kind::Image => image(src, target, &out)?,
-        Kind::Audio => audio(src, target, &out)?,
-        Kind::Video => video(src, &ext, target, &out)?,
-        Kind::Doc => document(src, &ext, target, &out, &work)?,
-        Kind::Sheet | Kind::Slides => libreoffice(src, target, &out)?,
+        Kind::Image => image(&input, target, &out)?,
+        Kind::Audio => audio(&input, target, &out)?,
+        Kind::Video => video(&input, &ext, target, &out)?,
+        Kind::Doc => document(&input, &ext, target, &out, &work)?,
+        Kind::Sheet | Kind::Slides => libreoffice(&input, target, &out)?,
     }
     if !out.is_file() {
         return Err("the converter finished but wrote no file".into());
@@ -52,7 +87,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>) -> Result<PathB
         None => src.parent().ok_or("the file has no folder")?.to_path_buf(),
     };
     let placed = match place(&out, &dir, stem, target) {
-        Err(e) if save_in.is_none() && is_no_write(&e) => place(&out, &downloads(), stem, target),
+        Err(e) if save_in.is_none() && is_no_write(&e) => place(&out, fallback, stem, target),
         other => other,
     };
     placed.map_err(|e| format!("can't save the result: {e}"))
@@ -62,6 +97,8 @@ fn is_no_write(e: &io::Error) -> bool {
     matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem)
 }
 
+/// Downloads by name, for the command line. The app asks the system instead, which
+/// also finds a Downloads folder that was moved or renamed.
 pub fn downloads() -> PathBuf {
     home().join("Downloads")
 }
@@ -119,7 +156,7 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     }
     let out_coder = if target == "jpg" { "jpeg" } else { target };
     cmd.arg(format!("{out_coder}:{}", out.display()));
-    run(cmd)
+    run(cmd, QUICK)
 }
 
 fn audio_args(target: &str) -> &'static [&'static str] {
@@ -135,19 +172,22 @@ fn audio_args(target: &str) -> &'static [&'static str] {
     }
 }
 
-fn ffmpeg(src: &Path, args: &[&str], out: &Path) -> Result<(), String> {
+fn ffmpeg(src: &Path, args: &[&str], out: &Path, limit: Duration) -> Result<(), String> {
     let mut cmd = Command::new(tool("ffmpeg")?);
-    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
-        .arg(src)
+    // Local files only, our containers only, and the input named as a file so that a
+    // name like "concat:..." can't be read as an instruction.
+    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error"])
+        .args(["-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-i"])
+        .arg(format!("file:{}", src.display()))
         .args(args)
         .arg(out);
-    run(cmd)
+    run(cmd, limit)
 }
 
 fn audio(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     let mut args = vec!["-vn", "-map_metadata", "0"];
     args.extend_from_slice(audio_args(target));
-    ffmpeg(src, &args, out)
+    ffmpeg(src, &args, out, AUDIO)
 }
 
 fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
@@ -160,12 +200,12 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
             // MP4, MOV and M4V usually hold the same streams: try a fast copy first.
             if matches!(ext, "mp4" | "mov" | "m4v") {
                 let copy = ["-map", "0:v", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart"];
-                if ffmpeg(src, &copy, out).is_ok() {
+                if ffmpeg(src, &copy, out, VIDEO).is_ok() {
                     return Ok(());
                 }
                 let _ = fs::remove_file(out);
             }
-            ffmpeg(src, H264, out)
+            ffmpeg(src, H264, out, VIDEO)
         }
         "webm" => ffmpeg(
             src,
@@ -174,6 +214,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
                 "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
             ],
             out,
+            VIDEO,
         ),
         "gif" => ffmpeg(
             src,
@@ -185,6 +226,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
                 "0",
             ],
             out,
+            VIDEO,
         ),
         "mp3" => audio(src, target, out),
         other => Err(format!("video can't become .{other}")),
@@ -193,21 +235,22 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
 
 /// Word-processing files. LibreOffice keeps the layout (PDF, Word, ODT from office
 /// files); pandoc is better at the plain formats (HTML, Markdown, text, EPUB).
-fn document(src: &Path, ext: &str, target: &str, out: &Path, work: &WorkDir) -> Result<(), String> {
+fn document(src: &Path, ext: &str, target: &str, out: &Path, work: &TempDir) -> Result<(), String> {
     let ext = formats::canonical(ext);
     let office_in = matches!(ext, "docx" | "doc" | "odt" | "rtf");
     match target {
-        "pdf" if office_in || matches!(ext, "txt" | "html") => libreoffice(src, target, out),
+        "pdf" if office_in || ext == "txt" => libreoffice(src, target, out),
         "pdf" => {
-            // Markdown and EPUB: pandoc to Word first, then LibreOffice lays it out.
-            let docx = work.path.join("intermediate.docx");
+            // Markdown, HTML and EPUB: pandoc (sandboxed, so a web page can't make it
+            // fetch anything) to Word first, then LibreOffice lays it out.
+            let docx = work.path().join("intermediate.docx");
             pandoc(src, ext, "docx", &docx)?;
             libreoffice(&docx, target, out)
         }
         "docx" | "odt" if office_in => libreoffice(src, target, out),
         _ if ext == "doc" => {
             // pandoc can't read the old .doc format: LibreOffice turns it into .docx first.
-            let docx = work.path.join("intermediate.docx");
+            let docx = work.path().join("intermediate.docx");
             libreoffice(src, "docx", &docx)?;
             pandoc(&docx, "docx", target, out)
         }
@@ -236,7 +279,7 @@ fn pandoc(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String>
         cmd.args(["--standalone", "--embed-resources"]);
     }
     cmd.arg("-o").arg(out).arg(src);
-    run(cmd)
+    run(cmd, QUICK)
 }
 
 fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
@@ -245,12 +288,15 @@ fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     let mut cmd = Command::new(soffice()?);
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     cmd.env("FONTCONFIG_FILE", font_config()?);
-    // A profile of our own, so it works while LibreOffice is also open in the normal way.
-    cmd.arg(format!("-env:UserInstallation={}", file_url(&cache_dir().join("libreoffice"))))
+    // A profile of our own, so it works while LibreOffice is also open in the normal
+    // way, and locked down: no macros, no content linked from outside the document.
+    let profile = cache_dir().join("libreoffice");
+    harden_libreoffice(&profile)?;
+    cmd.arg(format!("-env:UserInstallation={}", file_url(&profile)))
         .args(["--headless", "--norestore", "--nolockcheck", "--convert-to", target, "--outdir"])
         .arg(&outdir)
         .arg(src);
-    run(cmd)?;
+    run(cmd, OFFICE)?;
     // LibreOffice names the result after the input and can exit 0 without writing it.
     let stem = src.file_stem().ok_or("no file name")?.to_string_lossy();
     let written = outdir.join(format!("{stem}.{target}"));
@@ -269,28 +315,85 @@ fn read_head(path: &Path) -> Result<Vec<u8>, String> {
     Ok(head)
 }
 
-fn run(mut cmd: Command) -> Result<(), String> {
+/// Runs a tool to the end or until `limit`, whichever comes first. On a timeout the
+/// tool and everything it started are stopped. Only the last line of its error
+/// output is kept, for the notification.
+fn run(mut cmd: Command, limit: Duration) -> Result<(), String> {
     let name = Path::new(cmd.get_program())
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // Without this, Windows flashes a console window for every tool that runs.
+    // Error output goes to a temporary file, not a pipe: a chatty tool can't fill the
+    // pipe and stall while we wait for it.
+    let mut errors = tempfile::tempfile().map_err(|e| format!("work file: {e}"))?;
+    let errors_for_tool = errors.try_clone().map_err(|e| format!("work file: {e}"))?;
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(errors_for_tool);
+    quiet(&mut cmd);
+    // A group of its own on macOS and Linux, so a timeout can stop LibreOffice's
+    // helper processes too.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("could not start {name}: {e}"))?;
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => {
+                stop(&mut child);
+                return Err(format!("{name} took longer than {} min and was stopped", limit.as_secs() / 60));
+            }
+            Err(e) => {
+                stop(&mut child);
+                return Err(format!("{name}: {e}"));
+            }
+        }
+    };
+    if status.success() {
+        return Ok(());
+    }
+    // The end of the error output is enough: that is where tools say what went wrong.
+    let len = errors.seek(SeekFrom::End(0)).unwrap_or(0);
+    let _ = errors.seek(SeekFrom::Start(len.saturating_sub(16 * 1024)));
+    let mut text = String::new();
+    let _ = errors.read_to_string(&mut text);
+    let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no details");
+    Err(format!("{name} failed: {}", last.trim()))
+}
+
+/// Without this, Windows flashes a console window for every tool that runs.
+fn quiet(cmd: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = cmd
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("could not start {name}: {e}"))?;
-    if output.status.success() {
-        return Ok(());
+    let _ = cmd;
+}
+
+/// Stops a tool and the processes it started.
+fn stop(child: &mut Child) {
+    #[cfg(unix)]
+    unsafe {
+        // SAFETY: plain syscall; the negative id addresses the group created in run().
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let last = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no details");
-    Err(format!("{name} failed: {}", last.trim()))
+    #[cfg(windows)]
+    {
+        let mut kill = Command::new("taskkill");
+        kill.args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        quiet(&mut kill);
+        let _ = kill.status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Moves the result into `dir` without replacing anything there.
@@ -319,27 +422,6 @@ fn place(tmp: &Path, dir: &Path, stem: &str, target: &str) -> io::Result<PathBuf
         return Ok(dest);
     }
     Err(io::Error::new(io::ErrorKind::AlreadyExists, "too many files with that name already"))
-}
-
-/// A temporary folder that is removed when the conversion ends, however it ends.
-struct WorkDir {
-    path: PathBuf,
-}
-
-impl WorkDir {
-    fn new() -> Result<Self, String> {
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("convert-wheel-{}-{n}", std::process::id()));
-        fs::create_dir(&path).map_err(|e| format!("work folder: {e}"))?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for WorkDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
 }
 
 /// Finds a command-line tool. Apps opened from Finder or the Start menu don't always
@@ -389,19 +471,30 @@ fn magick() -> Result<PathBuf, String> {
 }
 
 /// `--sandbox` arrived in pandoc 2.15; older pandoc stops at the unknown option with a
-/// confusing message, so say it plainly. Ubuntu 22.04, for one, ships 2.9.
+/// confusing message, so say it plainly. Ubuntu 22.04, for one, ships 2.9. A version
+/// that can't be read is refused too: the sandbox is what makes pandoc safe here.
 fn check_pandoc_version(pandoc: &Path) -> Result<(), String> {
-    static VERSION: OnceLock<Option<(u32, u32)>> = OnceLock::new();
-    let version = *VERSION.get_or_init(|| {
-        let out = Command::new(pandoc).arg("--version").stdin(Stdio::null()).output().ok()?;
-        let first = String::from_utf8_lossy(&out.stdout).lines().next()?.to_string();
-        let mut numbers = first.split_whitespace().nth(1)?.split('.').map(|n| n.parse::<u32>().ok());
-        Some((numbers.next()??, numbers.next()??))
-    });
-    match version {
-        Some(v) if v < (2, 15) => Err(format!("pandoc {}.{} is too old: 2.15 or newer is needed", v.0, v.1)),
-        _ => Ok(()),
+    static CHECKED: OnceLock<()> = OnceLock::new();
+    if CHECKED.get().is_some() {
+        return Ok(());
     }
+    let mut cmd = Command::new(pandoc);
+    cmd.arg("--version").stdin(Stdio::null()).stderr(Stdio::null());
+    quiet(&mut cmd);
+    let out = cmd.output().map_err(|e| format!("could not start pandoc: {e}"))?;
+    let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string();
+    let version = parse_pandoc_version(&first).ok_or("can't tell which pandoc version is installed")?;
+    if version < (2, 15) {
+        return Err(format!("pandoc {}.{} is too old: 2.15 or newer is needed", version.0, version.1));
+    }
+    let _ = CHECKED.set(());
+    Ok(())
+}
+
+/// "pandoc 3.12.1" gives (3, 12).
+fn parse_pandoc_version(line: &str) -> Option<(u32, u32)> {
+    let mut numbers = line.split_whitespace().nth(1)?.split('.').map(|n| n.parse::<u32>().ok());
+    Some((numbers.next()??, numbers.next()??))
 }
 
 fn install_hint(name: &str) -> String {
@@ -466,6 +559,49 @@ fn cache_dir() -> PathBuf {
     }
 }
 
+/// LibreOffice settings for converting files from anywhere: macros never run, and
+/// pictures or other content linked from outside the document are not fetched (a web
+/// address, or on Windows a network share, which would also send the user's sign-in).
+const LIBREOFFICE_SETTINGS: &[(&str, &str, &str)] = &[
+    ("/org.openoffice.Office.Common/Security/Scripting", "BlockUntrustedRefererLinks", "true"),
+    ("/org.openoffice.Office.Common/Security/Scripting", "DisableMacrosExecution", "true"),
+    ("/org.openoffice.Office.Common/Security/Scripting", "MacroSecurityLevel", "3"),
+];
+
+/// Writes the settings above into our LibreOffice profile, once. LibreOffice keeps
+/// them when it rewrites the file.
+fn harden_libreoffice(profile: &Path) -> Result<(), String> {
+    let file = profile.join("user/registrymodifications.xcu");
+    let existing = fs::read_to_string(&file).unwrap_or_default();
+    if LIBREOFFICE_SETTINGS.iter().all(|(_, name, _)| existing.contains(&format!("\"{name}\""))) {
+        return Ok(());
+    }
+    let items: String = LIBREOFFICE_SETTINGS
+        .iter()
+        .map(|(path, name, value)| {
+            format!("<item oor:path=\"{path}\"><prop oor:name=\"{name}\" oor:op=\"fuse\"><value>{value}</value></prop></item>\n")
+        })
+        .collect();
+    let content = match existing.rfind("</oor:items>") {
+        Some(end) => format!("{}{items}{}", &existing[..end], &existing[end..]),
+        None => format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<oor:items \
+             xmlns:oor=\"http://openoffice.org/2001/registry\" \
+             xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" \
+             xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n{items}</oor:items>\n"
+        ),
+    };
+    fs::create_dir_all(file.parent().ok_or("no profile folder")?)
+        .and_then(|_| fs::write(&file, content))
+        .map_err(|e| format!("LibreOffice settings: {e}"))
+}
+
+/// Makes text safe inside an XML element.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn xml_text(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 /// Stand-ins for fonts a document asks for but this computer doesn't have. Aptos,
 /// Word's default since 2023, ships inside Word only and its licence limits it to
 /// Microsoft products, so a similar font that comes with the system stands in.
@@ -506,7 +642,7 @@ fn font_config() -> Result<PathBuf, String> {
     let mut conf = String::from("<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n");
     if cfg!(target_os = "macos") {
         conf.push_str("<dir>/System/Library/Fonts</dir>\n<dir>/Library/Fonts</dir>\n<dir>~/Library/Fonts</dir>\n");
-        conf.push_str(&format!("<cachedir>{}</cachedir>\n", dir.join("cache").display()));
+        conf.push_str(&format!("<cachedir>{}</cachedir>\n", xml_text(&dir.join("cache").display().to_string())));
     } else {
         conf.push_str("<include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>\n");
     }
@@ -554,17 +690,59 @@ mod tests {
 
     #[test]
     fn place_never_overwrites() {
-        let work = WorkDir::new().unwrap();
-        let src = work.path.join("report.docx");
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("report.docx");
         fs::write(&src, "x").unwrap();
-        fs::write(work.path.join("report.pdf"), "keep me").unwrap();
-        let tmp = work.path.join("result.tmp");
+        fs::write(work.path().join("report.pdf"), "keep me").unwrap();
+        let tmp = work.path().join("result.tmp");
         fs::write(&tmp, "new").unwrap();
 
-        let dest = place(&tmp, &work.path, "report", "pdf").unwrap();
-        assert_eq!(dest, work.path.join("report 2.pdf"));
-        assert_eq!(fs::read_to_string(work.path.join("report.pdf")).unwrap(), "keep me");
+        let dest = place(&tmp, work.path(), "report", "pdf").unwrap();
+        assert_eq!(dest, work.path().join("report 2.pdf"));
+        assert_eq!(fs::read_to_string(work.path().join("report.pdf")).unwrap(), "keep me");
         assert_eq!(fs::read_to_string(dest).unwrap(), "new");
+    }
+
+    #[test]
+    fn folders_and_missing_files_are_refused() {
+        let work = tempfile::tempdir().unwrap();
+        let folder = work.path().join("photos.png");
+        fs::create_dir(&folder).unwrap();
+        assert!(convert(&folder, "jpg", None, work.path()).unwrap_err().contains("not a regular file"));
+        assert!(convert(&work.path().join("gone.png"), "jpg", None, work.path()).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_tool_that_hangs_is_stopped() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let started = Instant::now();
+        let err = run(cmd, Duration::from_millis(500)).unwrap_err();
+        assert!(err.contains("took longer"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn pandoc_versions_are_read() {
+        assert_eq!(parse_pandoc_version("pandoc 3.12.1"), Some((3, 12)));
+        assert_eq!(parse_pandoc_version("pandoc 2.9.2.1"), Some((2, 9)));
+        assert_eq!(parse_pandoc_version("pandoc"), None);
+        assert_eq!(parse_pandoc_version(""), None);
+    }
+
+    #[test]
+    fn libreoffice_hardening_is_written_once_and_keeps_other_settings() {
+        let work = tempfile::tempdir().unwrap();
+        let file = work.path().join("user/registrymodifications.xcu");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "<oor:items>\n<item oor:path=\"/keep/me\"/>\n</oor:items>\n").unwrap();
+        harden_libreoffice(work.path()).unwrap();
+        harden_libreoffice(work.path()).unwrap();
+        let s = fs::read_to_string(&file).unwrap();
+        assert!(s.contains("/keep/me"));
+        assert_eq!(s.matches("BlockUntrustedRefererLinks").count(), 1);
+        assert!(s.trim_end().ends_with("</oor:items>"));
     }
 
     #[test]
@@ -597,9 +775,10 @@ mod tests {
 
     #[test]
     fn unsupported_files_are_refused_before_any_tool_runs() {
-        assert!(convert(Path::new("/tmp/a.xyz"), "pdf", None).is_err());
-        assert!(convert(Path::new("/tmp/Makefile"), "pdf", None).is_err());
-        assert!(convert(Path::new("/tmp/a.png"), "mp3", None).is_err());
+        let here = Path::new("/tmp");
+        assert!(convert(Path::new("/tmp/a.xyz"), "pdf", None, here).is_err());
+        assert!(convert(Path::new("/tmp/Makefile"), "pdf", None, here).is_err());
+        assert!(convert(Path::new("/tmp/a.png"), "mp3", None, here).is_err());
     }
 
     #[test]

@@ -9,7 +9,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
-use std::sync::atomic::Ordering;
 use std::{ptr, thread, time::Duration};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -26,7 +25,8 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VIRTUAL_KEY, VK_LBUTTON, VK_RBUTTON, VK_SHIFT};
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, SetWindowLongPtrW,
+    EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IsWindow,
+    SetWindowLongPtrW,
     SetWindowPos, ShowWindow, WindowFromPoint, GA_PARENT, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, SM_CXDRAG,
     SM_CYDRAG, SM_SWAPBUTTON, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SWP_SHOWWINDOW, SW_HIDE, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX,
@@ -183,7 +183,7 @@ pub fn close(app: &AppHandle, generation: u64) {
         thread::sleep(CLOSE);
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
-            if handle.state::<WheelState>().generation.load(Ordering::SeqCst) != generation {
+            if !handle.state::<WheelState>().is_current(generation) {
                 return;
             }
             if let Some(hwnd) = wheel_hwnd(&handle) {
@@ -211,6 +211,9 @@ fn register_drop_targets(app: &AppHandle, wheel: HWND) {
     }
     let mut windows = vec![wheel];
     let _ = unsafe { EnumChildWindows(Some(wheel), Some(collect), LPARAM(&mut windows as *mut _ as isize)) };
+    // Forget windows that are gone: Windows reuses handle numbers, and a new WebView2
+    // window with an old number would otherwise be skipped and accept no drops.
+    REGISTERED.with(|r| r.borrow_mut().retain(|&key| unsafe { IsWindow(Some(HWND(key as _))) }.as_bool()));
     for hwnd in windows {
         let key = hwnd.0 as isize;
         if REGISTERED.with(|r| r.borrow().contains(&key)) {
@@ -244,11 +247,12 @@ impl WheelDropTarget {
         wheel::hover_at(x - wheel::SIZE / 2.0, wheel::SIZE / 2.0 - y, n)
     }
 
-    /// Lights up what is under the cursor and accepts the drop only over a format.
-    fn track(&self, pt: &POINTL) -> DROPEFFECT {
+    /// Lights up what is under the cursor and accepts the drop only over a format, and
+    /// only as a copy the source allows (`allowed` is what Windows passed in).
+    fn track(&self, pt: &POINTL, allowed: DROPEFFECT) -> DROPEFFECT {
         let hover = self.hover_at(pt);
         self.set_hover(hover);
-        if hover.segment.is_some() && self.has_files.get() {
+        if hover.segment.is_some() && self.has_files.get() && (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY {
             DROPEFFECT_COPY
         } else {
             DROPEFFECT_NONE
@@ -275,12 +279,12 @@ impl IDropTarget_Impl for WheelDropTarget_Impl {
         if !paths.is_empty() {
             trigger::files_entered(&self.app, paths);
         }
-        unsafe { *effect = self.track(pt) };
+        unsafe { *effect = self.track(pt, *effect) };
         Ok(())
     }
 
     fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
-        unsafe { *effect = self.track(pt) };
+        unsafe { *effect = self.track(pt, *effect) };
         Ok(())
     }
 
@@ -297,9 +301,11 @@ impl IDropTarget_Impl for WheelDropTarget_Impl {
         effect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
         let hover = self.hover_at(pt);
+        let allowed = unsafe { *effect };
         let paths = unsafe { file_paths(data) };
         self.set_hover(Hover::NONE);
-        let converted = trigger::drop_on_wheel(&self.app, hover, paths);
+        let converted = (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY
+            && trigger::drop_on_wheel(&self.app, hover, paths);
         // Always say what happened. Left unset, Windows reports the source's own
         // allowed effects back to File Explorer, which can include "move" and so
         // delete the original.
