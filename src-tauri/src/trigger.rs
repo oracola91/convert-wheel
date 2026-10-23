@@ -3,6 +3,7 @@
 //! macOS has no "drag started" notification for other apps, so this polls three
 //! things the window server shares with everyone: the drag pasteboard's change
 //! count, the mouse buttons and the modifier keys. No permission prompt is needed.
+//! The Windows trigger lives in win32.rs. Opening, closing and dropping are shared.
 
 use std::sync::atomic::Ordering;
 use std::{thread, time::Duration};
@@ -11,8 +12,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::formats;
-use crate::wheel::WheelState;
+use crate::wheel::{Hover, WheelState};
 
+#[cfg(target_os = "macos")]
 const POLL: Duration = Duration::from_millis(30);
 /// How long the wheel stays after the button is released, so a drop on it can land.
 const HIDE_DELAY: Duration = Duration::from_millis(400);
@@ -21,6 +23,11 @@ const HIDE_DELAY: Duration = Duration::from_millis(400);
 struct WheelShow {
     paths: Vec<String>,
     formats: Vec<&'static str>,
+    /// The files aren't known yet (Windows learns them when the drag reaches the wheel).
+    pending: bool,
+    /// The system draws frosted glass behind the ring (macOS); otherwise the page
+    /// draws its own solid disc.
+    glass: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -40,15 +47,7 @@ pub fn start(app: AppHandle) {
             }
             if !button_down {
                 if shown {
-                    // Close only the wheel this drag opened, not one opened since.
-                    let app = app.clone();
-                    let generation = app.state::<WheelState>().generation.load(Ordering::SeqCst);
-                    thread::spawn(move || {
-                        thread::sleep(HIDE_DELAY);
-                        if app.state::<WheelState>().generation.load(Ordering::SeqCst) == generation {
-                            hide_wheel(&app, false);
-                        }
-                    });
+                    released(&app);
                 }
                 dragging = false;
                 shown = false;
@@ -68,13 +67,21 @@ pub fn start(app: AppHandle) {
     });
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub fn start(app: AppHandle) {
+    crate::win32::start_trigger(app);
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn start(_app: AppHandle) {}
 
-#[cfg(target_os = "macos")]
-fn show_wheel(app: &AppHandle, paths: Vec<String>) {
+fn formats_for(app: &AppHandle, paths: &[String]) -> Vec<&'static str> {
     let settings = app.state::<crate::settings::Store>().get();
-    let formats = formats::formats_for(&paths, |kind, f| settings.shows(kind, f));
+    formats::formats_for(paths, |kind, f| settings.shows(kind, f))
+}
+
+pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>) {
+    let formats = formats_for(app, &paths);
     let state = app.state::<WheelState>();
     if let Ok(mut shown) = state.formats.lock() {
         *shown = formats.clone();
@@ -82,14 +89,63 @@ fn show_wheel(app: &AppHandle, paths: Vec<String>) {
     state.generation.fetch_add(1, Ordering::SeqCst);
     state.open.store(true, Ordering::SeqCst);
     let first = paths.first().cloned();
-    let _ = app.emit("wheel-show", WheelShow { paths, formats });
+    let pending = paths.is_empty();
+    let glass = cfg!(target_os = "macos");
+    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass });
     let handle = app.clone();
-    let _ = app.run_on_main_thread(move || crate::wheel_window::open(&handle, first.as_deref()));
+    let _ = app.run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        crate::wheel_window::open(&handle, first.as_deref());
+        #[cfg(windows)]
+        crate::win32::open(&handle);
+        let _ = (&handle, &first);
+    });
+}
+
+/// The files reached the wheel on a system that couldn't tell earlier which files
+/// were being dragged: work out their formats and redraw the wheel.
+#[cfg(windows)]
+pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
+    let formats = formats_for(app, &paths);
+    if let Ok(mut shown) = app.state::<WheelState>().formats.lock() {
+        *shown = formats.clone();
+    }
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false });
+}
+
+/// A drop on the wheel. Converts when it landed on a format and says whether it did.
+pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -> bool {
+    let format = hover
+        .segment
+        .and_then(|i| app.state::<WheelState>().formats.lock().ok()?.get(i).copied());
+    match format {
+        Some(format) if !paths.is_empty() => {
+            hide_wheel(app, true);
+            crate::enqueue(app, paths, format.to_string());
+            true
+        }
+        _ => {
+            hide_wheel(app, false);
+            false
+        }
+    }
+}
+
+/// The mouse button went up during a drag that opened the wheel. Closes that wheel
+/// shortly after, unless a newer one has opened since.
+pub(crate) fn released(app: &AppHandle) {
+    let app = app.clone();
+    let generation = app.state::<WheelState>().generation.load(Ordering::SeqCst);
+    thread::spawn(move || {
+        thread::sleep(HIDE_DELAY);
+        if app.state::<WheelState>().generation.load(Ordering::SeqCst) == generation {
+            hide_wheel(&app, false);
+        }
+    });
 }
 
 /// Closes the wheel. `accepted` tells the page a format was chosen, so it can keep
 /// that segment lit while the wheel shrinks away. Closing twice does nothing.
-#[cfg(target_os = "macos")]
 pub fn hide_wheel(app: &AppHandle, accepted: bool) {
     let state = app.state::<WheelState>();
     if !state.open.swap(false, Ordering::SeqCst) {
@@ -98,7 +154,13 @@ pub fn hide_wheel(app: &AppHandle, accepted: bool) {
     let generation = state.generation.load(Ordering::SeqCst);
     let _ = app.emit("wheel-close", accepted);
     let handle = app.clone();
-    let _ = app.run_on_main_thread(move || crate::wheel_window::close(&handle, generation));
+    let _ = app.run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        crate::wheel_window::close(&handle, generation);
+        #[cfg(windows)]
+        crate::win32::close(&handle, generation);
+        let _ = (&handle, generation);
+    });
 }
 
 #[cfg(target_os = "macos")]

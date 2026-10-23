@@ -9,6 +9,7 @@
   --cancel: rgba(0, 0, 0, 0.10);
   --accent: #f28c28;
   --accent-text: #ffffff;
+  --disc: rgba(246, 246, 248, 0.97);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -19,6 +20,7 @@
     --hub: rgba(0, 0, 0, 0.22);
     --hub-text: #d1d1d6;
     --cancel: rgba(255, 255, 255, 0.14);
+    --disc: rgba(36, 36, 38, 0.97);
   }
 }
 
@@ -64,6 +66,19 @@ svg.closing {
 @keyframes open {
   from { transform: scale(0.92); }
   to { transform: scale(1); }
+}
+
+/* The disc only shows where the system draws no glass (Windows). */
+.disc {
+  fill: transparent;
+}
+
+.solid .disc {
+  fill: var(--disc);
+}
+
+.solid svg {
+  filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.28));
 }
 
 .seg {
@@ -118,6 +133,12 @@ svg.closing {
   letter-spacing: 0.02em;
   text-anchor: middle;
   dominant-baseline: central;
+}
+
+/* No file icon above the label where there is no system glass (Windows), so it
+   moves up to the middle. */
+.solid .hub-label {
+  transform: translateY(-28px);
 }
 
 .hub-label.strong {
