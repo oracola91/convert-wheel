@@ -12,7 +12,8 @@
 # - Actions > Build > Run workflow (or `gh workflow run build.yml -f platform=linux`)
 #   builds without releasing; the files stay on the run page for 14 days.
 #
-# Nothing runs on ordinary pushes, so build minutes are spent only when asked.
+# Ordinary pushes build nothing here, so build minutes are spent only when asked.
+# (test.yml runs the unit tests on pull requests.)
 # Actions are pinned to exact commits; the comment names the release. All of them
 # run on Node.js 24 (GitHub retired Node.js 20 for actions).
 name: Build
