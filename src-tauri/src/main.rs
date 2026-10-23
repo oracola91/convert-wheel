@@ -11,6 +11,8 @@ mod trigger;
 mod wheel;
 #[cfg(target_os = "macos")]
 mod wheel_window;
+#[cfg(windows)]
+mod win32;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
@@ -149,6 +151,8 @@ fn main() {
                 wheel_window::install(app.handle(), mtm);
                 drop_view::install(app.handle())?;
             }
+            #[cfg(windows)]
+            win32::install(app.handle());
             trigger::start(app.handle().clone());
             Ok(())
         })

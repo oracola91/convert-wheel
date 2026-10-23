@@ -15,13 +15,14 @@ const NS = 'http://www.w3.org/2000/svg';
 // What the hub says over a segment. Anything not listed shows in capitals.
 const NAMES = {
   jpg: 'JPEG', md: 'Markdown', txt: 'Plain text', html: 'Web page', docx: 'Word',
-  odt: 'OpenDocument', xlsx: 'Excel', ods: 'OpenDocument', pptx: 'PowerPoint',
-  odp: 'OpenDocument', mov: 'QuickTime', webp: 'WebP', webm: 'WebM', ogg: 'Ogg',
+  xlsx: 'Excel', pptx: 'PowerPoint', mov: 'QuickTime', webp: 'WebP', webm: 'WebM', ogg: 'Ogg',
 };
 
 const svg = document.getElementById('wheel');
 let paths = [];
 let formats = [];
+// Windows learns which files are dragged only when they reach the wheel.
+let pending = false;
 let segments = [];
 let hub = null;
 let hubLabel = null;
@@ -57,6 +58,8 @@ function sectorPath(i, n) {
 // Builds the wheel once per drag; hovering only switches classes, so changes animate.
 function build() {
   svg.replaceChildren();
+  // Without the system's glass behind it (Windows), the page draws its own disc.
+  svg.append(el('circle', { cx: C, cy: C, r: R_OUT, class: 'disc' }));
   const n = formats.length;
   segments = formats.map((f, i) => {
     const mid = n === 1 ? 0 : ((i + 0.5) / n) * 2 * Math.PI;
@@ -90,6 +93,8 @@ function show(hover) {
   } else if (hover.segment !== null) {
     const f = formats[hover.segment];
     hubLabel.textContent = `To ${NAMES[f] ?? f.toUpperCase()}`;
+  } else if (pending) {
+    hubLabel.textContent = 'Drop here';
   } else if (formats.length === 0) {
     hubLabel.textContent = 'No formats';
   } else {
@@ -104,10 +109,16 @@ function restart(className) {
 }
 
 listen('wheel-show', (event) => {
-  paths = event.payload.paths;
-  formats = event.payload.formats;
+  ({ paths, formats, pending } = event.payload);
+  document.documentElement.classList.toggle('solid', !event.payload.glass);
   build();
   restart('opening');
+});
+
+// The files arrived (Windows): draw their formats, without replaying the open.
+listen('wheel-formats', (event) => {
+  ({ paths, formats, pending } = event.payload);
+  build();
 });
 
 listen('wheel-hover', (event) => show(event.payload));

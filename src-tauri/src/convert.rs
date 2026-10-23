@@ -62,7 +62,15 @@ fn is_no_write(e: &io::Error) -> bool {
 }
 
 pub fn downloads() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Downloads")
+    home().join("Downloads")
+}
+
+/// The user's home folder (HOME, or USERPROFILE on Windows).
+fn home() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 /// The image format a file really is, from its first bytes. Only plain raster
@@ -232,9 +240,10 @@ fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     let outdir = out.parent().ok_or("no work folder")?.join("libreoffice");
     fs::create_dir_all(&outdir).map_err(|e| format!("work folder: {e}"))?;
     let mut cmd = Command::new(soffice()?);
+    #[cfg(target_os = "macos")]
+    cmd.env("FONTCONFIG_FILE", font_config()?);
     // A profile of our own, so it works while LibreOffice is also open in the normal way.
-    cmd.env("FONTCONFIG_FILE", font_config()?)
-        .arg(format!("-env:UserInstallation={}", file_url(&cache_dir().join("libreoffice"))))
+    cmd.arg(format!("-env:UserInstallation={}", file_url(&cache_dir().join("libreoffice"))))
         .args(["--headless", "--norestore", "--nolockcheck", "--convert-to", target, "--outdir"])
         .arg(&outdir)
         .arg(src);
@@ -262,6 +271,13 @@ fn run(mut cmd: Command) -> Result<(), String> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // Without this, Windows flashes a console window for every tool that runs.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     let output = cmd
         .stdin(Stdio::null())
         .output()
@@ -323,43 +339,104 @@ impl Drop for WorkDir {
     }
 }
 
-/// Finds a command-line tool. Apps opened from Finder don't get the shell's PATH,
-/// so Homebrew's folders are checked as well.
+/// Finds a command-line tool. Apps opened from Finder or the Start menu don't always
+/// get the shell's PATH, so the places the usual installers use are checked as well.
 fn tool(name: &str) -> Result<PathBuf, String> {
+    let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
-        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
-        .map(|dir| dir.join(name))
+        .chain(extra_tool_dirs())
+        .map(|dir| dir.join(&file))
         .find(|p| p.is_file())
-        .ok_or_else(|| {
-            let formula = if name == "magick" { "imagemagick" } else { name };
-            format!("{name} is not installed (brew install {formula})")
-        })
+        .ok_or_else(|| format!("{name} is not installed ({})", install_hint(name)))
+}
+
+#[cfg(target_os = "macos")]
+fn extra_tool_dirs() -> Vec<PathBuf> {
+    vec!["/opt/homebrew/bin".into(), "/usr/local/bin".into()]
+}
+
+/// winget puts ffmpeg behind a link folder, pandoc in the user's AppData and
+/// ImageMagick in a versioned Program Files folder.
+#[cfg(windows)]
+fn extra_tool_dirs() -> Vec<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default();
+    let programs = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap_or_else(|| "C:\\Program Files".into());
+    let mut dirs = vec![local.join("Microsoft\\WinGet\\Links"), local.join("Pandoc"), programs.join("Pandoc")];
+    if let Ok(entries) = fs::read_dir(&programs) {
+        dirs.extend(
+            entries
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("ImageMagick"))
+                .map(|e| e.path()),
+        );
+    }
+    dirs
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn extra_tool_dirs() -> Vec<PathBuf> {
+    vec!["/usr/local/bin".into()]
+}
+
+fn install_hint(name: &str) -> String {
+    let (brew, winget) = match name {
+        "magick" => ("imagemagick", "ImageMagick.ImageMagick"),
+        "ffmpeg" => ("ffmpeg", "Gyan.FFmpeg"),
+        "pandoc" => ("pandoc", "JohnMacFarlane.Pandoc"),
+        "soffice" => ("--cask libreoffice", "TheDocumentFoundation.LibreOffice"),
+        other => (other, other),
+    };
+    if cfg!(target_os = "macos") {
+        format!("brew install {brew}")
+    } else if cfg!(windows) {
+        format!("winget install {winget}")
+    } else {
+        format!("install {name} with your package manager")
+    }
 }
 
 fn soffice() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    [
-        PathBuf::from("/Applications/LibreOffice.app/Contents/MacOS/soffice"),
-        home.join("Applications/LibreOffice.app/Contents/MacOS/soffice"),
-    ]
-    .into_iter()
-    .find(|p| p.is_file())
-    .map(Ok)
-    .unwrap_or_else(|| {
-        tool("soffice").map_err(|_| "LibreOffice is not installed (brew install --cask libreoffice)".into())
-    })
+    let known: Vec<PathBuf> = if cfg!(target_os = "macos") {
+        vec![
+            "/Applications/LibreOffice.app/Contents/MacOS/soffice".into(),
+            home().join("Applications/LibreOffice.app/Contents/MacOS/soffice"),
+        ]
+    } else if cfg!(windows) {
+        ["ProgramFiles", "ProgramFiles(x86)"]
+            .iter()
+            .filter_map(std::env::var_os)
+            .map(|dir| PathBuf::from(dir).join("LibreOffice\\program\\soffice.exe"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    known
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(Ok)
+        .unwrap_or_else(|| tool("soffice").map_err(|_| format!("LibreOffice is not installed ({})", install_hint("soffice"))))
 }
 
+/// Our own working files: LibreOffice's profile and, on macOS, the font list.
 fn cache_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    home.join("Library/Caches/local.convertwheel")
+    if cfg!(target_os = "macos") {
+        home().join("Library/Caches/local.convertwheel")
+    } else if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(home).join("convertwheel")
+    } else {
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".cache"))
+            .join("convertwheel")
+    }
 }
 
 /// Stand-ins for fonts a document asks for but this Mac doesn't have. Aptos, Word's
 /// default since 2023, ships inside Word only and its licence limits it to Microsoft
 /// products, so a similar macOS font stands in. Calibri and Cambria need nothing:
 /// LibreOffice bundles look-alikes for them.
+#[cfg(target_os = "macos")]
 const FONT_SWAPS: &[(&str, &str)] = &[
     ("Aptos", "Helvetica Neue"),
     ("Aptos Display", "Helvetica Neue"),
@@ -377,6 +454,7 @@ const FONT_SWAPS: &[(&str, &str)] = &[
 /// missing and documents come out in a serif fallback. This file adds the macOS font
 /// folders and the stand-ins above. ("accept" means the real font still wins when
 /// it is installed.)
+#[cfg(target_os = "macos")]
 fn font_config() -> Result<PathBuf, String> {
     let dir = cache_dir().join("fontconfig");
     let mut conf = String::from(
@@ -404,11 +482,16 @@ fn font_config() -> Result<PathBuf, String> {
     Ok(file)
 }
 
+/// "/a b/c" becomes "file:///a%20b/c"; "C:\\a b" becomes "file:///C:/a%20b".
 fn file_url(path: &Path) -> String {
+    let mut text = path.to_string_lossy().replace('\\', "/");
+    if !text.starts_with('/') {
+        text.insert(0, '/');
+    }
     let mut url = String::from("file://");
-    for b in path.to_string_lossy().bytes() {
+    for b in text.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => url.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => url.push(b as char),
             _ => url.push_str(&format!("%{b:02X}")),
         }
     }
@@ -447,6 +530,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn font_config_lists_mac_fonts_and_keeps_real_aptos_first() {
         let conf = fs::read_to_string(font_config().unwrap()).unwrap();
         assert!(conf.contains("<dir>/System/Library/Fonts</dir>"));
@@ -458,6 +542,7 @@ mod tests {
     #[test]
     fn file_url_escapes_spaces() {
         assert_eq!(file_url(Path::new("/a b/c")), "file:///a%20b/c");
+        assert_eq!(file_url(Path::new("C:\\Users\\a b")), "file:///C:/Users/a%20b");
     }
 
     #[test]

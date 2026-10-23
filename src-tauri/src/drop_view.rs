@@ -63,23 +63,8 @@ define_class!(
 
         #[unsafe(method(performDragOperation:))]
         fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
-            let app = &self.ivars().app;
-            let format = self
-                .hover(sender)
-                .segment
-                .and_then(|i| app.state::<WheelState>().formats.lock().ok()?.get(i).copied());
             let paths = trigger::file_paths(&sender.draggingPasteboard());
-            match format {
-                Some(format) if !paths.is_empty() => {
-                    trigger::hide_wheel(app, true);
-                    crate::enqueue(app, paths, format.to_string());
-                    true
-                }
-                _ => {
-                    trigger::hide_wheel(app, false);
-                    false
-                }
-            }
+            trigger::drop_on_wheel(&self.ivars().app, self.hover(sender), paths)
         }
     }
 );

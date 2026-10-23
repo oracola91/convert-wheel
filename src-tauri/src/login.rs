@@ -1,6 +1,6 @@
-//! Open at Login, through the system's login items (System Settings > General >
-//! Login Items). Only an app in a bundle can be a login item, so the switch is off
-//! limits when the app runs straight from Terminal.
+//! Open at Login. macOS: the system's login items (System Settings > General >
+//! Login Items); only an app in a bundle can be one, so the switch is off limits when
+//! the app runs straight from Terminal. Windows: the Run key in the registry.
 
 #[cfg(target_os = "macos")]
 mod imp {
@@ -27,7 +27,48 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows: a value under the current user's Run key, which Windows starts at sign-in.
+#[cfg(windows)]
+mod imp {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::System::Registry::{
+        RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+    };
+
+    const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    const NAME: PCWSTR = w!("Convert Wheel");
+
+    /// A development build would register a path that disappears on the next build.
+    pub fn available() -> bool {
+        !cfg!(debug_assertions)
+    }
+
+    pub fn is_enabled() -> bool {
+        unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN, NAME, RRF_RT_REG_SZ, None, None, None) }.is_ok()
+    }
+
+    pub fn set_enabled(on: bool) -> Result<(), String> {
+        let result = if on {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let value: Vec<u16> = format!("\"{}\"", exe.display()).encode_utf16().chain([0]).collect();
+            unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    RUN,
+                    NAME,
+                    REG_SZ.0,
+                    Some(value.as_ptr().cast()),
+                    (value.len() * 2) as u32,
+                )
+            }
+        } else {
+            unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, NAME) }
+        };
+        result.ok().map_err(|e| e.message())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 mod imp {
     pub fn available() -> bool {
         false

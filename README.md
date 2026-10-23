@@ -15,7 +15,7 @@ This is our own build, written from scratch. The idea comes from what the paid T
 | 5. Testing with real files | Not started |
 | 6. Install as an app | Done: `scripts/install-macos.sh` |
 
-Windows and Linux come after macOS. The trigger in `src-tauri/src/trigger.rs` is the only part that differs per OS.
+**Windows:** written and compile-checked, waiting on the first installer build and a hands-on test. **Linux:** not started.
 
 ## What converts to what
 
@@ -41,6 +41,24 @@ A notification says when a drop is done or why it failed. Video also gets a "Con
 It builds the app, quits a running copy, puts `Convert Wheel.app` in `/Applications` and starts it. Run it again after pulling changes to update.
 
 The app is signed ad hoc (no Apple developer account), so it runs on the Mac that built it. On another Mac, Gatekeeper blocks it until it's signed and notarized with a company Developer ID.
+
+## Windows
+
+Install the converters once, in a terminal:
+
+```
+winget install Gyan.FFmpeg ImageMagick.ImageMagick JohnMacFarlane.Pandoc TheDocumentFoundation.LibreOffice
+```
+
+The installer is built on GitHub: Actions > Build > Run workflow (or `gh workflow run build.yml`). When it finishes, download `convert-wheel-windows` from the run and start the `.exe` inside. It is not code-signed yet, so SmartScreen asks once ("More info" > "Run anyway").
+
+How it differs from macOS:
+
+- **Trigger** (`src-tauri/src/win32.rs`): Windows has no shared drag pasteboard to watch, so the wheel opens when a drag that started in File Explorer, on the desktop or in an Open/Save dialog has Shift held. Which files are dragged becomes known when the drag reaches the wheel; until then it says "Drop here".
+- **Drop target:** our own, on the wheel window and the windows WebView2 creates inside it. It always reports "copy" (or "refuse" in the middle). Tauri's built-in drop handler leaves the result unset, so Windows hands File Explorer the source's own allowed effects back, which can include "move" and so delete the original. That is why it is not used here.
+- **Look:** no system glass, so the page draws a solid disc with a shadow. No file icon in the middle.
+- **Open at Login:** a value under the user's Run key in the registry.
+- **No console windows:** the converters run without flashing a console.
 
 ## The menu
 
@@ -128,7 +146,10 @@ src-tauri/           Rust app
   src/menu.rs        menu bar icon and menu
   src/settings.rs    saved choices (where files go, hidden formats)
   src/login.rs       Open at Login through the system's login items
+  src/win32.rs       Windows: trigger, placement, drop target
   Info.plist         marks it a menu bar app (no Dock icon)
+  tauri.windows.conf.json  Windows window settings and installer type
+.github/workflows/build.yml  Windows installer, started by hand
 scripts/install-macos.sh   build and install in /Applications
   src/wheel.rs       wheel geometry: which segment is under a point
   src/formats.rs     formats offered per file type
