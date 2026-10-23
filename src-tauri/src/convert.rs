@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -65,20 +65,29 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         staged
     };
 
-    // Office files are zip archives. A broken one would otherwise come out as a PDF
-    // of its raw bytes, because LibreOffice falls back to reading it as text.
-    let zipped = ["docx", "xlsx", "pptx", "odt", "ods", "odp", "epub"];
-    if zipped.contains(&ext.as_str()) && !read_head(&input)?.starts_with(b"PK") {
+    // Office files must really be what their name says. LibreOffice otherwise picks a
+    // reader from the content: a broken .docx comes out as a PDF of its raw bytes, and
+    // a web page saved as .doc is read as a web page.
+    let head = read_head(&input)?;
+    let expected: &[u8] = match ext.as_str() {
+        "docx" | "xlsx" | "pptx" | "odt" | "ods" | "odp" | "epub" => b"PK",
+        "doc" | "xls" | "ppt" => &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1],
+        "rtf" => b"{\\rtf",
+        _ => b"",
+    };
+    if !head.starts_with(expected) {
         return Err(format!("this is not a valid .{ext} file"));
     }
 
-    match kind {
-        Kind::Image => image(&input, target, &out)?,
-        Kind::Audio => audio(&input, target, &out)?,
-        Kind::Video => video(&input, &ext, target, &out)?,
-        Kind::Doc => document(&input, &ext, target, &out, &work)?,
-        Kind::Sheet | Kind::Slides => libreoffice(&input, target, &out)?,
-    }
+    let converted = match kind {
+        Kind::Image => image(&input, target, &out),
+        Kind::Audio => audio(&input, target, &out),
+        Kind::Video => video(&input, &ext, target, &out),
+        Kind::Doc => document(&input, &ext, target, &out, &work),
+        Kind::Sheet | Kind::Slides => libreoffice(&input, target, &out),
+    };
+    // Tool messages often start with a full path; keep only file names.
+    converted.map_err(|e| redact(&e, src, work.path()))?;
     if !out.is_file() {
         return Err("the converter finished but wrote no file".into());
     }
@@ -87,14 +96,34 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         None => src.parent().ok_or("the file has no folder")?.to_path_buf(),
     };
     let placed = match place(&out, &dir, stem, target) {
-        Err(e) if save_in.is_none() && is_no_write(&e) => place(&out, fallback, stem, target),
+        Err(e) if save_in.is_none() && is_no_write(&e) => {
+            fs::create_dir_all(fallback).and_then(|_| place(&out, fallback, stem, target))
+        }
         other => other,
     };
     placed.map_err(|e| format!("can't save the result: {e}"))
 }
 
+/// Replaces full paths in a tool's message with the file name.
+fn redact(message: &str, src: &Path, work: &Path) -> String {
+    let mut text = message.to_string();
+    if let Some(name) = src.file_name().map(|n| n.to_string_lossy().into_owned()) {
+        text = text.replace(&src.display().to_string(), &name);
+    }
+    if let Some(dir) = src.parent() {
+        text = text.replace(&format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR), "");
+    }
+    text.replace(&format!("{}{}", work.display(), std::path::MAIN_SEPARATOR), "")
+        .replace("file:", "")
+}
+
+/// The original's folder can't take the result (read-only, or a name too long for
+/// it), so Downloads gets it instead.
 fn is_no_write(e: &io::Error) -> bool {
-    matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem)
+    matches!(
+        e.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem | io::ErrorKind::InvalidFilename
+    )
 }
 
 /// Downloads by name, for the command line. The app asks the system instead, which
@@ -146,6 +175,12 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     // Multi-page outputs keep every frame; the rest take the first one.
     let frame = if matches!(target, "pdf" | "tiff" | "gif") { "" } else { "[0]" };
     let mut cmd = Command::new(magick()?);
+    // Caps for a small file that claims to be a huge picture, before it is decoded.
+    cmd.args([
+        "-limit", "memory", "1GiB", "-limit", "map", "2GiB", "-limit", "disk", "4GiB",
+        "-limit", "width", "32KP", "-limit", "height", "32KP", "-limit", "area", "1GP",
+        "-limit", "time", "110",
+    ]);
     cmd.arg(format!("{coder}:{}{frame}", src.display())).arg("-auto-orient");
     if target == "jpg" {
         // JPEG has no transparency; without this, transparent areas turn black.
@@ -156,7 +191,13 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     }
     let out_coder = if target == "jpg" { "jpeg" } else { target };
     cmd.arg(format!("{out_coder}:{}", out.display()));
-    run(cmd, QUICK)
+    run(cmd, QUICK).map_err(|e| {
+        if target == "pdf" && e.contains("not authorized") {
+            "this computer's ImageMagick security policy doesn't allow writing PDF (common on Ubuntu)".to_string()
+        } else {
+            e
+        }
+    })
 }
 
 fn audio_args(target: &str) -> &'static [&'static str] {
@@ -191,16 +232,20 @@ fn audio(src: &Path, target: &str, out: &Path) -> Result<(), String> {
 }
 
 fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
+    // H.264 in yuv420p needs even width and height; phone and screen recordings often
+    // aren't, so round down by a pixel where needed.
     const H264: &[&str] = &[
-        "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+        "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264",
+        "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
     ];
     match target {
         "mp4" | "mov" => {
             // MP4, MOV and M4V usually hold the same streams: try a fast copy first.
             if matches!(ext, "mp4" | "mov" | "m4v") {
                 let copy = ["-map", "0:v", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart"];
-                if ffmpeg(src, &copy, out, VIDEO).is_ok() {
+                // A copy is quick or fails quickly; it never needs the video limit.
+                if ffmpeg(src, &copy, out, QUICK).is_ok() {
                     return Ok(());
                 }
                 let _ = fs::remove_file(out);
@@ -211,7 +256,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
             src,
             &[
                 "-map", "0:v:0", "-map", "0:a?", "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0",
-                "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
+                "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
             ],
             out,
             VIDEO,
@@ -239,7 +284,9 @@ fn document(src: &Path, ext: &str, target: &str, out: &Path, work: &TempDir) -> 
     let ext = formats::canonical(ext);
     let office_in = matches!(ext, "docx" | "doc" | "odt" | "rtf");
     match target {
-        "pdf" if office_in || ext == "txt" => libreoffice(src, target, out),
+        // Plain text keeps its exact characters through LibreOffice; pandoc would read
+        // it as Markdown and change *, # and _.
+        "pdf" | "docx" | "odt" if office_in || ext == "txt" => libreoffice(src, target, out),
         "pdf" => {
             // Markdown, HTML and EPUB: pandoc (sandboxed, so a web page can't make it
             // fetch anything) to Word first, then LibreOffice lays it out.
@@ -247,9 +294,9 @@ fn document(src: &Path, ext: &str, target: &str, out: &Path, work: &TempDir) -> 
             pandoc(src, ext, "docx", &docx)?;
             libreoffice(&docx, target, out)
         }
-        "docx" | "odt" if office_in => libreoffice(src, target, out),
-        _ if ext == "doc" => {
-            // pandoc can't read the old .doc format: LibreOffice turns it into .docx first.
+        _ if ext == "doc" || ext == "rtf" => {
+            // pandoc can't read .doc, and reads RTF only in recent versions: LibreOffice
+            // turns them into .docx first.
             let docx = work.path().join("intermediate.docx");
             libreoffice(src, "docx", &docx)?;
             pandoc(&docx, "docx", target, out)
@@ -293,9 +340,18 @@ fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     let profile = cache_dir().join("libreoffice");
     harden_libreoffice(&profile)?;
     cmd.arg(format!("-env:UserInstallation={}", file_url(&profile)))
-        .args(["--headless", "--norestore", "--nolockcheck", "--convert-to", target, "--outdir"])
-        .arg(&outdir)
-        .arg(src);
+        .args(["--headless", "--norestore", "--nolockcheck"]);
+    // Text and CSV are read as exactly that, never sniffed as something richer.
+    match formats::extension(src).as_deref() {
+        Some("txt") => {
+            cmd.arg("--infilter=Text (encoded):UTF8");
+        }
+        Some("csv") => {
+            cmd.arg("--infilter=CSV:44,34,76,1");
+        }
+        _ => {}
+    }
+    cmd.args(["--convert-to", target, "--outdir"]).arg(&outdir).arg(src);
     run(cmd, OFFICE)?;
     // LibreOffice names the result after the input and can exit 0 without writing it.
     let stem = src.file_stem().ok_or("no file name")?.to_string_lossy();
@@ -337,17 +393,38 @@ fn run(mut cmd: Command, limit: Duration) -> Result<(), String> {
         cmd.process_group(0);
     }
     let mut child = cmd.spawn().map_err(|e| format!("could not start {name}: {e}"))?;
+    let id = child.id();
+    running().push(id);
+    let result = wait(&mut child, &name, limit, &mut errors);
+    running().retain(|&p| p != id);
+    result
+}
+
+/// Tools running right now, so quitting can stop them instead of leaving them behind.
+fn running() -> std::sync::MutexGuard<'static, Vec<u32>> {
+    static RUNNING: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+    RUNNING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Stops every tool still running, with whatever it started. Called when the app quits.
+pub fn stop_all() {
+    for id in running().drain(..) {
+        kill_tree(id);
+    }
+}
+
+fn wait(child: &mut Child, name: &str, limit: Duration, errors: &mut fs::File) -> Result<(), String> {
     let deadline = Instant::now() + limit;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(100)),
             Ok(None) => {
-                stop(&mut child);
+                stop(child);
                 return Err(format!("{name} took longer than {} min and was stopped", limit.as_secs() / 60));
             }
             Err(e) => {
-                stop(&mut child);
+                stop(child);
                 return Err(format!("{name}: {e}"));
             }
         }
@@ -360,8 +437,11 @@ fn run(mut cmd: Command, limit: Duration) -> Result<(), String> {
     let _ = errors.seek(SeekFrom::Start(len.saturating_sub(16 * 1024)));
     let mut text = String::new();
     let _ = errors.read_to_string(&mut text);
-    let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no details");
-    Err(format!("{name} failed: {}", last.trim()))
+    let last = text.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim);
+    match last {
+        Some(line) => Err(format!("{name} failed: {line}")),
+        None => Err(format!("{name} failed ({status})")),
+    }
 }
 
 /// Without this, Windows flashes a console window for every tool that runs.
@@ -377,23 +457,29 @@ fn quiet(cmd: &mut Command) {
 
 /// Stops a tool and the processes it started.
 fn stop(child: &mut Child) {
+    kill_tree(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn kill_tree(id: u32) {
     #[cfg(unix)]
     unsafe {
         // SAFETY: plain syscall; the negative id addresses the group created in run().
-        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        libc::kill(-(id as libc::pid_t), libc::SIGKILL);
     }
     #[cfg(windows)]
     {
-        let mut kill = Command::new("taskkill");
-        kill.args(["/PID", &child.id().to_string(), "/T", "/F"])
+        // The system copy, not whatever "taskkill" comes first on PATH.
+        let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+        let mut kill = Command::new(system.join("System32\\taskkill.exe"));
+        kill.args(["/PID", &id.to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         quiet(&mut kill);
         let _ = kill.status();
     }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// Moves the result into `dir` without replacing anything there.
@@ -429,7 +515,10 @@ fn place(tmp: &Path, dir: &Path, stem: &str, target: &str) -> io::Result<PathBuf
 fn tool(name: &str) -> Result<PathBuf, String> {
     let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     let path = std::env::var_os("PATH").unwrap_or_default();
+    // Only absolute folders: an empty or relative PATH entry would mean "wherever the
+    // app happens to be started from".
     std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
         .chain(extra_tool_dirs())
         .map(|dir| dir.join(&file))
         .find(|p| p.is_file())
@@ -566,6 +655,9 @@ const LIBREOFFICE_SETTINGS: &[(&str, &str, &str)] = &[
     ("/org.openoffice.Office.Common/Security/Scripting", "BlockUntrustedRefererLinks", "true"),
     ("/org.openoffice.Office.Common/Security/Scripting", "DisableMacrosExecution", "true"),
     ("/org.openoffice.Office.Common/Security/Scripting", "MacroSecurityLevel", "3"),
+    // Never update links when a document opens: Writer's "never" is 0, Calc's is 1.
+    ("/org.openoffice.Office.Writer/Content/Update", "Link", "0"),
+    ("/org.openoffice.Office.Calc/Content/Update", "Link", "1"),
 ];
 
 /// Writes the settings above into our LibreOffice profile, once. LibreOffice keeps
@@ -573,15 +665,20 @@ const LIBREOFFICE_SETTINGS: &[(&str, &str, &str)] = &[
 fn harden_libreoffice(profile: &Path) -> Result<(), String> {
     let file = profile.join("user/registrymodifications.xcu");
     let existing = fs::read_to_string(&file).unwrap_or_default();
-    if LIBREOFFICE_SETTINGS.iter().all(|(_, name, _)| existing.contains(&format!("\"{name}\""))) {
-        return Ok(());
-    }
+    let item = |(path, name, value): &(&str, &str, &str)| {
+        format!("<item oor:path=\"{path}\"><prop oor:name=\"{name}\" oor:op=\"fuse\"><value>{value}</value></prop></item>")
+    };
+    // Every setting with exactly our value; anything else (missing, or changed by
+    // something else) is written again, and the later entry wins.
     let items: String = LIBREOFFICE_SETTINGS
         .iter()
-        .map(|(path, name, value)| {
-            format!("<item oor:path=\"{path}\"><prop oor:name=\"{name}\" oor:op=\"fuse\"><value>{value}</value></prop></item>\n")
-        })
+        .map(item)
+        .filter(|line| !existing.contains(line.as_str()))
+        .map(|line| line + "\n")
         .collect();
+    if items.is_empty() {
+        return Ok(());
+    }
     let content = match existing.rfind("</oor:items>") {
         Some(end) => format!("{}{items}{}", &existing[..end], &existing[end..]),
         None => format!(
@@ -724,6 +821,24 @@ mod tests {
     }
 
     #[test]
+    fn paths_are_kept_out_of_messages() {
+        let src = Path::new("/Users/someone/Secret Projects/clip.mov");
+        let work = Path::new("/tmp/convert-wheel-abc");
+        let msg = "ffmpeg failed: file:/Users/someone/Secret Projects/clip.mov: Invalid data";
+        assert_eq!(redact(msg, src, work), "ffmpeg failed: clip.mov: Invalid data");
+        assert_eq!(redact("magick: /tmp/convert-wheel-abc/input.png bad", src, work), "magick: input.png bad");
+    }
+
+    #[test]
+    fn renamed_office_files_are_refused() {
+        let work = tempfile::tempdir().unwrap();
+        let fake = work.path().join("page.doc");
+        fs::write(&fake, "<html><img src=x></html>").unwrap();
+        let err = convert(&fake, "pdf", None, work.path()).unwrap_err();
+        assert!(err.contains("not a valid .doc"), "{err}");
+    }
+
+    #[test]
     fn pandoc_versions_are_read() {
         assert_eq!(parse_pandoc_version("pandoc 3.12.1"), Some((3, 12)));
         assert_eq!(parse_pandoc_version("pandoc 2.9.2.1"), Some((2, 9)));
@@ -742,6 +857,7 @@ mod tests {
         let s = fs::read_to_string(&file).unwrap();
         assert!(s.contains("/keep/me"));
         assert_eq!(s.matches("BlockUntrustedRefererLinks").count(), 1);
+        assert_eq!(s.matches("Content/Update").count(), 2);
         assert!(s.trim_end().ends_with("</oor:items>"));
     }
 

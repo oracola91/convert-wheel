@@ -87,7 +87,7 @@ impl DropView {
     fn hover(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> Hover {
         let p = self.convertPoint_fromView(sender.draggingLocation(), None);
         let size = self.bounds().size;
-        let n = self.ivars().app.state::<WheelState>().formats.lock().map(|f| f.len()).unwrap_or(0);
+        let n = wheel::lock(&self.ivars().app.state::<WheelState>().formats).len();
         wheel::hover_at(p.x - size.width / 2.0, p.y - size.height / 2.0, n)
     }
 
@@ -166,10 +166,10 @@ impl DropView {
 pub fn install(app: &AppHandle) -> tauri::Result<()> {
     let mtm = MainThreadMarker::new().expect("the drop view is installed on the main thread");
     let Some(ns_window) = wheel_window::ns_window(app) else {
-        return Ok(());
+        return Err(tauri::Error::WindowNotFound);
     };
     let Some(content) = ns_window.contentView() else {
-        return Ok(());
+        return Err(tauri::Error::WindowNotFound);
     };
     let view = DropView::new(mtm, content.bounds(), app.clone());
     view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);

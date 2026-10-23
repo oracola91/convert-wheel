@@ -57,11 +57,15 @@ Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS
 
 ## Updates
 
-From version 0.1.1 the app updates itself from this repo's [Releases page](https://github.com/oracola91/convert-wheel/releases). Shortly after it starts, and then once a day, it reads `latest.json` from the newest release. When there is a newer version, a notification says so and the menu shows **Install Update … and Restart**. Nothing installs until the user chooses it (or runs `convert-wheel --update`).
+From version 0.1.1 the app updates itself from this repo's [Releases page](https://github.com/oracola91/convert-wheel/releases). Thirty seconds after it starts, then once a day, it reads `latest.json` from the newest published release (a request to github.com, through the system proxy). When there is a newer version, a notification says so and the menu shows **Install Update … and Restart**. Nothing installs until the user chooses it, or starts the app with `convert-wheel --update`. Conversions still running are finished first.
 
-Every update file is signed with the project's update key (a minisign key, separate from any code-signing certificate). The public half is built into the app (`plugins.updater.pubkey` in `tauri.conf.json`), and the app refuses an update whose signature doesn't match. The private key is a GitHub Actions secret and, for the macOS build, a file in `~/.tauri/` on the release Mac with its password in the Keychain. **If the private key is lost, installed copies can no longer be updated** and need one manual reinstall of a build with a new key, so keep a backup of `~/.tauri/convert-wheel-updater.key` and its password somewhere safe.
+**What protects an update.** Every update file is signed with the project's update key (minisign, Ed25519), and the signature records the version it was made for. The app checks the signature against the public key built into it (`plugins.updater.pubkey` in `tauri.conf.json`) and refuses an update whose signature or version doesn't match (`requireSignedVersion`), so a changed file, a fake one, or an older build relabelled as newer is not installed. Only newer versions install. Files the app downloads itself carry no "downloaded from the internet" mark, so updates don't go through SmartScreen or Gatekeeper: the signature check is the control.
 
-On Windows the update runs the installer in passive mode (a progress bar, no questions). On Linux both the AppImage and the `.deb` update; the `.deb` asks for the admin password. Files the app downloads itself carry no "downloaded from the internet" mark, so updates don't trigger the SmartScreen or Gatekeeper warnings that a first install does.
+**Where the key is.** Two copies: a secret in this repo's `release` environment on GitHub, which only `v*` tags can use and only the release job's signing step sees (the builds never do); and `~/.tauri/convert-wheel-updater.key` on the release Mac, with its password in the Keychain, used only by the last command of `scripts/release-macos.sh`. Keep an offline backup of the key file and its password in a password manager.
+
+**If the key is lost,** installed copies can no longer be updated: publish a build with a new key and ask everyone to install it once by hand. **If the key may have leaked,** do the same at once: generate a new key, put its public half in `tauri.conf.json`, replace both copies of the private key, release, and tell users to reinstall from the Releases page; copies with the old key can be offered files signed with the leaked one until they do.
+
+On Windows the update runs the installer in passive mode (a progress bar, no questions). On macOS the app is replaced in place. On Linux the AppImage is replaced, or the `.deb` is installed as root: the system asks for the admin password (pkexec), or if that isn't available, a plain password box appears and the password goes to `sudo`.
 
 ## The menu
 
@@ -74,9 +78,13 @@ The ring icon in the menu bar opens:
 - **Check for Updates… / Install Update … and Restart**.
 - **Quit Convert Wheel**.
 
-Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json` (Windows: `%APPDATA%\local.convertwheel`, Linux: `~/.config/local.convertwheel`). A settings file that can't be read is kept aside as `settings.json.bad` instead of being overwritten. A log of conversions and errors (file names only, never full paths) is in `~/Library/Logs/local.convertwheel/convert-wheel.log` (Windows: `%LOCALAPPDATA%\local.convertwheel\logs`, Linux: `~/.local/share/local.convertwheel/logs`).
+Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json` (Windows: `%APPDATA%\local.convertwheel`, Linux: `~/.config/local.convertwheel`). A settings file that can't be used is kept aside as `settings.json.bad` (or, if it can't be read at all, left alone and never saved over), and a notification says the settings were reset.
 
-Only one copy runs at a time: starting the app again just says it is already running.
+**Show Log** opens the folder with the log of starts, conversions, errors and update checks: `~/Library/Logs/local.convertwheel/convert-wheel.log` (Windows: `%LOCALAPPDATA%\local.convertwheel\logs`, Linux: `~/.local/share/local.convertwheel/logs`). It holds file names, not folders (tool messages are stripped of paths), is readable by the user only, and keeps at most about 1 MB.
+
+**Quit** while conversions are running asks for a second Quit within 10 seconds, then stops them.
+
+Only one copy runs at a time: starting the app again just says it is already running. On macOS this uses a fixed lock name in `/tmp` (from the single-instance plugin); on a Mac shared by several user accounts, another account could block it. That doesn't matter on a one-person laptop.
 
 ## Run it from the source
 
@@ -124,9 +132,10 @@ Also worth trying: several files at once, a file with no extension, text dragged
 - ImageMagick is told the real image format, read from the file's first bytes. Only plain raster formats are accepted, so a disguised SVG or PostScript file is refused instead of decoded.
 - ffmpeg may read only local files, and only the containers the wheel accepts. A playlist or concat list disguised as a video is refused instead of being followed to other files or the network.
 - pandoc runs with `--sandbox`. It reads only the file it was given, never the network or other files. HTML goes to PDF through pandoc for this reason. A pandoc older than 2.15, or one whose version can't be read, is refused.
-- LibreOffice uses its own profile in the app's cache folder, so it doesn't interfere with a LibreOffice window you have open. In that profile, macros never run and content linked from outside a document (a web address, a network share) is not fetched.
-- Office files must really be zip archives. Otherwise LibreOffice would quietly turn a broken file into a PDF of garbage.
-- Every tool has a time limit (2 minutes for images and documents, 3 for LibreOffice, 10 for audio, 60 for video). A tool that hangs is stopped with everything it started, so it can't block later conversions.
+- LibreOffice uses its own profile in the app's cache folder, so it doesn't interfere with a LibreOffice window you have open. In that profile macros never run, links in documents are never updated when they open, and LibreOffice is told to block content linked from outside a document (`BlockUntrustedRefererLinks`). A test with LibreOffice 26.8 on macOS fetched nothing from a web page or ODT linking a remote image; other versions, spreadsheet DDE links and Windows network shares are not tested yet.
+- Office files must really be what their name says: zip formats must start as zip archives, `.doc`/`.xls`/`.ppt` as OLE files, `.rtf` as RTF. Text and CSV are opened with a fixed text reader. Otherwise LibreOffice would pick a reader from the content, and a broken file would come out as a PDF of garbage.
+- Every tool has a time limit (2 minutes for images and documents, 3 for LibreOffice, 10 for audio, 60 for video). A tool that hangs is stopped with everything it started, so it can't block later conversions. Quitting stops any tool still running.
+- ImageMagick gets memory, disk, size and time limits, so a small file claiming to be a huge picture can't take the machine down.
 - Each conversion works in its own private temporary folder (random name, owner-only on macOS and Linux), deleted afterwards whether it succeeded or not.
 - The web page in the wheel may only listen for the app's events; its content security policy allows nothing from outside the app.
 
@@ -153,6 +162,7 @@ src/                       wheel UI (index.html, wheel.css, wheel.js)
 src-tauri/                 Rust app
   src/main.rs              app setup, drop queue, notifications, --convert, --show, --update
   src/update.rs            update checks and installs
+SECURITY.md                how to report a security problem
   src/log.rs               the log file
   src/trigger.rs           Shift+drag on macOS; opening, closing and dropping for all
   src/wheel.rs             wheel geometry: which segment is under a point

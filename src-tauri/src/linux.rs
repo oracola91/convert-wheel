@@ -42,9 +42,16 @@ pub fn is_wayland() -> bool {
 }
 
 pub fn start_trigger(app: AppHandle) {
-    start_listener(app.clone());
+    let shortcut = start_listener(app.clone());
     if !is_wayland() {
         start_x11(app);
+    } else if !shortcut {
+        // On Wayland the shortcut is the only way in; without it nothing opens the wheel.
+        crate::notify(
+            &app,
+            "Convert Wheel can't open its wheel here",
+            "This desktop session has no XDG_RUNTIME_DIR, which the keyboard shortcut needs. Details are in the log.",
+        );
     }
 }
 
@@ -141,25 +148,32 @@ fn socket_path() -> Option<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("convert-wheel.sock"))
 }
 
-fn start_listener(app: AppHandle) {
+/// Starts the listener for the shortcut; false if there is none.
+fn start_listener(app: AppHandle) -> bool {
     let Some(path) = socket_path() else {
         crate::log::line("XDG_RUNTIME_DIR is not set; the --show shortcut is off");
-        return;
+        return false;
     };
+    // SAFETY: getuid has no preconditions and can't fail.
+    let me = unsafe { libc::getuid() };
     // A socket left by a crash blocks the name. Remove it only if nobody answers on it
     // and it really is our own socket.
     if UnixStream::connect(&path).is_err() {
-        let ours = fs::symlink_metadata(&path)
-            .is_ok_and(|m| m.file_type().is_socket() && m.uid() == unsafe { libc::getuid() });
+        let ours = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_socket() && m.uid() == me);
         if ours {
             let _ = fs::remove_file(&path);
         }
     }
-    let listener = match UnixListener::bind(&path) {
+    // Private from the moment it exists, not only after a chmod.
+    // SAFETY: umask only changes this process's file-creation mask; it is put back below.
+    let old_mask = unsafe { libc::umask(0o177) };
+    let bound = UnixListener::bind(&path);
+    unsafe { libc::umask(old_mask) };
+    let listener = match bound {
         Ok(l) => l,
         Err(e) => {
             crate::log::line(&format!("can't listen for --show ({e})"));
-            return;
+            return false;
         }
     };
     let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
@@ -174,6 +188,7 @@ fn start_listener(app: AppHandle) {
             }
         }
     });
+    true
 }
 
 /// `convert-wheel --show`: asks the running app to open the wheel.
@@ -285,17 +300,28 @@ fn connect_drop(app: AppHandle, webview: webkit2gtk::WebView) {
             .filter_map(|uri| glib::filename_from_uri(uri).ok())
             .map(|(path, _)| path.to_string_lossy().into_owned())
             .collect();
-        let waiting = {
+        let (waiting, hover) = {
             let mut st = s.borrow_mut();
             st.paths = paths.clone();
-            st.waiting_drop.take()
+            (st.waiting_drop.take(), st.hover)
         };
         if !paths.is_empty() {
             trigger::files_entered(&a, paths.clone());
         }
         if let Some(drop_time) = waiting {
             finish(&a, ctx, x, y, paths, drop_time);
+            return;
         }
+        // The first motion answered "no" because the files weren't known yet; answer
+        // again now, so a drop made without moving the mouse isn't refused.
+        let can_copy = ctx.actions().contains(gdk::DragAction::COPY);
+        let over_format = hover.is_some_and(|h| h.segment.is_some());
+        let action = if over_format && !paths.is_empty() && can_copy {
+            gdk::DragAction::COPY
+        } else {
+            gdk::DragAction::empty()
+        };
+        ctx.drag_status(action, time);
     });
 
     let (a, s, list) = (app.clone(), state.clone(), uri_list);
@@ -305,6 +331,17 @@ fn connect_drop(app: AppHandle, webview: webkit2gtk::WebView) {
             // GTK sends "leave" just before "drop", which cleared the list: ask again.
             s.borrow_mut().waiting_drop = Some(time);
             w.drag_get_data(ctx, &list, time);
+            // If the list never comes, release the drop so the file manager isn't left
+            // waiting.
+            let (a, s, ctx) = (a.clone(), s.clone(), ctx.clone());
+            glib::timeout_add_local_once(Duration::from_secs(2), move || {
+                let stuck = s.borrow_mut().waiting_drop.take();
+                if let Some(drop_time) = stuck {
+                    crate::log::line("drop released: the file list never arrived");
+                    trigger::hide_wheel(&a, false, None);
+                    ctx.drag_finish(false, false, drop_time);
+                }
+            });
         } else {
             finish(&a, ctx, x, y, paths, time);
         }
@@ -322,7 +359,7 @@ fn connect_drop(app: AppHandle, webview: webkit2gtk::WebView) {
 }
 
 fn hover_at(app: &AppHandle, x: i32, y: i32) -> Hover {
-    let n = app.state::<WheelState>().formats.lock().map(|f| f.len()).unwrap_or(0);
+    let n = wheel::lock(&app.state::<WheelState>().formats).len();
     wheel::hover_at(x as f64 - wheel::SIZE / 2.0, wheel::SIZE / 2.0 - y as f64, n)
 }
 

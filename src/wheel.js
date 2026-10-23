@@ -32,6 +32,8 @@ let hub = null;
 let hubLabel = null;
 // Between wheel-show and wheel-close. Late events for a closed wheel are ignored.
 let open = false;
+// Counts closes, so clearing the page after one doesn't hit a wheel opened since.
+let closes = 0;
 let lastHover = { segment: null, hub: false };
 
 function el(name, attrs) {
@@ -113,6 +115,8 @@ function show(raw) {
     hubLabel.textContent = pinned ? 'Drag a file here' : 'Drop here';
   } else if (formats.length === 0) {
     hubLabel.textContent = 'No formats';
+  } else if (pinned) {
+    hubLabel.textContent = 'Esc to close';
   } else {
     hubLabel.textContent = paths.length === 1 ? '1 file' : `${paths.length} files`;
   }
@@ -124,11 +128,19 @@ function restart(className) {
   if (className) svg.classList.add(className);
 }
 
+// The payload comes from the app itself, but a wheel half drawn from bad data would
+// be stuck on screen; anything unexpected becomes an empty list.
+function readWheel(payload) {
+  const list = (value) => (Array.isArray(value) ? value.filter((v) => typeof v === 'string') : []);
+  return { paths: list(payload?.paths), formats: list(payload?.formats), pending: payload?.pending === true };
+}
+
 listen('wheel-show', (event) => {
-  ({ paths, formats, pending, pinned } = event.payload);
-  open = true;
-  document.documentElement.classList.toggle('solid', !event.payload.glass);
+  ({ paths, formats, pending } = readWheel(event.payload));
+  pinned = event.payload?.pinned === true;
+  document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   build();
+  open = true;
   restart('opening');
 });
 
@@ -137,7 +149,7 @@ listen('wheel-show', (event) => {
 listen('wheel-formats', (event) => {
   if (!open) return;
   const keep = lastHover;
-  ({ paths, formats, pending } = event.payload);
+  ({ paths, formats, pending } = readWheel(event.payload));
   build();
   show(keep);
 });
@@ -152,6 +164,17 @@ listen('wheel-close', (event) => {
   open = false;
   if (event.payload !== true) show({ segment: null, hub: false });
   restart('closing');
+  // Once the window is gone, empty the page, so the next wheel never shows this one
+  // for a frame before it is drawn.
+  const thisClose = ++closes;
+  setTimeout(() => {
+    if (!open && closes === thisClose) {
+      svg.replaceChildren();
+      segments = [];
+      hub = null;
+      hubLabel = null;
+    }
+  }, 250);
 });
 
 // The native code takes every drop. Should one ever reach the page, it must not make
