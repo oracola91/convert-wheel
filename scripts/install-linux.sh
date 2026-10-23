@@ -3,8 +3,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/oracola91/convert-wheel/main/scripts/install-linux.sh | sh
 #
-# 1. the converters: ffmpeg, ImageMagick, LibreOffice (Writer, Calc, Impress) and pandoc,
-#    pandoc from its own releases unless a working one is already installed;
+# 1. the converters: ffmpeg, ImageMagick, LibreOffice (Writer, Calc, Impress), MuPDF
+#    and pandoc, pandoc from its own releases unless a working one is already installed;
 # 2. the newest Convert Wheel release, checked against the release's checksums;
 # 3. Open at Login;
 # 4. on GNOME (Ubuntu's desktop), the keyboard shortcut Super+Shift+C that opens the
@@ -85,9 +85,9 @@ main() {
     # apt reads local packages as its own user, so they must be readable.
     chmod 755 "$work"
 
-    step "1/5 The converters: ffmpeg, ImageMagick, pandoc, LibreOffice (asks for your password)"
+    step "1/5 The converters: ffmpeg, ImageMagick, LibreOffice, MuPDF, pandoc (asks for your password)"
     sudo apt-get update </dev/null
-    apt_install ffmpeg imagemagick libreoffice-writer libreoffice-calc libreoffice-impress
+    apt_install ffmpeg imagemagick libreoffice-writer libreoffice-calc libreoffice-impress mupdf-tools
     if ! pandoc_ok; then
         step "    Adding pandoc $PANDOC_VERSION from pandoc's releases"
         pdeb="$work/pandoc-$PANDOC_VERSION-1-amd64.deb"
