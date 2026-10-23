@@ -1,6 +1,6 @@
 [package]
 name = "convert-wheel"
-version = "0.1.2"
+version = "0.2.0"
 description = "Hold Shift while dragging a file to pick a format to convert it to"
 edition = "2021"
 publish = false
