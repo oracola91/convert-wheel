@@ -1,4 +1,5 @@
-//! Turns one file into another format with ImageMagick, ffmpeg, pandoc or LibreOffice.
+//! Turns one file into another format with ImageMagick, ffmpeg, pandoc, LibreOffice or
+//! MuPDF (for PDFs).
 //!
 //! Each conversion gets a private work folder. Except for audio and video (too big to
 //! copy), the file is first copied in under a neutral name, so odd characters in the
@@ -31,7 +32,24 @@ const VIDEO: Duration = Duration::from_secs(3600);
 /// being followed to other files or the network.
 const FFMPEG_FORMATS: &str = "mov,mp4,m4a,matroska,webm,avi,mp3,wav,flac,aiff,ogg,aac";
 
-/// Converts `src` to `target` (a format from the wheel) and returns the new file.
+/// Pictures of a PDF's pages: at most this many pages, so a huge PDF can't fill the
+/// disk; print resolution; and a size cap, so a page that claims to be metres wide
+/// can't need gigabytes of memory.
+const MAX_PAGES: usize = 100;
+const PAGE_DPI: &str = "150";
+const PAGE_MAX_PIXELS: &str = "6000";
+
+/// What a converter produced in the work folder.
+enum Output {
+    /// One file, `result.<target>`.
+    File,
+    /// Pictures of a PDF's pages, in page order. `cut`: the PDF has more pages than
+    /// MAX_PAGES, and only the first ones are here.
+    Pages { files: Vec<PathBuf>, cut: bool },
+}
+
+/// Converts `src` to `target` (a format from the wheel) and returns the new file, or
+/// for a PDF with several pages turned into pictures, the new folder that holds them.
 /// It goes in `save_in`, or next to the original when that is None. If the original's
 /// folder can't be written to (a mounted disk image, another app's folder), it goes to
 /// `fallback` (Downloads) instead.
@@ -73,32 +91,37 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         "docx" | "xlsx" | "pptx" | "odt" | "ods" | "odp" | "epub" => b"PK",
         "doc" | "xls" | "ppt" => &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1],
         "rtf" => b"{\\rtf",
+        "pdf" => b"%PDF-",
         _ => b"",
     };
     if !head.starts_with(expected) {
         return Err(format!("this is not a valid .{ext} file"));
     }
 
+    let file = |done: Result<(), String>| done.map(|()| Output::File);
     let converted = match kind {
-        Kind::Image => image(&input, target, &out),
-        Kind::Audio => audio(&input, target, &out),
-        Kind::Video => video(&input, &ext, target, &out),
-        Kind::Doc => document(&input, &ext, target, &out, &work),
-        Kind::Sheet | Kind::Slides => libreoffice(&input, target, &out),
+        Kind::Image => file(image(&input, target, &out)),
+        Kind::Audio => file(audio(&input, target, &out)),
+        Kind::Video => file(video(&input, &ext, target, &out)),
+        Kind::Doc => file(document(&input, &ext, target, &out, &work)),
+        Kind::Sheet | Kind::Slides => file(libreoffice(&input, target, &out)),
+        Kind::Pdf => pdf(&input, target, &out, &work),
     };
     // Tool messages often start with a full path; keep only file names.
-    converted.map_err(|e| redact(&e, src, work.path()))?;
-    if !out.is_file() {
+    let output = converted.map_err(|e| redact(&e, src, work.path()))?;
+    if matches!(output, Output::File) && !out.is_file() {
         return Err("the converter finished but wrote no file".into());
     }
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
         None => src.parent().ok_or("the file has no folder")?.to_path_buf(),
     };
-    let placed = match place(&out, &dir, stem, target) {
-        Err(e) if save_in.is_none() && is_no_write(&e) => {
-            fs::create_dir_all(fallback).and_then(|_| place(&out, fallback, stem, target))
-        }
+    let save = |dir: &Path| match &output {
+        Output::File => place(&out, dir, stem, target),
+        Output::Pages { files, cut } => place_pages(files, *cut, dir, stem, target),
+    };
+    let placed = match save(&dir) {
+        Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| save(fallback)),
         other => other,
     };
     placed.map_err(|e| format!("can't save the result: {e}"))
@@ -328,7 +351,17 @@ fn pandoc(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String>
         cmd.args(["--standalone", "--embed-resources"]);
     }
     cmd.arg("-o").arg(out).arg(src);
-    run(cmd, QUICK)
+    run(cmd, QUICK).map_err(|e| {
+        // Ubuntu's and Debian's pandoc keeps its data files outside the program, and in
+        // the sandbox it can't reach them.
+        if e.contains("Could not find data file") {
+            "this pandoc can't write that format in its sandbox (Ubuntu's and Debian's builds can't): \
+             install pandoc from github.com/jgm/pandoc/releases"
+                .to_string()
+        } else {
+            e
+        }
+    })
 }
 
 fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
@@ -362,6 +395,131 @@ fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
         return Err("LibreOffice could not convert this file".into());
     }
     fs::rename(&written, out).map_err(|e| format!("work folder: {e}"))
+}
+
+/// PDFs, read with MuPDF's mutool: a picture of each page, or the text. The text comes
+/// out as paragraphs, with the lines of each joined back up, as plain text or as a Word
+/// file; the PDF's layout, pictures and tables aren't kept. (LibreOffice can open a PDF
+/// too, but makes every line a separate floating text box.)
+fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, String> {
+    let mutool = tool("mutool")?;
+    match target {
+        "png" | "jpg" => {
+            let dir = work.path().join("pages");
+            fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
+            let mut cmd = Command::new(&mutool);
+            // Run inside the pages folder, so the "%d" in the output name is the only
+            // "%" mutool sees, whatever the work folder's path holds.
+            cmd.current_dir(&dir)
+                .args(["draw", "-q", "-r", PAGE_DPI, "-w", PAGE_MAX_PIXELS, "-h", PAGE_MAX_PIXELS, "-o", "%d.png"])
+                .arg(src)
+                .arg(format!("1-{MAX_PAGES}"));
+            run(cmd, OFFICE).map_err(|e| locked_or(e, &mutool, src, work))?;
+            let mut files: Vec<PathBuf> = (1..=MAX_PAGES)
+                .map(|n| dir.join(format!("{n}.png")))
+                .take_while(|p| p.is_file())
+                .collect();
+            if files.is_empty() {
+                return Err("this PDF has no pages".into());
+            }
+            if target == "jpg" {
+                files = files
+                    .iter()
+                    .map(|png| {
+                        let jpg = png.with_extension("jpg");
+                        image(png, "jpg", &jpg).map(|()| jpg)
+                    })
+                    .collect::<Result<_, _>>()?;
+            }
+            if let [one] = files.as_slice() {
+                fs::rename(one, out).map_err(|e| format!("work folder: {e}"))?;
+                return Ok(Output::File);
+            }
+            let cut = files.len() == MAX_PAGES && page_count(&mutool, src, work).is_some_and(|n| n > MAX_PAGES);
+            Ok(Output::Pages { files, cut })
+        }
+        "txt" | "docx" => {
+            let raw = work.path().join("text.txt");
+            let mut cmd = Command::new(&mutool);
+            cmd.args(["draw", "-q", "-F", "txt", "-o"]).arg(&raw).arg(src);
+            run(cmd, OFFICE).map_err(|e| locked_or(e, &mutool, src, work))?;
+            let bytes = fs::read(&raw).map_err(|e| format!("work folder: {e}"))?;
+            let text = paragraphs(&String::from_utf8_lossy(&bytes));
+            if text.is_empty() {
+                return Err("this PDF has no text to take out (its pages may be scans)".into());
+            }
+            if target == "txt" {
+                fs::write(out, text.join("\n\n") + "\n").map_err(|e| format!("work folder: {e}"))?;
+            } else {
+                let html = work.path().join("text.html");
+                fs::write(&html, paragraphs_html(&text)).map_err(|e| format!("work folder: {e}"))?;
+                pandoc(&html, "html", "docx", out)?;
+            }
+            Ok(Output::File)
+        }
+        other => Err(format!("a PDF can't become .{other}")),
+    }
+}
+
+/// How many pages the PDF says it has, if mutool can tell.
+fn page_count(mutool: &Path, src: &Path, work: &TempDir) -> Option<usize> {
+    let file = work.path().join("pages.txt");
+    let mut cmd = Command::new(mutool);
+    cmd.arg("show").arg("-o").arg(&file).arg(src).arg("trailer/Root/Pages/Count");
+    run(cmd, QUICK).ok()?;
+    fs::read_to_string(&file).ok()?.trim().parse().ok()
+}
+
+/// mutool's last line on a failure is only "cannot draw ...". If the PDF needs a
+/// password to open, say that instead.
+fn locked_or(error: String, mutool: &Path, src: &Path, work: &TempDir) -> String {
+    let file = work.path().join("encrypt.txt");
+    let mut cmd = Command::new(mutool);
+    cmd.arg("show").arg("-o").arg(&file).arg(src).arg("trailer/Encrypt");
+    let encrypted = run(cmd, QUICK).is_ok()
+        && fs::read_to_string(&file).is_ok_and(|t| !t.trim().is_empty() && t.trim() != "null");
+    if encrypted {
+        "this PDF is password-protected: open it, save a copy without the password, and convert that".into()
+    } else {
+        error
+    }
+}
+
+/// Paragraphs from mutool's text: they are separated by empty lines (and pages by a
+/// form feed), and the lines inside one are joined back up. A line that ends in a
+/// hyphen joins the next without a space, so nothing is lost. Control characters,
+/// which Word files can't hold, are left out.
+fn paragraphs(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        let line: String = line.chars().filter(|c| !c.is_control() || *c == '\t').collect();
+        let line = line.trim();
+        if line.is_empty() {
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        if !current.is_empty() && !current.ends_with('-') {
+            current.push(' ');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// A plain web page of the paragraphs, for pandoc to turn into a Word file.
+fn paragraphs_html(paragraphs: &[String]) -> String {
+    let mut html = String::from("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title></title></head><body>\n");
+    for p in paragraphs {
+        html.push_str(&format!("<p>{}</p>\n", xml_text(p)));
+    }
+    html.push_str("</body></html>\n");
+    html
 }
 
 fn read_head(path: &Path) -> Result<Vec<u8>, String> {
@@ -494,22 +652,63 @@ fn place(tmp: &Path, dir: &Path, stem: &str, target: &str) -> io::Result<PathBuf
         };
         let dest = dir.join(name);
         // create_new claims the name atomically, so a file that appears meanwhile is safe.
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&dest) {
+        let file = match OpenOptions::new().write(true).create_new(true).open(&dest) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         };
-        // Same disk: swap our placeholder for the result. Other disk: copy the bytes.
-        if fs::rename(tmp, &dest).is_ok() {
-            return Ok(dest);
-        }
-        if let Err(e) = fs::File::open(tmp).and_then(|mut f| io::copy(&mut f, &mut file)) {
-            let _ = fs::remove_file(&dest);
-            return Err(e);
-        }
+        move_into(tmp, file, &dest)?;
         return Ok(dest);
     }
     Err(io::Error::new(io::ErrorKind::AlreadyExists, "too many files with that name already"))
+}
+
+/// Puts the pictures of a PDF's pages in a new folder in `dir`, named after the PDF and
+/// the format ("report (PNG)", then "report (PNG) 2", ...; "report (PNG, pages 1-100)"
+/// when the PDF had more), as "report 1.png", "report 2.png", ... The numbers are
+/// padded ("report 01.png") so the pages sort in order everywhere.
+fn place_pages(files: &[PathBuf], cut: bool, dir: &Path, stem: &str, target: &str) -> io::Result<PathBuf> {
+    let label = target.to_uppercase();
+    let base = if cut {
+        format!("{stem} ({label}, pages 1-{})", files.len())
+    } else {
+        format!("{stem} ({label})")
+    };
+    let width = files.len().to_string().len();
+    for n in 1..1000 {
+        let folder = dir.join(if n == 1 { base.clone() } else { format!("{base} {n}") });
+        // create_dir fails on an existing folder, so it claims the name like create_new.
+        match fs::create_dir(&folder) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+        let filled = files.iter().enumerate().try_for_each(|(i, page)| {
+            let dest = folder.join(format!("{stem} {:0width$}.{target}", i + 1));
+            let file = OpenOptions::new().write(true).create_new(true).open(&dest)?;
+            move_into(page, file, &dest)
+        });
+        if let Err(e) = filled {
+            // Our own new folder, so nothing else is in it.
+            let _ = fs::remove_dir_all(&folder);
+            return Err(e);
+        }
+        return Ok(folder);
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "too many folders with that name already"))
+}
+
+/// Swaps the empty placeholder `file` at `dest` for `tmp`: a rename on the same disk,
+/// a copy of the bytes from another one.
+fn move_into(tmp: &Path, mut file: fs::File, dest: &Path) -> io::Result<()> {
+    if fs::rename(tmp, dest).is_ok() {
+        return Ok(());
+    }
+    if let Err(e) = fs::File::open(tmp).and_then(|mut f| io::copy(&mut f, &mut file)) {
+        let _ = fs::remove_file(dest);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Finds a command-line tool. Apps opened from Finder or the Start menu don't always
@@ -594,6 +793,7 @@ fn install_hint(name: &str) -> String {
         "ffmpeg" => ("ffmpeg", "Gyan.FFmpeg"),
         "pandoc" => ("pandoc", "JohnMacFarlane.Pandoc"),
         "soffice" => ("--cask libreoffice", "TheDocumentFoundation.LibreOffice"),
+        "mutool" => ("mupdf-tools", "ArtifexSoftware.mutool"),
         other => (other, other),
     };
     if cfg!(target_os = "macos") {
@@ -604,6 +804,7 @@ fn install_hint(name: &str) -> String {
         let package = match name {
             "magick" => "imagemagick",
             "soffice" => "libreoffice",
+            "mutool" => "mupdf-tools",
             other => other,
         };
         format!("sudo apt install {package}, or your distribution's package manager")
@@ -695,8 +896,7 @@ fn harden_libreoffice(profile: &Path) -> Result<(), String> {
         .map_err(|e| format!("LibreOffice settings: {e}"))
 }
 
-/// Makes text safe inside an XML element.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+/// Makes text safe inside an XML or HTML element.
 fn xml_text(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -838,6 +1038,115 @@ mod tests {
         fs::write(&fake, "<html><img src=x></html>").unwrap();
         let err = convert(&fake, "pdf", None, work.path()).unwrap_err();
         assert!(err.contains("not a valid .doc"), "{err}");
+
+        let fake = work.path().join("scan.pdf");
+        fs::write(&fake, "<html></html>").unwrap();
+        let err = convert(&fake, "png", None, work.path()).unwrap_err();
+        assert!(err.contains("not a valid .pdf"), "{err}");
+    }
+
+    #[test]
+    fn pdf_text_comes_back_as_paragraphs() {
+        let text = "Quarterly\nreport\n\nThe first line\nand the sec-\nond line.\n\n\u{c}\nNext page \u{1}text\n";
+        assert_eq!(
+            paragraphs(text),
+            ["Quarterly report", "The first line and the sec-ond line.", "Next page text"]
+        );
+        assert!(paragraphs("\n \n\u{c}\n").is_empty());
+        let html = paragraphs_html(&["a < b & c".to_string()]);
+        assert!(html.contains("<p>a &lt; b &amp; c</p>"), "{html}");
+    }
+
+    #[test]
+    fn page_pictures_go_in_a_new_folder_in_page_order() {
+        let work = tempfile::tempdir().unwrap();
+        let pages: Vec<PathBuf> = (1..=12)
+            .map(|n| {
+                let p = work.path().join(format!("{n}.png"));
+                fs::write(&p, n.to_string()).unwrap();
+                p
+            })
+            .collect();
+        let out = work.path().join("out");
+        fs::create_dir_all(out.join("report (PNG)")).unwrap();
+        let folder = place_pages(&pages, false, &out, "report", "png").unwrap();
+        assert_eq!(folder, out.join("report (PNG) 2"));
+        assert_eq!(fs::read_to_string(folder.join("report 01.png")).unwrap(), "1");
+        assert_eq!(fs::read_to_string(folder.join("report 12.png")).unwrap(), "12");
+        assert!(fs::read_dir(out.join("report (PNG)")).unwrap().next().is_none(), "the old folder is untouched");
+
+        let pages: Vec<PathBuf> = (1..=2)
+            .map(|n| {
+                let p = work.path().join(format!("{n}.jpg"));
+                fs::write(&p, "x").unwrap();
+                p
+            })
+            .collect();
+        let folder = place_pages(&pages, true, &out, "report", "jpg").unwrap();
+        assert_eq!(folder, out.join("report (JPG, pages 1-2)"));
+        assert!(folder.join("report 1.jpg").is_file());
+    }
+
+    /// A small PDF with one line of text on each page.
+    fn tiny_pdf(pages: &[&str]) -> Vec<u8> {
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            format!(
+                "<< /Type /Pages /Kids [{}] /Count {} >>",
+                (0..pages.len()).map(|i| format!("{} 0 R", 4 + 2 * i)).collect::<Vec<_>>().join(" "),
+                pages.len()
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        for (i, text) in pages.iter().enumerate() {
+            objects.push(format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+                5 + 2 * i
+            ));
+            let stream = format!("BT /F1 12 Tf 10 50 Td ({text}) Tj ET");
+            objects.push(format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()));
+        }
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend(format!("{} 0 obj\n{object}\nendobj\n", i + 1).bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            pdf.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        pdf.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
+        pdf
+    }
+
+    /// Needs MuPDF. Where it isn't installed this passes without checking anything,
+    /// unless REQUIRE_MUTOOL is set (CI sets it where it installs MuPDF).
+    #[test]
+    fn pdf_pages_become_pictures_and_text() {
+        if tool("mutool").is_err() {
+            let required = std::env::var_os("REQUIRE_MUTOOL").is_some_and(|v| !v.is_empty());
+            assert!(!required, "mutool should be installed here");
+            eprintln!("mutool isn't installed: PDF conversion not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("two pages.pdf");
+        fs::write(&src, tiny_pdf(&["First page", "Second page"])).unwrap();
+
+        let folder = convert(&src, "png", None, work.path()).unwrap();
+        assert_eq!(folder, work.path().join("two pages (PNG)"));
+        for n in 1..=2 {
+            let page = fs::read(folder.join(format!("two pages {n}.png"))).unwrap();
+            assert!(page.starts_with(b"\x89PNG"));
+        }
+        let text = convert(&src, "txt", None, work.path()).unwrap();
+        assert_eq!(fs::read_to_string(text).unwrap(), "First page\n\nSecond page\n");
+
+        let one = work.path().join("one.pdf");
+        fs::write(&one, tiny_pdf(&["Only page"])).unwrap();
+        assert_eq!(convert(&one, "png", None, work.path()).unwrap(), work.path().join("one.png"));
     }
 
     #[test]
