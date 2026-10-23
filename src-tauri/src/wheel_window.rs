@@ -4,7 +4,6 @@
 
 use std::cell::RefCell;
 use std::ptr::NonNull;
-use std::sync::atomic::Ordering;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -110,7 +109,7 @@ pub fn close(app: &AppHandle, generation: u64) {
     };
     let (app, hide) = (app.clone(), window.clone());
     fade(window, 0.0, CLOSE_SECONDS, move || {
-        if app.state::<WheelState>().generation.load(Ordering::SeqCst) == generation {
+        if app.state::<WheelState>().is_current(generation) {
             hide.orderOut(None);
         }
     });
