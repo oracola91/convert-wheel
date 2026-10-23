@@ -351,7 +351,17 @@ fn pandoc(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String>
         cmd.args(["--standalone", "--embed-resources"]);
     }
     cmd.arg("-o").arg(out).arg(src);
-    run(cmd, QUICK)
+    run(cmd, QUICK).map_err(|e| {
+        // Ubuntu's and Debian's pandoc keeps its data files outside the program, and in
+        // the sandbox it can't reach them.
+        if e.contains("Could not find data file") {
+            "this pandoc can't write that format in its sandbox (Ubuntu's and Debian's builds can't): \
+             install pandoc from github.com/jgm/pandoc/releases"
+                .to_string()
+        } else {
+            e
+        }
+    })
 }
 
 fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
