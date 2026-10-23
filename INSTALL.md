@@ -64,11 +64,21 @@ Sign out and back in afterwards, so apps started from the Start menu see the new
 
 **4. Use it:** the app's icon sits in the taskbar's notification area (it may be under the ^ arrow). Hold Shift while dragging a file in File Explorer or on the desktop and the wheel opens. It says "Drop here" until the file reaches it, then shows the formats.
 
-**Update:** the app updates itself (menu > Install Update). By hand: run the new installer over the old one.
+**Update:** the app updates itself (menu > Install Update), and Open at Login stays as it was. By hand: run the new installer over the old one. The `.exe` then removes the old version first ("Uninstall before installing" is ticked); your settings stay, unless you tick "Delete the application data", but Open at Login is switched off, so turn it on again in the menu.
 
-**Uninstall:** turn off Open at Login in the icon's menu first (the uninstaller doesn't remove it), then Settings > Apps > Installed apps > Convert Wheel > Uninstall (for the `.msi`: `msiexec /x "Convert.Wheel_<version>_x64_en-US.msi" /qn`). Settings are in `%APPDATA%\local.convertwheel`, working files in `%LOCALAPPDATA%\convertwheel`, the log in `%LOCALAPPDATA%\local.convertwheel\logs`.
+**Uninstall:** Settings > Apps > Installed apps > Convert Wheel > Uninstall. The `.exe`'s uninstaller also removes Open at Login. For the `.msi`, turn off Open at Login in the icon's menu first (its uninstaller doesn't remove it), then uninstall, or `msiexec /x "Convert.Wheel_<version>_x64_en-US.msi" /qn`. Settings are in `%APPDATA%\local.convertwheel`, working files in `%LOCALAPPDATA%\convertwheel`, the log in `%LOCALAPPDATA%\local.convertwheel\logs`.
 
 ## Linux
+
+**One command (Ubuntu, Debian):** in a terminal on the desktop, as yourself (not root):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/oracola91/convert-wheel/main/scripts/install-linux.sh | sh
+```
+
+It asks for your password, then installs the converters (and a newer pandoc on Ubuntu 22.04), installs the newest release after checking it against the release's checksums, turns on Open at Login, adds the keyboard shortcut Super+Shift+C on Ubuntu's desktop, and starts the app. Running it again is safe. To read it before it runs: `curl -fsSLO <the same address>`, open `install-linux.sh`, then `sh install-linux.sh`.
+
+The steps it takes, by hand:
 
 **1. The converters** (Ubuntu and Debian):
 

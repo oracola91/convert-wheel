@@ -183,6 +183,7 @@ SECURITY.md                how to report a security problem
 .github/workflows/build.yml  Windows and Linux builds; a version tag publishes a release
 .github/workflows/test.yml   unit tests on Linux, Windows and macOS for every pull request
 scripts/install-macos.sh   build and install in /Applications on this Mac
+scripts/install-linux.sh   one-command setup on Ubuntu and Debian
 scripts/release-macos.sh   add the macOS .dmg to a release
 INSTALL.md                 installing, updating, uninstalling, making a release
 ```

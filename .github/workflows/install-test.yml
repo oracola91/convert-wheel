@@ -1,0 +1,68 @@
+# Runs scripts/install-linux.sh on clean Ubuntu 22.04 and 24.04 machines whenever the
+# script changes. It installs the newest release; a GNOME settings store stands in for
+# the desktop, so the keyboard shortcut is checked too, next to a shortcut that was
+# there before. The script runs twice, as people will, and the installed app then
+# converts an image and two documents from the command line.
+name: Linux setup script
+
+on:
+  pull_request:
+    paths:
+      - scripts/install-linux.sh
+      - .github/workflows/install-test.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: Setup script (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: A GNOME settings store, for the shortcut
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus dconf-service dconf-gsettings-backend gnome-settings-daemon-common
+
+      - name: Run the setup script twice and check what it set
+        env:
+          XDG_CURRENT_DESKTOP: ubuntu:GNOME
+        run: |
+          cat > "$RUNNER_TEMP/check.sh" <<'EOF'
+          set -eu
+          keys=org.gnome.settings-daemon.plugins.media-keys
+          mine=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/convert-wheel/
+          theirs=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/
+          gsettings set $keys custom-keybindings "['$theirs']"
+          sh scripts/install-linux.sh
+          sh scripts/install-linux.sh
+          gsettings get $keys custom-keybindings
+          [ "$(gsettings get $keys custom-keybindings)" = "['$theirs', '$mine']" ]
+          [ "$(gsettings get $keys.custom-keybinding:$mine command)" = "'convert-wheel --show'" ]
+          [ "$(gsettings get $keys.custom-keybinding:$mine binding)" = "'<Shift><Super>c'" ]
+          grep -qx 'Exec="/usr/bin/convert-wheel"' "$HOME/.config/autostart/convert-wheel.desktop"
+          pandoc --version | head -n 1
+          EOF
+          dbus-run-session -- sh "$RUNNER_TEMP/check.sh"
+
+      - name: The installed app converts
+        run: |
+          cd "$RUNNER_TEMP"
+          convert -size 64x48 xc:orange in.png
+          printf '# Title\n\nSome *text*.\n' > notes.md
+          convert-wheel --convert jpg "$PWD/in.png"
+          convert-wheel --convert docx "$PWD/notes.md"
+          convert-wheel --convert pdf "$PWD/notes.docx"
+          file in.jpg notes.docx notes.pdf
+          file in.jpg | grep -q JPEG
+          file notes.pdf | grep -q PDF
