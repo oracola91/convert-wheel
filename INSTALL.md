@@ -121,13 +121,16 @@ On Windows, compare `Get-FileHash .\<file> -Algorithm SHA256` with the file's li
 
 ## Making a release
 
-1. Raise the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json` (all three the same).
-2. Commit, then tag and push the tag:
+1. On a new branch, raise the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json` (all three the same), and in the two lock files that repeat it: `package-lock.json` (twice, at the top) and `src-tauri/Cargo.lock` (the `convert-wheel` entry). The builds use the lock files as they are, so a version left behind there stops them.
+2. Push the branch and merge it through a pull request: `main` takes changes only that way. Then tag the merged `main` and push the tag:
 
    ```sh
-   git tag v0.2.0
+   git switch main && git pull
+   git tag -a v0.2.0 -m "Convert Wheel 0.2.0"
    git push origin v0.2.0
    ```
+
+   Release tags can't be moved or deleted once pushed, so a release with a mistake is fixed with the next version.
 
 3. GitHub builds the Windows and Linux files (about 20 minutes), signs the update files in a separate step, and creates the release as a **draft** with them, `latest.json` (what installed copies read to find the update) and `SHA256SUMS.txt`. Installed copies don't see a draft. The build stops early if the tag and the version don't match.
 4. On the release Mac, with the tag checked out and nothing uncommitted, run `./scripts/release-macos.sh`. It builds and signs the macOS files, adds them and their entry in `latest.json`, checks every system is listed, and publishes the release. It needs the update signing key (`~/.tauri/convert-wheel-updater.key`, password in the Keychain).
