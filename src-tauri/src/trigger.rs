@@ -175,7 +175,14 @@ pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -
             crate::enqueue(app, paths, format.to_string());
             true
         }
-        _ => {
+        Some(_) => {
+            // Dropped on a format, but nothing came with it that is a file on this
+            // computer (an email attachment or a link, for example).
+            hide_wheel(app, false, None);
+            crate::notify(app, "Nothing to convert", "Drag files from a folder or the desktop.");
+            false
+        }
+        None => {
             hide_wheel(app, false, None);
             false
         }

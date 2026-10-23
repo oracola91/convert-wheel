@@ -39,13 +39,9 @@ pub fn ns_window(app: &AppHandle) -> Option<Retained<NSWindow>> {
 }
 
 /// Adds the glass disc under the web page and the hub icon above it.
-pub fn install(app: &AppHandle, mtm: MainThreadMarker) {
-    let Some(window) = ns_window(app) else {
-        return;
-    };
-    let Some(content) = window.contentView() else {
-        return;
-    };
+pub fn install(app: &AppHandle, mtm: MainThreadMarker) -> Result<(), String> {
+    let window = ns_window(app).ok_or("the wheel window is missing")?;
+    let content = window.contentView().ok_or("the wheel window has no content")?;
     let bounds = content.bounds();
 
     // Glass: the system material, cut to a disc. With Reduce Transparency on, macOS
@@ -69,6 +65,7 @@ pub fn install(app: &AppHandle, mtm: MainThreadMarker) {
 
     // A transparent window's shadow follows what is drawn, so this gives the disc a soft edge.
     window.setHasShadow(true);
+    Ok(())
 }
 
 /// A black disc of radius `r` centred in the window, used as the glass mask.
@@ -104,6 +101,10 @@ pub fn open(app: &AppHandle, first_path: Option<&str>) {
 
 /// Fades the wheel out, then hides it unless a newer wheel opened in the meantime.
 pub fn close(app: &AppHandle, generation: u64) {
+    // A newer wheel may have opened before this ran; don't fade that one out.
+    if !app.state::<WheelState>().is_current(generation) {
+        return;
+    }
     let Some(window) = ns_window(app) else {
         return;
     };
