@@ -27,8 +27,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VIRTUAL_KEY,
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, WindowFromPoint, GA_PARENT, GWL_EXSTYLE, HWND_TOPMOST, SM_CXDRAG, SM_CYDRAG,
-    SM_SWAPBUTTON, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    SetWindowPos, ShowWindow, WindowFromPoint, GA_PARENT, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, SM_CXDRAG,
+    SM_CYDRAG, SM_SWAPBUTTON, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SWP_SHOWWINDOW, SW_HIDE, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 
 use crate::trigger;
@@ -121,10 +123,32 @@ fn wheel_hwnd(app: &AppHandle) -> Option<HWND> {
 /// shows in the taskbar or Alt+Tab.
 pub fn install(app: &AppHandle) {
     if let Some(hwnd) = wheel_hwnd(app) {
-        unsafe {
-            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize);
-        }
+        make_bare_popup(hwnd);
+    }
+}
+
+/// A plain popup with no frame at all. Tauri keeps the title-bar style on borderless
+/// windows and hides it itself; together with the tool-window style (no taskbar, no
+/// Alt+Tab) Windows then drew a small grey title bar above the wheel. Without the
+/// title-bar styles there is nothing to draw.
+fn make_bare_popup(hwnd: HWND) {
+    let frame = (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX).0 as isize;
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, (style & !frame) | WS_POPUP.0 as isize);
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let ex = (ex | (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize) & !(WS_EX_WINDOWEDGE.0 as isize);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+        // Windows only re-reads the frame when told to.
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 
@@ -134,6 +158,8 @@ pub fn open(app: &AppHandle) {
     let Some(hwnd) = wheel_hwnd(app) else {
         return;
     };
+    // Again on every open, in case Tauri reapplied its own styles in the meantime.
+    make_bare_popup(hwnd);
     register_drop_targets(app, hwnd);
     let mut pt = POINT::default();
     let _ = unsafe { GetCursorPos(&mut pt) };
