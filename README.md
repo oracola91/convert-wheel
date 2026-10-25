@@ -35,7 +35,7 @@ The wheel only shows formats that every dragged file can become. The new file la
 
 A PDF with several pages becomes a folder of pictures next to it, `report (PNG)` holding `report 1.png`, `report 2.png` and so on, at 150 dpi; at most the first 100 pages, and the folder name says so when there were more. Text is taken from PDFs of up to 2000 pages. As text or a Word file, a PDF keeps its words and paragraphs but not its layout, tables or pictures. A scanned PDF has no text to take out. A PDF that needs a password to open is refused with a note to save a copy without it. For a Word file that keeps the layout, open the PDF in Word itself.
 
-A notification says when a drop is done or why it failed. Video also gets a "Converting…" notification first, because it can take a while.
+A notification says when a drop is done or why it failed. A click on it opens the folder with the new files selected (on Windows only while the notification is on screen, not from the Action Center). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
 
 ## On Windows and Linux
 
@@ -77,7 +77,8 @@ The ring icon in the menu bar opens:
 - **Open at Login**: adds or removes Convert Wheel in System Settings > General > Login Items. Only works for the installed app.
 - **Save Converted Files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
 - **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
-- **Last: …**: how the last drop went, for when notifications are off.
+- **Last: …**: how the last drop went, for when notifications are off. A click on it opens the folder with the new files selected, like a click on the notification. While a drop converts, the line shows how far it is: "Converting 3 of 10 to PNG…", with a percent for audio and video, or the time so far for a tool that doesn't report one.
+- **Stop Converting**: ends the drop being converted now. Files already done stay; the one in progress leaves nothing behind. Drops queued after it still run.
 - **Check for Updates… / Install Update … and Restart**.
 - **Quit Convert Wheel**.
 
@@ -122,7 +123,7 @@ The same converter runs from the command line. It prints the path of each new fi
 1. Start it from Terminal as above.
 2. Drag a file in Finder and hold Shift while dragging. The wheel appears under the cursor.
 3. Over the wheel, the dragged file shrinks to a small icon so its name doesn't cover the wheel. Move over the segments. The one under the cursor turns orange, moves out toward the cursor, and the middle says what it will become ("To PDF"). On a Force Touch trackpad each new segment gives a light tick. Over the middle it says "Cancel".
-4. Drop on a segment. The new file appears next to the original and a notification confirms it.
+4. Drop on a segment. The new file appears next to the original and a notification confirms it. Click the notification: Finder opens with the new file selected.
 5. Drop in the middle. The file slides back and nothing happens. Outside the wheel the drop works as usual in macOS: it slides back, or Finder moves the file if you let go over a folder.
 
 Also worth trying: several files at once, a file with no extension, text dragged from a browser (no wheel should appear), a second screen, and LibreOffice open at the same time.
@@ -133,12 +134,12 @@ Also worth trying: several files at once, a file with no extension, text dragged
 - Except audio and video (too big), each file is first copied into a private work folder under a neutral name, so characters like `%` or `[1]` in a name can't confuse a tool, and the file can't change between the checks and the conversion.
 - Only regular files are converted: a folder, device or pipe is refused.
 - ImageMagick is told the real image format, read from the file's first bytes. Only plain raster formats are accepted, so a disguised SVG or PostScript file is refused instead of decoded.
-- ffmpeg may read only local files, and only the containers the wheel accepts. A playlist or concat list disguised as a video is refused instead of being followed to other files or the network.
+- ffmpeg may read only local files, and only the containers the wheel accepts. A playlist or concat list disguised as a video is refused instead of being followed to other files or the network. ffprobe, which reads how long a file plays for the percent in the menu, gets the same limits.
 - pandoc runs with `--sandbox`. It reads only the file it was given, never the network or other files. HTML goes to PDF through pandoc for this reason. A pandoc older than 2.15, or one whose version can't be read, is refused. Ubuntu's and Debian's own pandoc can't write Word files in the sandbox (its data files are kept outside the program), so on Linux pandoc comes from pandoc's own releases.
 - LibreOffice uses its own profile in the app's cache folder, so it doesn't interfere with a LibreOffice window you have open. In that profile macros never run, links in documents are never updated when they open, and LibreOffice is told to block content linked from outside a document (`BlockUntrustedRefererLinks`). A test with LibreOffice 26.8 on macOS fetched nothing from a web page or ODT linking a remote image; other versions, spreadsheet DDE links and Windows network shares are not tested yet.
 - Office files must really be what their name says: zip formats must start as zip archives, `.doc`/`.xls`/`.ppt` as OLE files, `.rtf` as RTF. Text and CSV are opened with a fixed text reader. Otherwise LibreOffice would pick a reader from the content, and a broken file would come out as a PDF of garbage.
 - PDFs must start as PDFs (`%PDF-`). MuPDF only draws the pages or takes out the text. Its draw command doesn't run scripts in a PDF and doesn't open files a PDF points to outside itself (checked in MuPDF's source, not yet tested with crafted PDFs). mutool works through a PDF ten pages at a time (text: 200) and stops once the pictures pass 1 GB or the text 50 MB, so a PDF built to fill the disk is cut off early. Pages are capped at 4000 pixels a side, to keep a PDF claiming huge pages from needing huge amounts of memory, and a whole PDF, JPG pages included, gets 10 minutes.
-- Every tool has a time limit (2 minutes for images and documents, 3 for LibreOffice and PDFs, 10 for audio, 60 for video). A tool that hangs is stopped with everything it started, so it can't block later conversions. Quitting stops any tool still running.
+- Every tool has a time limit (2 minutes for images and documents, 3 for LibreOffice and PDFs, 10 for audio, 60 for video). A tool that hangs is stopped with everything it started, so it can't block later conversions. Quitting, or Stop Converting in the menu, stops any tool still running the same way.
 - ImageMagick gets memory, disk, size and time limits, so a small file claiming to be a huge picture can't take the machine down.
 - Each conversion works in its own private temporary folder (random name, owner-only on macOS and Linux), deleted afterwards whether it succeeded or not.
 - The web page in the wheel may only listen for the app's events; its content security policy allows nothing from outside the app.
@@ -157,7 +158,8 @@ Word's default font since 2023, Aptos, ships inside Word only, and its licence l
 - **Drop target** (`src-tauri/src/drop_view.rs`): a transparent native view on top of the wheel takes the drop. It shrinks the dragged file to a small icon, tells the page which segment to light up, and queues the conversion.
 - **Formats** (`src-tauri/src/formats.rs`): what each kind of file can become.
 - **Converter** (`src-tauri/src/convert.rs`): picks the tool and its settings, then places the result safely.
-- **Queue** (`src-tauri/src/main.rs`): one worker converts drops in order, then posts the notification.
+- **Queue** (`src-tauri/src/main.rs`): one worker converts drops in order, keeps the menu's progress line current, then posts the notification.
+- **Showing results** (`src-tauri/src/reveal.rs`): opens Finder, Explorer or the Linux file manager with the new files selected, through each system's own call rather than a command line.
 - **Wheel** (`src/`): plain HTML, CSS and JavaScript in a transparent window. No frontend framework and no npm runtime packages. It opens and closes along the same path with no bounce, and follows Reduce Motion, Increase Contrast and dark mode.
 
 ## Layout
@@ -174,6 +176,7 @@ SECURITY.md                how to report a security problem
   src/formats.rs           formats offered per file type
   src/convert.rs           the conversions
   src/menu.rs              menu bar icon and menu
+  src/reveal.rs            showing results selected in the file manager
   src/settings.rs          saved choices (where files go, hidden formats)
   src/login.rs             Open at Login on each system
   src/drop_view.rs         macOS: the drop target over the wheel
