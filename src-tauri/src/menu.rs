@@ -9,7 +9,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Manager, Wry};
 
 use crate::settings::{self, SaveTo, Store};
-use crate::{formats, login, update};
+use crate::{formats, login, reveal, update};
 
 const SAVE_NEXT: &str = "save:next";
 const SAVE_DOWNLOADS: &str = "save:downloads";
@@ -30,7 +30,8 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let version = format!("Convert Wheel {}", app.package_info().version);
     let title = MenuItem::with_id(app, "version", version, false, None::<&str>)?;
     let hint = MenuItem::with_id(app, "hint", "Hold Shift while dragging a file", false, None::<&str>)?;
-    // Feedback that stays put even when notifications are off.
+    // Feedback that stays put even when notifications are off. Once a drop produced
+    // something, a click on it shows the result.
     let last = MenuItem::with_id(app, LAST, "Last: nothing converted yet", false, None::<&str>)?;
     let update = MenuItem::with_id(app, UPDATE, "Check for Updates…", true, None::<&str>)?;
     let show_log = MenuItem::with_id(app, SHOW_LOG, "Show Log", true, None::<&str>)?;
@@ -83,13 +84,14 @@ pub fn build(app: &App) -> tauri::Result<()> {
 }
 
 /// Puts how the last drop went in the menu, for example "Last: Converted to PDF:
-/// report.pdf", cut short to keep the menu narrow.
-pub fn show_last_result(app: &AppHandle, text: &str) {
+/// report.pdf", cut short to keep the menu narrow. `clickable`: the drop produced
+/// files, and a click on the line shows them.
+pub fn show_last_result(app: &AppHandle, text: &str, clickable: bool) {
     let mut line = format!("Last: {text}");
     if line.chars().count() > LAST_MAX_CHARS {
         line = line.chars().take(LAST_MAX_CHARS - 1).collect::<String>() + "…";
     }
-    set_text(app, LAST, &line, true);
+    set_text(app, LAST, &line, clickable);
 }
 
 pub enum UpdateState<'a> {
@@ -118,9 +120,7 @@ fn set_text(app: &AppHandle, id: &str, text: &str, enabled: bool) {
     if let Some(item) = find(menu.0.items().unwrap_or_default(), id) {
         if let Some(item) = item.as_menuitem() {
             let _ = item.set_text(text);
-            if id != LAST {
-                let _ = item.set_enabled(enabled);
-            }
+            let _ = item.set_enabled(enabled);
         }
     }
 }
@@ -131,16 +131,7 @@ fn show_log(app: &AppHandle) {
         crate::notify(app, "No log yet", "Convert Wheel hasn't written a log on this computer.");
         return;
     };
-    let shown = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg("-R").arg(&file).spawn()
-    } else if cfg!(windows) {
-        std::process::Command::new("explorer").arg(format!("/select,{}", file.display())).spawn()
-    } else {
-        std::process::Command::new("xdg-open").arg(file.parent().unwrap_or(&file)).spawn()
-    };
-    if let Err(e) = shown {
-        crate::notify(app, "Couldn't open the log folder", &format!("{e}. The log is at {}", file.display()));
-    }
+    reveal::show(app, vec![file]);
 }
 
 /// Quitting while conversions run asks for a second Quit within 10 seconds.
@@ -192,6 +183,7 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
     match id {
         QUIT => quit(app),
         SHOW_LOG => show_log(app),
+        LAST => reveal::show_last(app),
         UPDATE => {
             if update::pending(app).is_some() {
                 update::install_soon(app);
