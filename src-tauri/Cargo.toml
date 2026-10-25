@@ -40,6 +40,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -52,3 +53,6 @@ gdk = "0.18"
 glib = "0.18"
 webkit2gtk = "2.0"
 x11rb = "0.14"
+# Already in the build through the single-instance plugin; here for the file
+# manager's ShowItems call.
+zbus = "5"

@@ -9,6 +9,7 @@ mod linux;
 mod log;
 mod login;
 mod menu;
+mod reveal;
 mod settings;
 mod trigger;
 mod update;
@@ -20,7 +21,7 @@ mod win32;
 
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 
@@ -61,23 +62,28 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
     thread::spawn(move || {
         for job in rx {
             let label = job.format.to_uppercase();
-            menu::show_last_result(&app, &format!("Converting to {label}…"));
+            menu::show_last_result(&app, &format!("Converting to {label}…"), false);
             // A bug in one job must not end the worker, or every later drop would
             // vanish without a word. (The panic itself is logged by the panic hook.)
-            let (title, body) = panic::catch_unwind(AssertUnwindSafe(|| run_job(&app, &job, &label)))
+            let (title, body, done) = panic::catch_unwind(AssertUnwindSafe(|| run_job(&app, &job, &label)))
                 .unwrap_or_else(|_| {
-                    (format!("Couldn't convert to {label}"), "Convert Wheel hit an internal error.".to_string())
+                    let body = "Convert Wheel hit an internal error.".to_string();
+                    (format!("Couldn't convert to {label}"), body, Vec::new())
                 });
             JOBS.fetch_sub(1, Ordering::SeqCst);
-            notify(&app, &title, &body);
-            // The menu keeps the reason too, for when notifications are off.
-            menu::show_last_result(&app, &format!("{title}: {body}"));
+            let something = !done.is_empty();
+            notify_done(&app, &title, &body, done);
+            // The menu keeps the reason too, for when notifications are off, and a
+            // click on it shows the result like a click on the notification.
+            menu::show_last_result(&app, &format!("{title}: {body}"), something);
         }
     });
     tx
 }
 
-fn run_job(app: &AppHandle, job: &Job, label: &str) -> (String, String) {
+/// Converts a drop's files. Returns the notification's title and text, and the files
+/// it produced.
+fn run_job(app: &AppHandle, job: &Job, label: &str) -> (String, String, Vec<PathBuf>) {
     let slow = job.paths.iter().any(|p| {
         formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
     });
@@ -112,7 +118,7 @@ fn run_job(app: &AppHandle, job: &Job, label: &str) -> (String, String) {
     if moved {
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
     }
-    (title, body)
+    (title, body, done)
 }
 
 fn file_name(p: &Path) -> String {
@@ -141,10 +147,25 @@ fn summary(label: &str, done: &[PathBuf], failed: &[(String, String)]) -> (Strin
     }
 }
 
+/// Numbers every notification, so a click on one can be matched to the drop it reported.
+static NOTIFICATION_ID: AtomicI32 = AtomicI32::new(1);
+
 /// Shows a notification. If the system refuses, the message goes to the log, and the
 /// menu's last-result line still shows how the last drop went.
 pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
-    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+    show_notification(app, NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst), title, body);
+}
+
+/// `notify` for a finished drop. A click on the notification shows `done`, the files
+/// it produced, in the file manager.
+fn notify_done(app: &AppHandle, title: &str, body: &str, done: Vec<PathBuf>) {
+    let id = NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst);
+    app.state::<reveal::Results>().finished(id, done);
+    show_notification(app, id, title, body);
+}
+
+fn show_notification(app: &AppHandle, id: i32, title: &str, body: &str) {
+    if let Err(e) = app.notification().builder().id(id).title(title).body(body).show() {
         log::line(&format!("notification not shown ({e}): {title}: {body}"));
     }
 }
@@ -258,6 +279,16 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let (store, settings_problem) = settings::Store::load(app.path().app_config_dir()?.join("settings.json"));
     app.manage(store);
     app.manage(update::Pending::default());
+    app.manage(reveal::Results::default());
+    // Before any notification: the ones shown earlier never report a click.
+    let handle = app.handle().clone();
+    app.notification().on_action(move |action| {
+        if action.action_id() == "tap" {
+            if let Some(shown) = action.notification() {
+                reveal::show_notified(&handle, shown.id());
+            }
+        }
+    })?;
     menu::build(app)?;
     app.manage(start_worker(app.handle().clone()));
     app.manage(wheel::WheelState::default());
