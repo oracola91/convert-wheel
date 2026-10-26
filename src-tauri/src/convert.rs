@@ -76,17 +76,18 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     let kind = formats::kind_of(&ext).ok_or_else(|| format!(".{ext} files are not supported"))?;
     let tool = formats::is_tool(target).then_some(target);
     match tool {
-        Some(t) if !formats::tool_takes(t, &ext) => return Err(format!(".{ext} files can't be {}", tool_suffix(t))),
+        Some(t) if !formats::tool_takes(t, &ext) => return Err(format!(".{ext} files can't be {}", tool_done(t))),
+        Some(t) if formats::combines(t) => return Err("Merge needs two PDFs or more".into()),
         None if !formats::outputs_for(&ext).contains(&target) => return Err(format!(".{ext} files can't become .{target}")),
         _ => {}
     }
-    let stem = src
+    let base = src
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or("the file name is not valid text")?;
     let (stem, out_ext) = match tool {
-        Some(t) => (format!("{stem} ({})", tool_suffix(t)), formats::canonical(&ext).to_string()),
-        None => (stem.to_string(), target.to_string()),
+        Some(t) => (format!("{base} ({})", tool_suffix(t)), formats::canonical(&ext).to_string()),
+        None => (base.to_string(), target.to_string()),
     };
     // Not a folder, a device or a pipe (a pipe would block the read below forever).
     let meta = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?;
@@ -126,7 +127,8 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     let file = |done: Result<(), String>| done.map(|()| Output::File);
     let converted = match (tool, kind) {
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
-        (Some(_), _) => Err("the Tools wheel works on pictures only".to_string()),
+        (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
+        (Some(_), _) => Err("the Tools wheel has no tools for this kind of file yet".to_string()),
         (None, Kind::Image) => file(image(&input, target, &out)),
         (None, Kind::Audio) => file(audio(&input, target, &out)),
         (None, Kind::Video) => file(video(&input, &ext, target, &out)),
@@ -140,8 +142,11 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         return Err("the converter finished but wrote no file".into());
     }
     // A compressed copy that is no smaller is no use: say so instead of saving it.
-    if tool == Some("tool:compress") && fs::metadata(&out).map_or(true, |m| m.len() >= meta.len()) {
-        return Err("it is already as small as Compress makes it".into());
+    if let Some(t @ ("tool:compress" | "tool:smaller")) = tool {
+        if fs::metadata(&out).map_or(true, |m| m.len() >= meta.len()) {
+            let name = if t == "tool:compress" { "Compress" } else { "Smaller" };
+            return Err(format!("it is already as small as {name} makes it"));
+        }
     }
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
@@ -149,7 +154,10 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     };
     let save = |dir: &Path| match &output {
         Output::File => place(&out, dir, &stem, &out_ext),
-        Output::Pages { files, cut } => place_pages(files, *cut, dir, &stem, target),
+        // A split PDF: "report (pages)/report 01.pdf". A PDF's pages as pictures:
+        // "report (PNG)/report 01.png".
+        Output::Pages { files, cut } if tool.is_some() => place_pages(files, *cut, dir, base, "pages", &out_ext),
+        Output::Pages { files, cut } => place_pages(files, *cut, dir, base, &target.to_uppercase(), target),
     };
     let placed = match save(&dir) {
         Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| save(fallback)),
@@ -265,6 +273,22 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:half" => "half size",
         "tool:clean" => "no metadata",
         "tool:rotate" => "rotated",
+        "tool:merge" => "merged",
+        "tool:smaller" => "smaller",
+        _ => "changed",
+    }
+}
+
+/// What a tool does, for messages: ".gif files can't be rotated".
+fn tool_done(tool: &str) -> &'static str {
+    match tool {
+        "tool:compress" => "compressed",
+        "tool:half" => "resized",
+        "tool:clean" => "cleaned of metadata",
+        "tool:rotate" => "rotated",
+        "tool:merge" => "merged",
+        "tool:split" => "split",
+        "tool:smaller" => "made smaller",
         _ => "changed",
     }
 }
@@ -624,6 +648,139 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
     }
 }
 
+/// Most pages Split makes files of; the folder says so when the PDF had more.
+const MAX_SPLIT: usize = 100;
+
+/// Smaller: pictures above 225 dpi are scaled down to 150 dpi, and photos are saved
+/// again as JPEG at quality 60, each only where that makes it smaller. Fonts and
+/// streams are compressed, unused and duplicate objects go.
+const SMALLER: &[&str] = &[
+    "-gggg", "-z", "-f", "-i", "-Z",
+    "--color-lossy-image-subsample-dpi", "225,150", "--color-lossy-image-recompress-method", "jpeg:60",
+    "--gray-lossy-image-subsample-dpi", "225,150", "--gray-lossy-image-recompress-method", "jpeg:60",
+    "--color-lossless-image-subsample-dpi", "225,150", "--gray-lossless-image-subsample-dpi", "225,150",
+];
+
+/// Older MuPDF (Ubuntu's own packages) has none of the picture options: there Smaller
+/// only tidies the file, which seldom makes it much smaller.
+const SMALLER_OLD_MUPDF: &[&str] = &["-ggg", "-z"];
+
+/// Runs a Tools wheel tool on a PDF (Merge, which takes several, is `combine`).
+fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Output, String> {
+    let mutool = Mutool { path: tool("mutool")?, src, deadline: Instant::now() + PDF_TOTAL };
+    let count = mutool.page_count(work.path())?;
+    if count == 0 {
+        return Err("this PDF has no pages".into());
+    }
+    let out_name = out.file_name().and_then(|n| n.to_str()).ok_or("work folder name")?;
+    match tool_id {
+        "tool:split" => {
+            if count == 1 {
+                return Err("this PDF has only one page".into());
+            }
+            let dir = work.path().join("pages");
+            fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
+            let last = count.min(MAX_SPLIT);
+            let files: Vec<PathBuf> = (1..=last).map(|n| dir.join(format!("{n}.pdf"))).collect();
+            for (n, file) in (1..=last).zip(&files) {
+                let name = format!("{n}.pdf");
+                mutool.run_args(&dir, &["merge", "-o", &name], &[&n.to_string()])?;
+                if !file.is_file() {
+                    return Err(format!("MuPDF didn't copy page {n} of this PDF"));
+                }
+            }
+            Ok(Output::Pages { files, cut: count > MAX_SPLIT })
+        }
+        "tool:smaller" => {
+            let mut args = vec!["clean"];
+            args.extend(SMALLER);
+            match mutool.run_failure(work.path(), &args, &[out_name]) {
+                Err(f) if f.output.contains("usage:") => {
+                    let mut args = vec!["clean"];
+                    args.extend(SMALLER_OLD_MUPDF);
+                    mutool.run_args(work.path(), &args, &[out_name])?;
+                }
+                other => other.map_err(|f| f.message)?,
+            }
+            Ok(Output::File)
+        }
+        other => Err(format!("unknown tool {other}")),
+    }
+}
+
+/// Joins the dropped files into one: the Tools wheel's Merge, for PDFs, in the order
+/// they were dropped. The result goes next to the first file, named after it: "report
+/// (merged).pdf". MuPDF leaves out a PDF it can't read and still succeeds, so the pages
+/// are counted before and after.
+pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
+    if target != "tool:merge" {
+        return Err(format!("{target} doesn't combine files"));
+    }
+    let [first, _, ..] = srcs else {
+        return Err("Merge needs two PDFs or more".into());
+    };
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let deadline = Instant::now() + PDF_TOTAL;
+    let mutool = tool("mutool")?;
+    let mut inputs = Vec::new();
+    let mut pages = 0;
+    for (i, src) in srcs.iter().enumerate() {
+        let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let fail = |e: String| format!("{name}: {}", redact(&e, src, work.path()));
+        if formats::extension(src).as_deref() != Some("pdf") {
+            return Err(fail("only PDFs can be merged".into()));
+        }
+        let meta = fs::metadata(src).map_err(|e| fail(format!("can't read the file: {e}")))?;
+        if !meta.is_file() {
+            return Err(fail("this is not a regular file".into()));
+        }
+        let staged = work.path().join(format!("input-{i}.pdf"));
+        fs::copy(src, &staged).map_err(|e| fail(format!("can't read the file: {e}")))?;
+        if !read_head(&staged)?.starts_with(b"%PDF-") {
+            return Err(fail("this is not a valid .pdf file".into()));
+        }
+        let pdf = Mutool { path: mutool.clone(), src: &staged, deadline };
+        pages += pdf.page_count(work.path()).map_err(fail)?;
+        inputs.push(staged);
+    }
+    if pages > MAX_TEXT_PAGES {
+        return Err(format!("together these PDFs have {pages} pages: Merge takes up to {MAX_TEXT_PAGES}"));
+    }
+    let out = work.path().join("result.pdf");
+    let mut cmd = Command::new(&mutool);
+    cmd.current_dir(work.path()).args(["merge", "-o", "result.pdf"]).args(&inputs);
+    let limit = deadline.saturating_duration_since(Instant::now()).min(OFFICE);
+    run_tool(cmd, limit).map_err(|f| redact(&password_message(f), first, work.path()))?;
+    let merged = Mutool { path: mutool.clone(), src: &out, deadline };
+    if !out.is_file() || merged.page_count(work.path())? != pages {
+        return Err("MuPDF couldn't read one of the PDFs".into());
+    }
+    let stem = first.file_stem().and_then(|s| s.to_str()).ok_or("the file name is not valid text")?;
+    let stem = format!("{stem} ({})", tool_suffix(target));
+    let dir = match save_in {
+        Some(dir) => dir.to_path_buf(),
+        None => first.parent().ok_or("the file has no folder")?.to_path_buf(),
+    };
+    let placed = match place(&out, &dir, &stem, "pdf") {
+        Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| place(&out, fallback, &stem, "pdf")),
+        other => other,
+    };
+    placed.map_err(|e| format!("can't save the result: {e}"))
+}
+
+/// mutool's last line on a failure is only "cannot draw ...": say why when the reason
+/// is a known one.
+fn password_message(f: Failure) -> String {
+    if f.output.contains("cannot authenticate password") {
+        "this PDF is password-protected: open it, save a copy without the password, and convert that".into()
+    } else {
+        f.message
+    }
+}
+
 /// mutool for one PDF, within the time all of that PDF's work may take.
 struct Mutool<'a> {
     path: PathBuf,
@@ -643,18 +800,20 @@ impl Mutool<'_> {
 
     /// Runs `mutool <args> <the PDF> <pages>` in `dir` (output names are relative to it).
     fn run(&self, dir: &Path, args: &[&str], pages: &str) -> Result<(), String> {
+        self.run_args(dir, args, &[pages])
+    }
+
+    /// Runs `mutool <args> <the PDF> <after>` in `dir`.
+    fn run_args(&self, dir: &Path, args: &[&str], after: &[&str]) -> Result<(), String> {
+        self.run_failure(dir, args, after).map_err(password_message)
+    }
+
+    /// `run_args`, keeping mutool's own output on a failure.
+    fn run_failure(&self, dir: &Path, args: &[&str], after: &[&str]) -> Result<(), Failure> {
         let mut cmd = Command::new(&self.path);
-        cmd.current_dir(dir).args(args).arg(self.src).arg(pages);
+        cmd.current_dir(dir).args(args).arg(self.src).args(after);
         let limit = self.time_left()?.min(OFFICE);
-        // mutool's last line on a failure is only "cannot draw ...": say why when the
-        // reason is a known one.
-        run_tool(cmd, limit).map_err(|f| {
-            if f.output.contains("cannot authenticate password") {
-                "this PDF is password-protected: open it, save a copy without the password, and convert that".into()
-            } else {
-                f.message
-            }
-        })
+        run_tool(cmd, limit)
     }
 
     /// The number of pages, as MuPDF reads the PDF.
@@ -964,8 +1123,7 @@ fn place(tmp: &Path, dir: &Path, stem: &str, target: &str) -> io::Result<PathBuf
 /// the format ("report (PNG)", then "report (PNG) 2", ...; "report (PNG, pages 1-100)"
 /// when the PDF had more), as "report 1.png", "report 2.png", ... The numbers are
 /// padded ("report 01.png") so the pages sort in order everywhere.
-fn place_pages(files: &[PathBuf], cut: bool, dir: &Path, stem: &str, target: &str) -> io::Result<PathBuf> {
-    let label = target.to_uppercase();
+fn place_pages(files: &[PathBuf], cut: bool, dir: &Path, stem: &str, label: &str, target: &str) -> io::Result<PathBuf> {
     let base = if cut {
         format!("{stem} ({label}, pages 1-{})", files.len())
     } else {
@@ -1501,7 +1659,7 @@ mod tests {
             .collect();
         let out = work.path().join("out");
         fs::create_dir_all(out.join("report (PNG)")).unwrap();
-        let folder = place_pages(&pages, false, &out, "report", "png").unwrap();
+        let folder = place_pages(&pages, false, &out, "report", "PNG", "png").unwrap();
         assert_eq!(folder, out.join("report (PNG) 2"));
         assert_eq!(fs::read_to_string(folder.join("report 01.png")).unwrap(), "1");
         assert_eq!(fs::read_to_string(folder.join("report 12.png")).unwrap(), "12");
@@ -1514,7 +1672,7 @@ mod tests {
                 p
             })
             .collect();
-        let folder = place_pages(&pages, true, &out, "report", "jpg").unwrap();
+        let folder = place_pages(&pages, true, &out, "report", "JPG", "jpg").unwrap();
         assert_eq!(folder, out.join("report (JPG, pages 1-2)"));
         assert!(folder.join("report 1.jpg").is_file());
     }
@@ -1682,6 +1840,52 @@ mod tests {
         let gif = work.path().join("anim.gif");
         fs::write(&gif, b"GIF89a").unwrap();
         assert_eq!(convert(&gif, "tool:rotate", None, work.path()).unwrap_err(), ".gif files can't be rotated");
+    }
+
+    #[test]
+    fn pdf_tools_split_merge_and_shrink() {
+        if tool("mutool").is_err() {
+            let required = std::env::var_os("REQUIRE_MUTOOL").is_some_and(|v| !v.is_empty());
+            assert!(!required, "mutool should be installed here");
+            eprintln!("mutool isn't installed: PDF tools not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let pages = |path: &Path| {
+            let m = Mutool { path: tool("mutool").unwrap(), src: path, deadline: Instant::now() + PDF_TOTAL };
+            m.page_count(tempfile::tempdir().unwrap().path()).unwrap()
+        };
+        let three = work.path().join("report.pdf");
+        fs::write(&three, tiny_pdf(&["One", "Two", "Three"])).unwrap();
+        let two = work.path().join("annex.pdf");
+        fs::write(&two, tiny_pdf(&["Four", "Five"])).unwrap();
+
+        let folder = convert(&three, "tool:split", None, work.path()).unwrap();
+        assert_eq!(folder, work.path().join("report (pages)"));
+        for n in 1..=3 {
+            assert_eq!(pages(&folder.join(format!("report {n}.pdf"))), 1);
+        }
+        let one = work.path().join("one.pdf");
+        fs::write(&one, tiny_pdf(&["Only"])).unwrap();
+        assert_eq!(convert(&one, "tool:split", None, work.path()).unwrap_err(), "this PDF has only one page");
+
+        let merged = combine(&[three.clone(), two.clone()], "tool:merge", None, work.path()).unwrap();
+        assert_eq!(merged, work.path().join("report (merged).pdf"));
+        assert_eq!(pages(&merged), 5);
+        // A PDF MuPDF can't read stops the merge instead of being left out.
+        let broken = work.path().join("broken.pdf");
+        fs::write(&broken, b"%PDF-1.4\nnot really a PDF\n").unwrap();
+        let err = combine(&[three.clone(), broken], "tool:merge", None, work.path()).unwrap_err();
+        assert!(err.starts_with("broken.pdf: "), "{err}");
+        let err = combine(&[three.clone(), work.path().join("x.png")], "tool:merge", None, work.path()).unwrap_err();
+        assert_eq!(err, "x.png: only PDFs can be merged");
+        assert_eq!(convert(&three, "tool:merge", None, work.path()).unwrap_err(), "Merge needs two PDFs or more");
+
+        // A tiny text-only PDF has nothing to shrink, or very little.
+        match convert(&three, "tool:smaller", None, work.path()) {
+            Ok(smaller) => assert_eq!(pages(&smaller), 3),
+            Err(e) => assert_eq!(e, "it is already as small as Smaller makes it"),
+        }
     }
 
     #[test]

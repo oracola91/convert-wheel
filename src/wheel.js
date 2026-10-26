@@ -26,6 +26,9 @@ const TOOLS = {
   'tool:half': ['Half size', 'Half size'],
   'tool:clean': ['No metadata', 'Remove metadata'],
   'tool:rotate': ['Rotate', 'Rotate right'],
+  'tool:merge': ['Merge', 'Merge into one'],
+  'tool:split': ['Split', 'One file per page'],
+  'tool:smaller': ['Smaller', 'Make smaller'],
 };
 
 const svg = document.getElementById('wheel');
