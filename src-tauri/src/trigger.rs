@@ -114,7 +114,7 @@ fn items_for(app: &AppHandle, paths: &[String], which: Which) -> Vec<&'static st
             formats::formats_for(paths, |kind, f| settings.shows(kind, f))
         }
         Which::Tools => formats::tools_for(paths),
-        Which::Actions => formats::actions_for(paths.len()),
+        Which::Actions => formats::actions_for(paths),
     }
 }
 

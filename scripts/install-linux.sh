@@ -3,8 +3,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/oracola91/convert-wheel/main/scripts/install-linux.sh | sh
 #
-# 1. the converters: ffmpeg, ImageMagick, LibreOffice (Writer, Calc, Impress), MuPDF
-#    and pandoc, pandoc from its own releases unless an up-to-date working one is there;
+# 1. the converters: ffmpeg, ImageMagick, LibreOffice (Writer, Calc, Impress), MuPDF,
+#    bsdtar (archives) and pandoc, pandoc from its own releases unless an up-to-date
+#    working one is there;
 # 2. the newest Convert Wheel release, after checking its signature with the project's
 #    update key (the same check the app makes on every update) and the version in it;
 # 3. Open at Login;
@@ -166,11 +167,11 @@ main() {
     # apt reads local packages as its own user, so they must be readable.
     chmod 755 "$work"
 
-    step "1/5 The converters: ffmpeg, ImageMagick, LibreOffice, MuPDF, pandoc (asks for your password)"
+    step "1/5 The converters: ffmpeg, ImageMagick, LibreOffice, MuPDF, bsdtar, pandoc (asks for your password)"
     # A broken extra package source makes the update fail but leaves the rest usable.
     apt_get update || echo "(apt-get update reported a problem, above; going on with the package lists there are.)"
     apt_get install -y ffmpeg imagemagick libreoffice-writer libreoffice-calc libreoffice-impress mupdf-tools \
-        python3 openssl
+        libarchive-tools python3 openssl
     if ! pandoc_ok || pandoc_older; then
         step "    Adding pandoc $PANDOC_VERSION from pandoc's releases"
         pdeb="$work/pandoc-$PANDOC_VERSION-1-amd64.deb"

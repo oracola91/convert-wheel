@@ -39,6 +39,10 @@ const TOOLS = {
   'act:show': ['Show', 'Show in folder'],
   'act:terminal': ['Terminal', 'Open Terminal here'],
   'act:airdrop': ['AirDrop', 'Send with AirDrop'],
+  'act:zip': ['ZIP', 'Make a ZIP'],
+  'act:tgz': ['TAR.GZ', 'Make a TAR.GZ'],
+  'act:tar': ['TAR', 'Make a TAR'],
+  'act:unpack': ['Unpack', 'Unpack here'],
 };
 
 const svg = document.getElementById('wheel');

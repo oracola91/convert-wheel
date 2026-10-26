@@ -1,7 +1,8 @@
 //! The Actions wheel (Control+Shift while dragging): what can be done with the dragged
 //! files themselves. None of them changes a file: Copy Path puts the paths on the
 //! clipboard, Show in Folder opens the file manager on them, Terminal opens one in
-//! their folder, and AirDrop (macOS) offers to send them.
+//! their folder, and AirDrop (macOS) offers to send them. Making and unpacking
+//! archives take a while, so they go through the conversion queue (archive.rs).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,6 +18,10 @@ use crate::{log, notify, reveal};
 /// drop: slow parts run on a thread of their own or on the main thread, as each
 /// system wants.
 pub fn run(app: &AppHandle, action: &str, paths: Vec<String>) {
+    if matches!(action, "act:zip" | "act:tgz" | "act:tar" | "act:unpack") {
+        crate::enqueue(app, paths, action.to_string());
+        return;
+    }
     let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     log::line(&format!("{action} on {} file(s)", files.len()));
     match action {

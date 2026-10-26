@@ -78,6 +78,11 @@ Hold Control+Shift while dragging and a third wheel opens: what can be done with
 - **Terminal**: a terminal in the file's folder (in a dragged folder itself): Terminal on macOS, PowerShell on Windows, GNOME Terminal, Console, Konsole or the system's default on Linux. The folder is handed over as the starting folder, never inside a command line.
 - **AirDrop** (macOS): the AirDrop window for the files.
 
+- **ZIP**, **TAR.GZ**, **TAR**: an archive of everything dragged, files and folders, next to the first: "Photos.zip", "notes.txt.zip", or "Archive.zip" for several.
+- **Unpack** (when every dragged file is a ZIP, TAR, TAR.GZ, GZ or RAR): what the archive holds at the top goes next to it, when that is one folder or file, as Finder's Archive Utility does it; otherwise a new folder named after the archive. Nothing already there is replaced ("Photos 2").
+
+Archives go through bsdtar (libarchive): built into macOS and into Windows 10 and later (tar.exe), `libarchive-tools` on Linux (the setup script installs it). It refuses names with ".." and strips a leading "/", so nothing lands outside the new folder; an archive that does try is refused as a whole and leaves nothing behind. Unpacking may write at most 1 GB plus twenty times the archive's size, so a "zip bomb" is stopped. Unpacking first goes into a hidden folder next to the archive, so a half-done unpack is never mistaken for a finished one. A password-protected archive is refused. A plain .gz (one file, not a TAR) is unpacked by the app itself, within the same budget.
+
 On a Mac, start the drag first and then press Control+Shift: Control held before the click turns it into a right-click. Copying and moving files, sharing on Windows and a shelf for files come later ([ROADMAP](ROADMAP.md), stage 3).
 
 ## On Windows and Linux
