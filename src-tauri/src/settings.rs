@@ -19,12 +19,86 @@ pub enum SaveTo {
     Downloads,
 }
 
+/// How a conversion trades file size for quality. Balanced is what the app has always
+/// done.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Level {
+    Smaller,
+    #[default]
+    Balanced,
+    Best,
+}
+
+impl Level {
+    pub const ALL: [Level; 3] = [Level::Smaller, Level::Balanced, Level::Best];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Level::Smaller => "smaller",
+            Level::Balanced => "balanced",
+            Level::Best => "best",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Level::Smaller => "Smaller Files",
+            Level::Balanced => "Balanced",
+            Level::Best => "Best Quality",
+        }
+    }
+
+    /// One of three values, by level: the conversions' numbers.
+    pub fn pick<T>(self, smaller: T, balanced: T, best: T) -> T {
+        match self {
+            Level::Smaller => smaller,
+            Level::Balanced => balanced,
+            Level::Best => best,
+        }
+    }
+}
+
+/// The quality level for each kind of file it matters for. Lossless formats (PNG,
+/// TIFF, WAV, FLAC, AIFF) and documents don't have one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Quality {
+    pub pictures: Level,
+    pub video: Level,
+    pub audio: Level,
+}
+
+impl Quality {
+    /// The kinds, by the key the menu uses, with their names.
+    pub const KINDS: [(&'static str, &'static str); 3] = [("pictures", "Pictures"), ("video", "Video"), ("audio", "Audio")];
+
+    pub fn get(&self, kind: &str) -> Option<Level> {
+        match kind {
+            "pictures" => Some(self.pictures),
+            "video" => Some(self.video),
+            "audio" => Some(self.audio),
+            _ => None,
+        }
+    }
+
+    pub fn set(&mut self, kind: &str, level: Level) {
+        match kind {
+            "pictures" => self.pictures = level,
+            "video" => self.video = level,
+            "audio" => self.audio = level,
+            _ => {}
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub save_to: SaveTo,
     /// Formats left off the wheel, as "kind:format" (for example "image:avif").
     pub hidden: BTreeSet<String>,
+    pub quality: Quality,
 }
 
 pub fn key(kind: Kind, format: &str) -> String {
@@ -115,6 +189,20 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quality_is_kept_and_older_files_get_balanced() {
+        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
+        assert_eq!(old.quality, Quality::default());
+        assert_eq!(old.quality.video, Level::Balanced);
+        let mut s = Settings::default();
+        s.quality.set("audio", Level::Best);
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.contains(r#""audio":"best""#), "{text}");
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.quality.get("audio"), Some(Level::Best));
+        assert_eq!(Level::Smaller.pick(1, 2, 3), 1);
+    }
 
     #[test]
     fn settings_survive_a_restart_and_bad_files_are_kept_aside() {

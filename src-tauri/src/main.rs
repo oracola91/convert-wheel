@@ -150,7 +150,12 @@ struct Running {
 }
 
 impl Running {
+    #[cfg(test)]
     fn new(target: &str, paths: &[String]) -> Self {
+        Self::with_quality(target, paths, settings::Quality::default())
+    }
+
+    fn with_quality(target: &str, paths: &[String], quality: settings::Quality) -> Self {
         // A tool that makes one file of the whole drop works on it as one thing.
         let (count, first) = if formats::combines(target) {
             let what = match paths {
@@ -162,7 +167,7 @@ impl Running {
             (paths.len(), paths.first().map(|p| file_name(Path::new(p))).unwrap_or_default())
         };
         Running {
-            control: convert::Control::new(),
+            control: convert::Control::with_quality(quality),
             target: target.to_string(),
             words: Words::new(target),
             count,
@@ -245,7 +250,9 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
     let (tx, rx) = mpsc::channel::<Job>();
     thread::spawn(move || {
         for job in rx {
-            let running = Arc::new(Running::new(&job.format, &job.paths));
+            // The quality chosen in the menu when the drop starts holds for all of it.
+            let quality = app.state::<settings::Store>().get().quality;
+            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality));
             app.state::<NowConverting>().set(Some(Arc::clone(&running)));
             menu::show_progress(&app, &running.line());
             let (finished, done_signal) = mpsc::channel::<()>();

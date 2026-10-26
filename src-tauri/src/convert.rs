@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use crate::formats::{self, Kind};
+use crate::settings::Quality;
 
 /// How long each tool may run before it is stopped. Generous: a stuck tool should not
 /// block every later conversion, but a long video must still finish.
@@ -249,8 +250,13 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
         // JPEG has no transparency; without this, transparent areas turn black.
         cmd.args(["-background", "white", "-alpha", "remove", "-alpha", "off"]);
     }
+    let level = quality().pictures;
     if matches!(target, "jpg" | "webp") {
-        cmd.args(["-quality", "90"]);
+        cmd.args(["-quality", level.pick("75", "90", "97")]);
+    }
+    // ImageMagick's own default for these (libheif's 50) is Balanced.
+    if let (true, Some(q)) = (matches!(target, "heic" | "avif"), level.pick(Some("40"), None, Some("85"))) {
+        cmd.args(["-quality", q]);
     }
     if target == "ico" {
         // Icons are square, 256 at most, and hold several sizes. A picture that isn't
@@ -366,7 +372,7 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             } else {
                 args.extend(["-ac", "1"]);
             }
-            args.extend_from_slice(audio_args(own));
+            args.extend(audio_args(own));
             ffmpeg(src, &args, out, AUDIO)
         }
         other => Err(format!("unknown tool {other}")),
@@ -426,19 +432,22 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
     run(cmd, QUICK)
 }
 
-fn audio_args(target: &str) -> &'static [&'static str] {
+/// The encoder for an audio format, at the menu's audio quality. WAV, FLAC and AIFF
+/// are lossless and have none.
+fn audio_args(target: &str) -> Vec<&'static str> {
+    let level = quality().audio;
     match target {
-        "mp3" => &["-c:a", "libmp3lame", "-q:a", "2"],
-        "m4a" => &["-c:a", "aac", "-b:a", "256k"],
-        "wav" => &["-c:a", "pcm_s16le"],
-        "flac" => &["-c:a", "flac"],
-        "aiff" => &["-c:a", "pcm_s16be"],
+        // VBR: about 130, 190 and 245 kbit/s.
+        "mp3" => vec!["-c:a", "libmp3lame", "-q:a", level.pick("5", "2", "0")],
+        // Tools only for "aac": they keep the file's own format.
+        "m4a" | "aac" => vec!["-c:a", "aac", "-b:a", level.pick("160k", "256k", "320k")],
+        "wav" => vec!["-c:a", "pcm_s16le"],
+        "flac" => vec!["-c:a", "flac"],
+        "aiff" => vec!["-c:a", "pcm_s16be"],
         // Homebrew's ffmpeg has no Vorbis encoder; Opus in an Ogg file plays everywhere Ogg does.
-        "ogg" | "opus" => &["-c:a", "libopus", "-b:a", "160k"],
-        "wma" => &["-c:a", "wmav2", "-b:a", "192k"],
-        // Tools only: they keep the file's own format.
-        "aac" => &["-c:a", "aac", "-b:a", "256k"],
-        _ => &[],
+        "ogg" | "opus" => vec!["-c:a", "libopus", "-b:a", level.pick("96k", "160k", "256k")],
+        "wma" => vec!["-c:a", "wmav2", "-b:a", level.pick("128k", "192k", "256k")],
+        _ => Vec::new(),
     }
 }
 
@@ -526,18 +535,21 @@ fn percent_of(at: Duration, length: Duration) -> u8 {
 
 fn audio(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     let mut args = vec!["-vn", "-map_metadata", "0"];
-    args.extend_from_slice(audio_args(target));
+    args.extend(audio_args(target));
     ffmpeg(src, &args, out, AUDIO)
 }
 
 fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
     // H.264 in yuv420p needs even width and height; phone and screen recordings often
     // aren't, so round down by a pixel where needed.
-    const H264: &[&str] = &[
+    let level = quality().video;
+    let h264: Vec<&str> = vec![
         "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264",
-        "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        "-preset", "medium", "-crf", level.pick("26", "20", "17"), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
     ];
+    // MPEG-4 Part 2 and Windows Media 8 take a fixed quantiser: lower is better.
+    let quantiser = level.pick("5", "3", "2");
     match target {
         "mp4" | "mov" => {
             // MP4, MOV and M4V usually hold the same streams: try a fast copy first.
@@ -549,12 +561,12 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
                 }
                 let _ = fs::remove_file(out);
             }
-            ffmpeg(src, H264, out, VIDEO)
+            ffmpeg(src, &h264, out, VIDEO)
         }
         "webm" => ffmpeg(
             src,
             &[
-                "-map", "0:v:0", "-map", "0:a?", "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0",
+                "-map", "0:v:0", "-map", "0:a?", "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0",
                 "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
             ],
             out,
@@ -568,7 +580,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
             }
             let _ = fs::remove_file(out);
             // H.264 without MP4's own "+faststart".
-            ffmpeg(src, &H264[..H264.len() - 2], out, VIDEO)
+            ffmpeg(src, &h264[..h264.len() - 2], out, VIDEO)
         }
         // For older players: MPEG-4 Part 2 (what Xvid makes) with MP3, and Windows
         // Media 8 with WMA.
@@ -576,7 +588,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
             src,
             &[
                 "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "mpeg4", "-vtag", "xvid",
-                "-q:v", "3", "-c:a", "libmp3lame", "-q:a", "4",
+                "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4",
             ],
             out,
             VIDEO,
@@ -584,7 +596,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
         "wmv" => ffmpeg(
             src,
             &[
-                "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "wmv2", "-q:v", "3",
+                "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "wmv2", "-q:v", quantiser,
                 "-c:a", "wmav2", "-b:a", "192k",
             ],
             out,
@@ -1072,13 +1084,20 @@ pub struct Control {
     stop: AtomicBool,
     /// Percent done of the tool running now, or NO_PERCENT.
     percent: AtomicU8,
+    /// The quality levels chosen in the menu when the drop started.
+    quality: Quality,
 }
 
 const NO_PERCENT: u8 = u8::MAX;
 
 impl Control {
+    #[cfg(test)]
     pub fn new() -> Arc<Self> {
-        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT) })
+        Self::with_quality(Quality::default())
+    }
+
+    pub fn with_quality(quality: Quality) -> Arc<Self> {
+        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT), quality })
     }
 
     /// Ends the tool running now, with everything it started, and keeps the drop from
@@ -1123,6 +1142,12 @@ pub fn under<T>(control: &Arc<Control>, f: impl FnOnce() -> T) -> T {
 
 fn control() -> Option<Arc<Control>> {
     CONTROL.with(|c| c.borrow().clone())
+}
+
+/// The quality levels for this drop: Balanced everywhere outside one (the command line,
+/// tests).
+fn quality() -> Quality {
+    control().map(|c| c.quality).unwrap_or_default()
 }
 
 pub(crate) fn stop_asked() -> bool {
@@ -2167,6 +2192,27 @@ mod tests {
         let ico = convert(&wide, "ico", None, work.path()).unwrap();
         let out = Command::new(magick().unwrap()).arg(&ico).args(["-format", "%wx%h,", "info:"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "256x256,128x128,64x64,48x48,32x32,16x16,");
+    }
+
+    #[test]
+    fn the_quality_level_changes_the_result() {
+        use crate::settings::Level;
+        if magick().is_err() {
+            eprintln!("ImageMagick isn't installed: quality not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("noise.png");
+        let mut make = Command::new(magick().unwrap());
+        make.args(["-size", "200x200", "-seed", "3", "plasma:fractal"]).arg(&src);
+        assert!(make.status().unwrap().success());
+        let size_at = |pictures: Level| {
+            let control = Control::with_quality(Quality { pictures, ..Quality::default() });
+            let out = under(&control, || convert(&src, "jpg", None, work.path())).unwrap();
+            fs::metadata(out).unwrap().len()
+        };
+        let (smaller, balanced, best) = (size_at(Level::Smaller), size_at(Level::Balanced), size_at(Level::Best));
+        assert!(smaller < balanced && balanced < best, "{smaller} {balanced} {best}");
     }
 
     #[test]
