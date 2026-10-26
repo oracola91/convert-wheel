@@ -835,7 +835,7 @@ fn span(limit: Duration) -> String {
 }
 
 /// Without this, Windows flashes a console window for every tool that runs.
-fn quiet(cmd: &mut Command) {
+pub(crate) fn quiet(cmd: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -846,7 +846,7 @@ fn quiet(cmd: &mut Command) {
 }
 
 /// Stops a tool and the processes it started.
-fn stop(child: &mut Child) {
+pub(crate) fn stop(child: &mut Child) {
     kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
@@ -962,7 +962,7 @@ fn tool(name: &str) -> Result<PathBuf, String> {
         .chain(extra_tool_dirs())
         .map(|dir| dir.join(&file))
         .find(|p| p.is_file())
-        .ok_or_else(|| format!("{name} is not installed ({})", install_hint(name)))
+        .ok_or_else(|| not_installed(name))
 }
 
 #[cfg(target_os = "macos")]
@@ -1026,26 +1026,63 @@ fn parse_pandoc_version(line: &str) -> Option<(u32, u32)> {
     Some((numbers.next()??, numbers.next()??))
 }
 
+/// A converter the app runs: the name `tool` looks for, the name people know it by, and
+/// the packages that install it.
+pub struct Converter {
+    pub tool: &'static str,
+    pub name: &'static str,
+    /// Homebrew's arguments after `brew install`.
+    pub brew: &'static str,
+    pub winget: &'static str,
+    pub apt: &'static str,
+}
+
+pub const CONVERTERS: &[Converter] = &[
+    Converter { tool: "ffmpeg", name: "ffmpeg", brew: "ffmpeg", winget: "Gyan.FFmpeg", apt: "ffmpeg" },
+    Converter { tool: "magick", name: "ImageMagick", brew: "imagemagick", winget: "ImageMagick.ImageMagick", apt: "imagemagick" },
+    Converter { tool: "pandoc", name: "pandoc", brew: "pandoc", winget: "JohnMacFarlane.Pandoc", apt: "pandoc" },
+    Converter {
+        tool: "soffice",
+        name: "LibreOffice",
+        brew: "--cask libreoffice",
+        winget: "TheDocumentFoundation.LibreOffice",
+        apt: "libreoffice",
+    },
+    Converter { tool: "mutool", name: "MuPDF", brew: "mupdf-tools", winget: "ArtifexSoftware.mutool", apt: "mupdf-tools" },
+];
+
+fn converter(tool: &str) -> Option<&'static Converter> {
+    CONVERTERS.iter().find(|c| c.tool == tool)
+}
+
+/// "ffmpeg is not installed (brew install ffmpeg)". `missing` reads it back.
+fn not_installed(tool: &str) -> String {
+    let name = converter(tool).map_or(tool, |c| c.name);
+    format!("{name} is not installed ({})", install_hint(tool))
+}
+
+/// The converter a conversion's error says is not installed, if it says so.
+pub fn missing(error: &str) -> Option<&'static Converter> {
+    CONVERTERS.iter().find(|c| error.starts_with(&format!("{} is not installed (", c.name)))
+}
+
+/// Whether the app can find `c` now, where a conversion would look for it.
+pub fn installed(c: &Converter) -> bool {
+    match c.tool {
+        "magick" => magick().is_ok(),
+        "soffice" => soffice().is_ok(),
+        tool_name => tool(tool_name).is_ok(),
+    }
+}
+
 fn install_hint(name: &str) -> String {
-    let (brew, winget) = match name {
-        "magick" => ("imagemagick", "ImageMagick.ImageMagick"),
-        "ffmpeg" => ("ffmpeg", "Gyan.FFmpeg"),
-        "pandoc" => ("pandoc", "JohnMacFarlane.Pandoc"),
-        "soffice" => ("--cask libreoffice", "TheDocumentFoundation.LibreOffice"),
-        "mutool" => ("mupdf-tools", "ArtifexSoftware.mutool"),
-        other => (other, other),
-    };
+    let c = converter(name);
     if cfg!(target_os = "macos") {
-        format!("brew install {brew}")
+        format!("brew install {}", c.map_or(name, |c| c.brew))
     } else if cfg!(windows) {
-        format!("winget install {winget}")
+        format!("winget install {}", c.map_or(name, |c| c.winget))
     } else {
-        let package = match name {
-            "magick" => "imagemagick",
-            "soffice" => "libreoffice",
-            "mutool" => "mupdf-tools",
-            other => other,
-        };
+        let package = c.map_or(name, |c| c.apt);
         format!("sudo apt install {package}, or your distribution's package manager")
     }
 }
@@ -1072,7 +1109,7 @@ fn soffice() -> Result<PathBuf, String> {
         .unwrap_or_else(|| {
             tool("soffice")
                 .or_else(|_| tool("libreoffice"))
-                .map_err(|_| format!("LibreOffice is not installed ({})", install_hint("soffice")))
+                .map_err(|_| not_installed("soffice"))
         })
 }
 
@@ -1518,6 +1555,16 @@ mod tests {
         let docx = convert(&src, "docx", None, work.path()).unwrap();
         assert_eq!(docx, work.path().join("letter.docx"));
         assert!(fs::read(&docx).unwrap().starts_with(b"PK"));
+    }
+
+    #[test]
+    fn a_missing_converter_is_read_back_from_its_message() {
+        for c in CONVERTERS {
+            assert_eq!(missing(&not_installed(c.tool)).map(|m| m.tool), Some(c.tool));
+        }
+        assert!(missing(&not_installed("ffprobe")).is_none());
+        assert!(missing("pandoc 2.9 is too old: 2.15 or newer is needed").is_none());
+        assert!(missing("ffmpeg failed: Invalid data found when processing input").is_none());
     }
 
     #[test]
