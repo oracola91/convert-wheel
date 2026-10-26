@@ -11,6 +11,7 @@ pub enum Kind {
     Sheet,
     Slides,
     Pdf,
+    Subtitles,
 }
 
 impl Kind {
@@ -24,6 +25,7 @@ impl Kind {
             Kind::Sheet => "sheet",
             Kind::Slides => "slides",
             Kind::Pdf => "pdf",
+            Kind::Subtitles => "subs",
         }
     }
 
@@ -37,6 +39,7 @@ impl Kind {
             Kind::Sheet => "Spreadsheets",
             Kind::Slides => "Presentations",
             Kind::Pdf => "PDFs",
+            Kind::Subtitles => "Subtitles",
         }
     }
 }
@@ -46,28 +49,30 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
     (
         Kind::Image,
         &["jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp", "gif", "avif"],
-        &["jpg", "png", "heic", "webp", "tiff", "gif", "avif", "pdf"],
+        &["jpg", "png", "heic", "webp", "tiff", "gif", "avif", "bmp", "ico", "pdf"],
     ),
     (
         Kind::Audio,
-        &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"],
-        &["mp3", "m4a", "wav", "flac", "aiff", "ogg"],
+        &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus", "wma"],
+        &["mp3", "m4a", "wav", "flac", "aiff", "ogg", "opus", "wma"],
     ),
     (
         Kind::Video,
-        &["mp4", "mov", "m4v", "mkv", "webm", "avi"],
-        &["mp4", "mov", "webm", "gif", "mp3"],
+        &["mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"],
+        &["mp4", "mov", "webm", "mkv", "avi", "wmv", "gif", "mp3"],
     ),
     (
         Kind::Doc,
-        &["docx", "doc", "odt", "rtf", "md", "markdown", "html", "htm", "txt", "epub"],
+        &["docx", "doc", "odt", "rtf", "pages", "md", "markdown", "html", "htm", "txt", "epub"],
         &["pdf", "docx", "odt", "html", "md", "txt", "epub"],
     ),
-    (Kind::Sheet, &["xlsx", "xls", "ods", "csv"], &["pdf", "xlsx", "ods", "csv"]),
-    (Kind::Slides, &["pptx", "ppt", "odp"], &["pdf", "pptx", "odp"]),
+    // Apple's Numbers and Keynote files go in through LibreOffice, which reads them.
+    (Kind::Sheet, &["xlsx", "xls", "ods", "csv", "numbers"], &["pdf", "xlsx", "ods", "csv"]),
+    (Kind::Slides, &["pptx", "ppt", "odp", "key"], &["pdf", "pptx", "odp"]),
     // Pictures of the pages, or the text (as a Word file it is text only: the PDF's
     // layout isn't kept).
     (Kind::Pdf, &["pdf"], &["docx", "jpg", "png", "txt"]),
+    (Kind::Subtitles, &["srt", "vtt"], &["srt", "vtt"]),
 ];
 
 /// The Tools wheel: what can be done to a file while it keeps its format, by the id
@@ -148,8 +153,8 @@ pub fn all() -> impl Iterator<Item = (Kind, &'static [&'static str])> {
     KINDS.iter().map(|(kind, _, outs)| (*kind, *outs))
 }
 
-/// Most segments the wheel draws, so labels stay readable.
-pub const MAX_SEGMENTS: usize = 8;
+/// Most segments the wheel draws, so labels stay readable. Pictures need all ten.
+pub const MAX_SEGMENTS: usize = 10;
 
 pub fn extension(path: &Path) -> Option<String> {
     path.extension()
@@ -250,6 +255,15 @@ mod tests {
     fn mixed_image_formats_keep_all_outputs() {
         let f = formats_for(&v(&["/tmp/a.png", "/tmp/b.jpg"]), all_shown);
         assert!(f.contains(&"png") && f.contains(&"jpg"));
+    }
+
+    #[test]
+    fn new_formats_are_offered() {
+        assert!(formats_for(&v(&["/tmp/a.png"]), all_shown).ends_with(&["bmp", "ico", "pdf"]));
+        assert!(formats_for(&v(&["/tmp/a.mov"]), all_shown).contains(&"wmv"));
+        assert_eq!(formats_for(&v(&["/tmp/a.srt"]), all_shown), ["vtt"]);
+        assert!(formats_for(&v(&["/tmp/a.pages"]), all_shown).contains(&"docx"));
+        assert_eq!(formats_for(&v(&["/tmp/a.key", "/tmp/b.numbers"]), all_shown), ["pdf"]);
     }
 
     #[test]

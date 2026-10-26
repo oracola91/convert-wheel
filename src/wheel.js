@@ -19,6 +19,7 @@ const NS = 'http://www.w3.org/2000/svg';
 const NAMES = {
   jpg: 'JPEG', md: 'Markdown', txt: 'Plain text', html: 'Web page', docx: 'Word',
   xlsx: 'Excel', pptx: 'PowerPoint', mov: 'QuickTime', webp: 'WebP', webm: 'WebM', ogg: 'Ogg',
+  ico: 'Icon', opus: 'Opus', wma: 'Windows Media', wmv: 'Windows Media', vtt: 'WebVTT',
 };
 
 // The Tools and Actions wheels: what each segment says, and what the hub says over it.
