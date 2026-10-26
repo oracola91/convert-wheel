@@ -72,13 +72,21 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
 
 /// The Tools wheel: what can be done to a file while it keeps its format, by the id
 /// the wheel and the converter use, with the formats each tool takes. Animated GIFs are
-/// left out: a tool would have to handle every frame.
+/// left out: a tool would have to handle every frame. Merge needs two files or more.
 const TOOLS: &[(&str, &[&str])] = &[
     ("tool:compress", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif"]),
     ("tool:half", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     ("tool:clean", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif"]),
     ("tool:rotate", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    ("tool:merge", &["pdf"]),
+    ("tool:split", &["pdf"]),
+    ("tool:smaller", &["pdf"]),
 ];
+
+/// A tool that turns the whole drop into one file, instead of working on each file.
+pub fn combines(id: &str) -> bool {
+    id == "tool:merge"
+}
 
 /// A Tools wheel id ("tool:half") rather than a format.
 pub fn is_tool(id: &str) -> bool {
@@ -98,7 +106,7 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
     }
     TOOLS
         .iter()
-        .filter(|(_, ins)| exts.iter().all(|e| ins.contains(&e.as_str())))
+        .filter(|(id, ins)| exts.iter().all(|e| ins.contains(&e.as_str())) && (!combines(id) || paths.len() > 1))
         .map(|(id, _)| *id)
         .collect()
 }
@@ -226,6 +234,9 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])), ["tool:half", "tool:rotate"]);
         assert!(tools_for(&v(&["/tmp/a.gif"])).is_empty());
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
+        // Merge only once there is something to merge.
+        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:smaller"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller"]);
         assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
         assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));
         assert!(TOOLS.len() <= MAX_SEGMENTS && TOOLS.iter().all(|(id, _)| is_tool(id)));

@@ -86,6 +86,16 @@ impl Words {
                 "Stopped removing metadata",
             ),
             "tool:rotate" => tool("Rotating {}", "Rotated", "Rotated {} files", "rotate", "Stopped rotating"),
+            // Merge makes one file of the whole drop: "{}" is "3 files".
+            "tool:merge" => tool("Merging {}", "Merged into one PDF", "Merged {} files", "merge", "Stopped merging"),
+            "tool:split" => tool(
+                "Splitting {} into pages",
+                "Split into pages",
+                "Split {} files into pages",
+                "split",
+                "Stopped splitting",
+            ),
+            "tool:smaller" => tool("Shrinking {}", "Made smaller", "Made {} files smaller", "shrink", "Stopped shrinking"),
             format => {
                 let label = format.to_uppercase();
                 Words {
@@ -113,12 +123,17 @@ struct Running {
 
 impl Running {
     fn new(target: &str, paths: &[String]) -> Self {
-        let first = paths.first().map(|p| file_name(Path::new(p))).unwrap_or_default();
+        // A tool that makes one file of the whole drop works on it as one thing.
+        let (count, first) = if formats::combines(target) {
+            (1, format!("{} files", paths.len()))
+        } else {
+            (paths.len(), paths.first().map(|p| file_name(Path::new(p))).unwrap_or_default())
+        };
         Running {
             control: convert::Control::new(),
             target: target.to_string(),
             words: Words::new(target),
-            count: paths.len(),
+            count,
             file: Mutex::new((1, first, Instant::now())),
         }
     }
@@ -265,7 +280,24 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
     let mut failed: Vec<(String, String)> = Vec::new();
     // Results that ended up in Downloads although they were meant to go next to the original.
     let mut moved = false;
-    for (place, p) in job.paths.iter().enumerate() {
+    let combines = formats::combines(&job.format);
+    if combines {
+        let srcs: Vec<PathBuf> = job.paths.iter().map(PathBuf::from).collect();
+        let what = format!("{} files", srcs.len());
+        match convert::combine(&srcs, &job.format, save_in.as_deref(), &downloads) {
+            Ok(out) => {
+                log::line(&format!("merged {what} into {}", file_name(&out)));
+                moved = save_in.is_none() && out.parent() != srcs[0].parent();
+                done.push(out);
+            }
+            Err(_) if running.control.stopped() => {}
+            Err(e) => {
+                log::line(&format!("failed to merge {what}: {e}"));
+                failed.push((what, converters::offer(app, e)));
+            }
+        }
+    }
+    for (place, p) in job.paths.iter().enumerate().filter(|_| !combines) {
         if running.control.stopped() {
             break;
         }
@@ -285,7 +317,8 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
         }
     }
     // Stopped before the end: a Stop that comes once the last file is done changes nothing.
-    if done.len() + failed.len() < job.paths.len() {
+    let expected = if combines { 1 } else { job.paths.len() };
+    if done.len() + failed.len() < expected {
         log::line(&format!("stopped after {} of {} files", done.len() + failed.len(), job.paths.len()));
         let body = match done.len() {
             0 => "Nothing was converted.".to_string(),
@@ -368,6 +401,19 @@ fn cli(args: &[String]) -> i32 {
         return 2;
     }
     let downloads = convert::downloads();
+    if formats::combines(format) {
+        let srcs: Result<Vec<PathBuf>, String> = files.iter().map(|f| std::path::absolute(f).map_err(|e| e.to_string())).collect();
+        return match srcs.and_then(|srcs| convert::combine(&srcs, format, None, &downloads)) {
+            Ok(out) => {
+                println!("{}", out.display());
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
     let mut code = 0;
     for f in files {
         // A full path, so a file name can't be taken for one of a tool's options.
@@ -536,6 +582,10 @@ mod tests {
         assert_eq!(summary(&clean, &one, &[]), ("Removed metadata".into(), "photo (no metadata).jpg".into()));
         let two = [PathBuf::from("/tmp/a (compressed).jpg"), PathBuf::from("/tmp/b (compressed).jpg")];
         assert_eq!(summary(&Words::new("tool:compress"), &two, &[]).0, "Compressed 2 files");
+        let merge = Words::new("tool:merge");
+        let running = Running::new("tool:merge", &["/tmp/a.pdf".to_string(), "/tmp/b.pdf".to_string()]);
+        assert_eq!(running.line(), "Merging 2 files…");
+        assert_eq!(summary(&merge, &[PathBuf::from("/tmp/a (merged).pdf")], &[]).0, "Merged into one PDF");
         let failed = [("a.png".to_string(), "it is already as small as Compress makes it".to_string())];
         assert_eq!(summary(&Words::new("tool:compress"), &[], &failed).0, "Couldn't compress a.png");
         // Formats keep their words.
