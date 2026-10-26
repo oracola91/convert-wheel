@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod actions;
 mod convert;
 mod converters;
 #[cfg(target_os = "macos")]
