@@ -75,14 +75,26 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
 /// left out: a tool would have to handle every frame (One PDF takes their first).
 /// Merge and One PDF need two files or more.
 const TOOLS: &[(&str, &[&str])] = &[
-    ("tool:compress", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif"]),
+    (
+        "tool:compress",
+        &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "mp4", "mov", "m4v", "mkv", "webm"],
+    ),
     ("tool:half", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
-    ("tool:clean", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif"]),
+    (
+        "tool:clean",
+        &[
+            "jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "mp4", "mov", "m4v", "mkv", "webm", "avi",
+            "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus",
+        ],
+    ),
     ("tool:rotate", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     ("tool:onepdf", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:merge", &["pdf"]),
     ("tool:split", &["pdf"]),
     ("tool:smaller", &["pdf"]),
+    ("tool:still", &["mp4", "mov", "m4v", "mkv", "webm", "avi"]),
+    ("tool:loudness", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
+    ("tool:mono", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
 ];
 
 /// A tool that turns the whole drop into one file, instead of working on each file.
@@ -110,6 +122,7 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
         .iter()
         .filter(|(id, ins)| exts.iter().all(|e| ins.contains(&e.as_str())) && (!combines(id) || paths.len() > 1))
         .map(|(id, _)| *id)
+        .take(MAX_SEGMENTS)
         .collect()
 }
 
@@ -238,13 +251,25 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])), ["tool:half", "tool:rotate", "tool:onepdf"]);
         assert!(tools_for(&v(&["/tmp/a.gif"])).is_empty());
         assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:onepdf"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:still"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:still"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:clean", "tool:loudness", "tool:mono"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
         assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:smaller"]);
         assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller"]);
         assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
         assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));
-        assert!(TOOLS.len() <= MAX_SEGMENTS && TOOLS.iter().all(|(id, _)| is_tool(id)));
+        assert!(TOOLS.iter().all(|(id, _)| is_tool(id)));
+        // No kind of file gets more tools than the wheel draws, even with Merge or One PDF.
+        for (_, ins, _) in KINDS {
+            for ext in *ins {
+                let two = v(&[&format!("/tmp/a.{ext}"), &format!("/tmp/b.{ext}")]);
+                assert!(TOOLS.iter().filter(|(id, _)| tool_takes(id, ext)).count() <= MAX_SEGMENTS, "{ext}");
+                assert!(tools_for(&two).len() <= MAX_SEGMENTS);
+            }
+        }
     }
 
     #[test]
