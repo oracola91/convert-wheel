@@ -30,6 +30,9 @@ const TOOLS = {
   'tool:merge': ['Merge', 'Merge into one'],
   'tool:split': ['Split', 'One file per page'],
   'tool:smaller': ['Smaller', 'Make smaller'],
+  'tool:still': ['First frame', 'First frame as JPEG'],
+  'tool:loudness': ['Loudness', 'Even out loudness'],
+  'tool:mono': ['Mono', 'Mix down to mono'],
 };
 
 const svg = document.getElementById('wheel');
