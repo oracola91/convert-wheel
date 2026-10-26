@@ -45,10 +45,66 @@ struct Job {
     format: String,
 }
 
+/// How the menu and the notifications speak of a drop: converting it to a format, or
+/// a tool from the Tools wheel. `{}` stands for the file's name, or "3 of 10".
+struct Words {
+    /// "Converting {} to PNG": the progress line.
+    doing: String,
+    /// "Converted to PNG": the title over the new file's name.
+    done_one: String,
+    /// "Converted {} files to PNG", with the count.
+    done_many: String,
+    /// "convert", as in "Couldn't convert photo.heic".
+    verb: &'static str,
+    /// "Stopped converting to PNG"
+    stopped: String,
+}
+
+impl Words {
+    fn new(target: &str) -> Words {
+        let tool = |doing: &str, done_one: &str, done_many: &str, verb, stopped: &str| Words {
+            doing: doing.to_string(),
+            done_one: done_one.to_string(),
+            done_many: done_many.to_string(),
+            verb,
+            stopped: stopped.to_string(),
+        };
+        match target {
+            "tool:compress" => tool("Compressing {}", "Compressed", "Compressed {} files", "compress", "Stopped compressing"),
+            "tool:half" => tool(
+                "Resizing {} to half size",
+                "Resized to half size",
+                "Resized {} files to half size",
+                "resize",
+                "Stopped resizing",
+            ),
+            "tool:clean" => tool(
+                "Removing metadata from {}",
+                "Removed metadata",
+                "Removed metadata from {} files",
+                "remove metadata from",
+                "Stopped removing metadata",
+            ),
+            "tool:rotate" => tool("Rotating {}", "Rotated", "Rotated {} files", "rotate", "Stopped rotating"),
+            format => {
+                let label = format.to_uppercase();
+                Words {
+                    doing: format!("Converting {{}} to {label}"),
+                    done_one: format!("Converted to {label}"),
+                    done_many: format!("Converted {{}} files to {label}"),
+                    verb: "convert",
+                    stopped: format!("Stopped converting to {label}"),
+                }
+            }
+        }
+    }
+}
+
 /// The drop being converted: how far it has got, for the menu, and its Stop switch.
 struct Running {
     control: Arc<convert::Control>,
-    label: String,
+    target: String,
+    words: Words,
     count: usize,
     /// The file being converted: its place in the drop (from 1), its name, and when
     /// it started.
@@ -56,11 +112,12 @@ struct Running {
 }
 
 impl Running {
-    fn new(label: &str, paths: &[String]) -> Self {
+    fn new(target: &str, paths: &[String]) -> Self {
         let first = paths.first().map(|p| file_name(Path::new(p))).unwrap_or_default();
         Running {
             control: convert::Control::new(),
-            label: label.to_string(),
+            target: target.to_string(),
+            words: Words::new(target),
             count: paths.len(),
             file: Mutex::new((1, first, Instant::now())),
         }
@@ -72,7 +129,7 @@ impl Running {
 
     fn line(&self) -> String {
         let (place, name, since) = self.file.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        progress_line(&self.label, self.count, place, &name, self.control.percent(), since.elapsed())
+        progress_line(&self.words, self.count, place, &name, self.control.percent(), since.elapsed())
     }
 }
 
@@ -83,16 +140,16 @@ const NAME_MAX_CHARS: usize = 32;
 /// The menu's progress line: "Converting holiday.mov to MP4… 42%", or for a batch
 /// "Converting 3 of 10 to PNG…". A tool that doesn't say how far it is gets the time
 /// so far instead, once that is long enough to wonder whether it is stuck.
-fn progress_line(label: &str, count: usize, place: usize, name: &str, percent: Option<u8>, elapsed: Duration) -> String {
+fn progress_line(words: &Words, count: usize, place: usize, name: &str, percent: Option<u8>, elapsed: Duration) -> String {
     let what = if count == 1 {
         let name = if name.chars().count() > NAME_MAX_CHARS {
             name.chars().take(NAME_MAX_CHARS - 1).collect::<String>() + "…"
         } else {
             name.to_string()
         };
-        format!("Converting {name} to {label}…")
+        words.doing.replace("{}", &name) + "…"
     } else {
-        format!("Converting {place} of {count} to {label}…")
+        words.doing.replace("{}", &format!("{place} of {count}")) + "…"
     };
     match (percent, elapsed.as_secs()) {
         (Some(p), _) => format!("{what} {p}%"),
@@ -115,7 +172,7 @@ impl NowConverting {
 /// Stop Converting: ends the drop being converted now. Drops queued after it still run.
 pub(crate) fn stop_converting(app: &AppHandle) {
     if let Some(running) = app.state::<NowConverting>().0.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        log::line(&format!("stop asked while converting to {}", running.label));
+        log::line(&format!("stop asked while running {}", running.target));
         running.control.stop();
     }
 }
@@ -141,8 +198,7 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
     let (tx, rx) = mpsc::channel::<Job>();
     thread::spawn(move || {
         for job in rx {
-            let label = job.format.to_uppercase();
-            let running = Arc::new(Running::new(&label, &job.paths));
+            let running = Arc::new(Running::new(&job.format, &job.paths));
             app.state::<NowConverting>().set(Some(Arc::clone(&running)));
             menu::show_progress(&app, &running.line());
             let (finished, done_signal) = mpsc::channel::<()>();
@@ -156,7 +212,7 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
                 }))
                 .unwrap_or_else(|_| {
                     let body = "Convert Wheel hit an internal error.".to_string();
-                    (format!("Couldn't convert to {label}"), body, Vec::new())
+                    (format!("Couldn't {} the files", running.words.verb), body, Vec::new())
                 });
                 drop(finished);
                 result
@@ -188,14 +244,14 @@ fn keep_progress_shown(app: &AppHandle, running: &Running, finished: Receiver<()
 /// Converts a drop's files. Returns the notification's title and text, and the files
 /// it produced.
 fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Vec<PathBuf>) {
-    let label = running.label.as_str();
+    let words = &running.words;
     let slow = job.paths.iter().any(|p| {
         formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
     });
     if slow {
         notify(
             app,
-            &format!("Converting to {label}…"),
+            &(words.doing.replace("{} ", "") + "…"),
             "Video can take a while. The menu shows how far it is, and can stop it.",
         );
     }
@@ -235,9 +291,9 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
             0 => "Nothing was converted.".to_string(),
             n => format!("{n} of {} files done.", job.paths.len()),
         };
-        return (format!("Stopped converting to {label}"), body, done);
+        return (words.stopped.clone(), body, done);
     }
-    let (title, mut body) = summary(label, &done, &failed);
+    let (title, mut body) = summary(words, &done, &failed);
     if moved {
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
     }
@@ -248,7 +304,7 @@ fn file_name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-fn summary(label: &str, done: &[PathBuf], failed: &[(String, String)]) -> (String, String) {
+fn summary(words: &Words, done: &[PathBuf], failed: &[(String, String)]) -> (String, String) {
     let names = |list: Vec<String>| {
         let mut s = list.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
         if list.len() > 3 {
@@ -257,12 +313,12 @@ fn summary(label: &str, done: &[PathBuf], failed: &[(String, String)]) -> (Strin
         s
     };
     match (done.len(), failed.len()) {
-        (_, 0) if done.len() == 1 => (format!("Converted to {label}"), file_name(&done[0])),
+        (_, 0) if done.len() == 1 => (words.done_one.clone(), file_name(&done[0])),
         (n, 0) => (
-            format!("Converted {n} files to {label}"),
+            words.done_many.replace("{}", &n.to_string()),
             names(done.iter().map(|p| file_name(p)).collect()),
         ),
-        (0, 1) => (format!("Couldn't convert {}", failed[0].0), failed[0].1.clone()),
+        (0, 1) => (format!("Couldn't {} {}", words.verb, failed[0].0), failed[0].1.clone()),
         (ok, bad) => (
             format!("{bad} of {} files failed", ok + bad),
             format!("{}: {}", failed[0].0, failed[0].1),
@@ -455,23 +511,41 @@ mod tests {
     #[test]
     fn the_progress_line_says_how_far_a_drop_is() {
         let secs = Duration::from_secs;
-        assert_eq!(progress_line("MP4", 1, 1, "holiday.mov", Some(42), secs(90)), "Converting holiday.mov to MP4… 42%");
-        assert_eq!(progress_line("PNG", 10, 3, "c.heic", None, secs(1)), "Converting 3 of 10 to PNG…");
-        assert_eq!(progress_line("PNG", 10, 3, "c.heic", Some(7), secs(1)), "Converting 3 of 10 to PNG… 7%");
+        assert_eq!(progress_line(&Words::new("mp4"), 1, 1, "holiday.mov", Some(42), secs(90)), "Converting holiday.mov to MP4… 42%");
+        assert_eq!(progress_line(&Words::new("png"), 10, 3, "c.heic", None, secs(1)), "Converting 3 of 10 to PNG…");
+        assert_eq!(progress_line(&Words::new("png"), 10, 3, "c.heic", Some(7), secs(1)), "Converting 3 of 10 to PNG… 7%");
         // Without a percent, the time so far, once it is worth showing.
-        assert_eq!(progress_line("PDF", 1, 1, "a.docx", None, secs(9)), "Converting a.docx to PDF…");
-        assert_eq!(progress_line("PDF", 1, 1, "a.docx", None, secs(45)), "Converting a.docx to PDF… 45 s");
-        assert_eq!(progress_line("PDF", 1, 1, "a.docx", None, secs(150)), "Converting a.docx to PDF… 2 min");
+        assert_eq!(progress_line(&Words::new("pdf"), 1, 1, "a.docx", None, secs(9)), "Converting a.docx to PDF…");
+        assert_eq!(progress_line(&Words::new("pdf"), 1, 1, "a.docx", None, secs(45)), "Converting a.docx to PDF… 45 s");
+        assert_eq!(progress_line(&Words::new("pdf"), 1, 1, "a.docx", None, secs(150)), "Converting a.docx to PDF… 2 min");
         // A long name is cut, so the percent stays within the menu's line.
         let long = "Family holiday in the mountains, summer 2026, part one.mov";
-        let line = progress_line("WEBM", 1, 1, long, Some(42), secs(90));
+        let line = progress_line(&Words::new("webm"), 1, 1, long, Some(42), secs(90));
         assert_eq!(line, "Converting Family holiday in the mountains… to WEBM… 42%");
         assert!(format!("Last: {line}").chars().count() <= menu::LAST_MAX_CHARS);
     }
 
     #[test]
+    fn tools_have_words_of_their_own() {
+        let secs = Duration::from_secs;
+        let half = Words::new("tool:half");
+        assert_eq!(progress_line(&half, 1, 1, "photo.jpg", None, secs(1)), "Resizing photo.jpg to half size…");
+        let clean = Words::new("tool:clean");
+        assert_eq!(progress_line(&clean, 10, 3, "c.heic", None, secs(1)), "Removing metadata from 3 of 10…");
+        let one = [PathBuf::from("/tmp/photo (no metadata).jpg")];
+        assert_eq!(summary(&clean, &one, &[]), ("Removed metadata".into(), "photo (no metadata).jpg".into()));
+        let two = [PathBuf::from("/tmp/a (compressed).jpg"), PathBuf::from("/tmp/b (compressed).jpg")];
+        assert_eq!(summary(&Words::new("tool:compress"), &two, &[]).0, "Compressed 2 files");
+        let failed = [("a.png".to_string(), "it is already as small as Compress makes it".to_string())];
+        assert_eq!(summary(&Words::new("tool:compress"), &[], &failed).0, "Couldn't compress a.png");
+        // Formats keep their words.
+        assert_eq!(summary(&Words::new("png"), &[PathBuf::from("/tmp/a.png")], &[]).0, "Converted to PNG");
+        assert_eq!(Words::new("mp4").doing.replace("{} ", "") + "…", "Converting to MP4…");
+    }
+
+    #[test]
     fn the_first_line_already_names_the_file() {
-        let running = Running::new("PNG", &["/tmp/photo.heic".to_string()]);
+        let running = Running::new("png", &["/tmp/photo.heic".to_string()]);
         assert_eq!(running.line(), "Converting photo.heic to PNG…");
     }
 }

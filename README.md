@@ -37,6 +37,17 @@ A PDF with several pages becomes a folder of pictures next to it, `report (PNG)`
 
 A notification says when a drop is done or why it failed. A click on it opens the folder with the new files selected (on Windows only while the notification is on screen, not from the Action Center; on macOS also later from Notification Center). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
 
+## The Tools wheel
+
+Hold Option as well as Shift while dragging (Alt+Shift on Windows and on Linux with X11) and a second wheel opens: what can be done to the file while it keeps its format. The result goes next to the original, named after the tool ("photo (half size).jpg"), and never replaces it. For pictures (JPEG, PNG, HEIC, WebP, AVIF and TIFF; BMP gets Half Size and Rotate only; animated GIFs none):
+
+- **Compress**: JPEG at quality 70; HEIC, WebP and AVIF at 55; PNG down to 256 colours (dithered); TIFF with lossless ZIP. A result that isn't smaller is not saved, and the notification says so.
+- **Half size**: half the width and height.
+- **Remove metadata**: takes out EXIF (camera, date, location), XMP, IPTC and comments, and keeps the colour profile. The picture is turned upright first, so it looks the same without the EXIF turn.
+- **Rotate**: a quarter turn clockwise.
+
+The other tools keep the metadata. Every tool saves the picture again: JPEG at its own quality, HEIC, WebP and AVIF at 80. On Wayland the keyboard shortcut opens only the Formats wheel for now. Tools for PDFs, video and audio come next ([ROADMAP](ROADMAP.md), stage 2).
+
 ## On Windows and Linux
 
 Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS:
@@ -157,7 +168,7 @@ Word's default font since 2023, Aptos, ships inside Word only, and its licence l
 - **Trigger** (`src-tauri/src/trigger.rs`): every 30 ms it reads the drag pasteboard's change count, the mouse buttons and the Shift key. These are shared by the window server, so no permission prompt is needed.
 - **Wheel window** (`src-tauri/src/wheel_window.rs`): the native parts. Frosted glass behind the ring (the system material, so it follows light/dark mode and Reduce Transparency), the dragged file's icon in the middle, placement at the cursor kept inside the screen, and the fade in and out.
 - **Drop target** (`src-tauri/src/drop_view.rs`): a transparent native view on top of the wheel takes the drop. It shrinks the dragged file to a small icon, tells the page which segment to light up, and queues the conversion.
-- **Formats** (`src-tauri/src/formats.rs`): what each kind of file can become.
+- **Formats** (`src-tauri/src/formats.rs`): what each kind of file can become, and which tools the Tools wheel offers for it.
 - **Converter** (`src-tauri/src/convert.rs`): picks the tool and its settings, then places the result safely.
 - **Queue** (`src-tauri/src/main.rs`): one worker converts drops in order, keeps the menu's progress line current, then posts the notification.
 - **Installing converters** (`src-tauri/src/converters.rs`): remembers the converters drops found missing, offers them in the menu, and runs `brew install` or `winget install` with fixed package names, never a shell line.
@@ -175,7 +186,7 @@ SECURITY.md                how to report a security problem
   src/log.rs               the log file
   src/trigger.rs           Shift+drag on macOS; opening, closing and dropping for all
   src/wheel.rs             wheel geometry: which segment is under a point
-  src/formats.rs           formats offered per file type
+  src/formats.rs           formats and tools offered per file type
   src/convert.rs           the conversions
   src/menu.rs              menu bar icon and menu
   src/converters.rs        installing a missing converter from the menu
