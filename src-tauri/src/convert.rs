@@ -187,7 +187,7 @@ fn redact(message: &str, src: &Path, work: &Path) -> String {
 
 /// The original's folder can't take the result (read-only, or a name too long for
 /// it), so Downloads gets it instead.
-fn is_no_write(e: &io::Error) -> bool {
+pub(crate) fn is_no_write(e: &io::Error) -> bool {
     matches!(
         e.kind(),
         io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem | io::ErrorKind::InvalidFilename
@@ -1125,7 +1125,7 @@ fn control() -> Option<Arc<Control>> {
     CONTROL.with(|c| c.borrow().clone())
 }
 
-fn stop_asked() -> bool {
+pub(crate) fn stop_asked() -> bool {
     control().is_some_and(|c| c.stopped())
 }
 
@@ -1275,7 +1275,7 @@ fn kill_tree(id: u32) {
 }
 
 /// Moves the result into `dir` without replacing anything there.
-fn place(tmp: &Path, dir: &Path, stem: &str, target: &str) -> io::Result<PathBuf> {
+pub(crate) fn place(tmp: &Path, dir: &Path, stem: &str, target: &str) -> io::Result<PathBuf> {
     for n in 1..1000 {
         let name = if n == 1 {
             format!("{stem}.{target}")
@@ -1353,7 +1353,7 @@ fn move_into(tmp: &Path, mut file: fs::File, dest: &Path) -> io::Result<()> {
 
 /// Finds a command-line tool. Apps opened from Finder or the Start menu don't always
 /// get the shell's PATH, so the places the usual installers use are checked as well.
-fn tool(name: &str) -> Result<PathBuf, String> {
+pub(crate) fn tool(name: &str) -> Result<PathBuf, String> {
     let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     let path = std::env::var_os("PATH").unwrap_or_default();
     // Only absolute folders: an empty or relative PATH entry would mean "wherever the
@@ -1450,6 +1450,8 @@ pub const CONVERTERS: &[Converter] = &[
         apt: "libreoffice",
     },
     Converter { tool: "mutool", name: "MuPDF", brew: "mupdf-tools", winget: "ArtifexSoftware.mutool", apt: "mupdf-tools" },
+    // Archives. macOS and Windows have it built in; only Linux ever misses it.
+    Converter { tool: "bsdtar", name: "bsdtar", brew: "libarchive", winget: "", apt: "libarchive-tools" },
 ];
 
 fn converter(tool: &str) -> Option<&'static Converter> {

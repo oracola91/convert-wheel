@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod actions;
+mod archive;
 mod convert;
 mod converters;
 #[cfg(target_os = "macos")]
@@ -119,6 +120,10 @@ impl Words {
                 "Stopped evening out the loudness",
             ),
             "tool:mono" => tool("Mixing {} down to mono", "Made mono", "Made {} files mono", "mix down", "Stopped mixing down"),
+            "act:zip" => tool("Making a ZIP of {}", "Made a ZIP", "Made a ZIP of {} files", "zip", "Stopped making the ZIP"),
+            "act:tgz" => tool("Making a TAR.GZ of {}", "Made a TAR.GZ", "Made a TAR.GZ of {} files", "pack", "Stopped packing"),
+            "act:tar" => tool("Making a TAR of {}", "Made a TAR", "Made a TAR of {} files", "pack", "Stopped packing"),
+            "act:unpack" => tool("Unpacking {}", "Unpacked", "Unpacked {} archives", "unpack", "Stopped unpacking"),
             format => {
                 let label = format.to_uppercase();
                 Words {
@@ -148,7 +153,11 @@ impl Running {
     fn new(target: &str, paths: &[String]) -> Self {
         // A tool that makes one file of the whole drop works on it as one thing.
         let (count, first) = if formats::combines(target) {
-            (1, format!("{} files", paths.len()))
+            let what = match paths {
+                [one] => file_name(Path::new(one)),
+                many => format!("{} files", many.len()),
+            };
+            (1, what)
         } else {
             (paths.len(), paths.first().map(|p| file_name(Path::new(p))).unwrap_or_default())
         };
@@ -309,8 +318,11 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
     let combines = formats::combines(&job.format);
     if combines {
         let srcs: Vec<PathBuf> = job.paths.iter().map(PathBuf::from).collect();
-        let what = format!("{} files", srcs.len());
-        match convert::combine(&srcs, &job.format, save_in.as_deref(), &downloads) {
+        let what = match srcs.as_slice() {
+            [one] => file_name(one),
+            many => format!("{} files", many.len()),
+        };
+        match combine(&srcs, &job.format, save_in.as_deref(), &downloads) {
             Ok(out) => {
                 log::line(&format!("made {} of {what}", file_name(&out)));
                 moved = save_in.is_none() && out.parent() != srcs[0].parent();
@@ -329,7 +341,7 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
         }
         let src = Path::new(p);
         running.at(place + 1, file_name(src));
-        match convert::convert(src, &job.format, save_in.as_deref(), &downloads) {
+        match convert_one(src, &job.format, save_in.as_deref(), &downloads) {
             Ok(out) => {
                 log::line(&format!("converted {} to {}", file_name(src), file_name(&out)));
                 moved |= save_in.is_none() && out.parent() != src.parent();
@@ -357,6 +369,24 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
     }
     (title, body, done)
+}
+
+/// One file of a drop: converted, run through a tool, or unpacked.
+fn convert_one(src: &Path, target: &str, save_in: Option<&Path>, downloads: &Path) -> Result<PathBuf, String> {
+    if target == "act:unpack" {
+        archive::unpack(src, save_in, downloads)
+    } else {
+        convert::convert(src, target, save_in, downloads)
+    }
+}
+
+/// A whole drop made into one file: merged, put into one PDF, or packed.
+fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, downloads: &Path) -> Result<PathBuf, String> {
+    if target.starts_with("act:") {
+        archive::make(srcs, target, save_in, downloads)
+    } else {
+        convert::combine(srcs, target, save_in, downloads)
+    }
 }
 
 fn file_name(p: &Path) -> String {
@@ -429,7 +459,7 @@ fn cli(args: &[String]) -> i32 {
     let downloads = convert::downloads();
     if formats::combines(format) {
         let srcs: Result<Vec<PathBuf>, String> = files.iter().map(|f| std::path::absolute(f).map_err(|e| e.to_string())).collect();
-        return match srcs.and_then(|srcs| convert::combine(&srcs, format, None, &downloads)) {
+        return match srcs.and_then(|srcs| combine(&srcs, format, None, &downloads)) {
             Ok(out) => {
                 println!("{}", out.display());
                 0
@@ -445,7 +475,7 @@ fn cli(args: &[String]) -> i32 {
         // A full path, so a file name can't be taken for one of a tool's options.
         let result = std::path::absolute(f)
             .map_err(|e| e.to_string())
-            .and_then(|src| convert::convert(&src, format, None, &downloads));
+            .and_then(|src| convert_one(&src, format, None, &downloads));
         match result {
             Ok(out) => println!("{}", out.display()),
             Err(e) => {
