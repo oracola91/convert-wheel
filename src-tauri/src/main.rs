@@ -88,6 +88,13 @@ impl Words {
             "tool:rotate" => tool("Rotating {}", "Rotated", "Rotated {} files", "rotate", "Stopped rotating"),
             // Merge makes one file of the whole drop: "{}" is "3 files".
             "tool:merge" => tool("Merging {}", "Merged into one PDF", "Merged {} files", "merge", "Stopped merging"),
+            "tool:onepdf" => tool(
+                "Making one PDF of {}",
+                "Made one PDF",
+                "Made one PDF of {} files",
+                "make one PDF of",
+                "Stopped making the PDF",
+            ),
             "tool:split" => tool(
                 "Splitting {} into pages",
                 "Split into pages",
@@ -286,13 +293,13 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
         let what = format!("{} files", srcs.len());
         match convert::combine(&srcs, &job.format, save_in.as_deref(), &downloads) {
             Ok(out) => {
-                log::line(&format!("merged {what} into {}", file_name(&out)));
+                log::line(&format!("made {} of {what}", file_name(&out)));
                 moved = save_in.is_none() && out.parent() != srcs[0].parent();
                 done.push(out);
             }
             Err(_) if running.control.stopped() => {}
             Err(e) => {
-                log::line(&format!("failed to merge {what}: {e}"));
+                log::line(&format!("failed to combine {what}: {e}"));
                 failed.push((what, converters::offer(app, e)));
             }
         }
@@ -588,6 +595,7 @@ mod tests {
         assert_eq!(summary(&merge, &[PathBuf::from("/tmp/a (merged).pdf")], &[]).0, "Merged into one PDF");
         let failed = [("a.png".to_string(), "it is already as small as Compress makes it".to_string())];
         assert_eq!(summary(&Words::new("tool:compress"), &[], &failed).0, "Couldn't compress a.png");
+        assert_eq!(Running::new("tool:onepdf", &["/a.jpg".into(), "/b.jpg".into()]).line(), "Making one PDF of 2 files…");
         // Formats keep their words.
         assert_eq!(summary(&Words::new("png"), &[PathBuf::from("/tmp/a.png")], &[]).0, "Converted to PNG");
         assert_eq!(Words::new("mp4").doing.replace("{} ", "") + "…", "Converting to MP4…");

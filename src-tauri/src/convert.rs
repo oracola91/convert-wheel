@@ -77,7 +77,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     let tool = formats::is_tool(target).then_some(target);
     match tool {
         Some(t) if !formats::tool_takes(t, &ext) => return Err(format!(".{ext} files can't be {}", tool_done(t))),
-        Some(t) if formats::combines(t) => return Err("Merge needs two PDFs or more".into()),
+        Some(t) if formats::combines(t) => return Err(combine_words(t).map_or("", |w| w.0).into()),
         None if !formats::outputs_for(&ext).contains(&target) => return Err(format!(".{ext} files can't become .{target}")),
         _ => {}
     }
@@ -274,6 +274,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:clean" => "no metadata",
         "tool:rotate" => "rotated",
         "tool:merge" => "merged",
+        "tool:onepdf" => "one PDF",
         "tool:smaller" => "smaller",
         _ => "changed",
     }
@@ -287,6 +288,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:clean" => "cleaned of metadata",
         "tool:rotate" => "rotated",
         "tool:merge" => "merged",
+        "tool:onepdf" => "put into one PDF",
         "tool:split" => "split",
         "tool:smaller" => "made smaller",
         _ => "changed",
@@ -708,17 +710,33 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
     }
 }
 
-/// Joins the dropped files into one: the Tools wheel's Merge, for PDFs, in the order
-/// they were dropped. The result goes next to the first file, named after it: "report
-/// (merged).pdf". MuPDF leaves out a PDF it can't read and still succeeds, so the pages
-/// are counted before and after.
-pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
-    if target != "tool:merge" {
-        return Err(format!("{target} doesn't combine files"));
+/// Most pictures One PDF takes.
+const MAX_PICTURES: usize = 200;
+
+/// For the tools that make one file of a whole drop: what to say when there are too
+/// few files, and when one doesn't belong.
+fn combine_words(tool_id: &str) -> Option<(&'static str, &'static str)> {
+    match tool_id {
+        "tool:merge" => Some(("Merge needs two PDFs or more", "only PDFs can be merged")),
+        "tool:onepdf" => Some(("One PDF needs two pictures or more", "only pictures can go into one PDF")),
+        _ => None,
     }
+}
+
+/// Makes one PDF of the dropped files, in the order they were dropped: the Tools
+/// wheel's Merge (PDFs) and One PDF (pictures, a page each). The result goes next to
+/// the first file, named after it: "report (merged).pdf", "IMG_1234 (one PDF).pdf".
+/// MuPDF's merge leaves out a PDF it can't read and still succeeds, so the pages are
+/// counted before and after.
+pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
+    let (too_few, only) = combine_words(target).ok_or_else(|| format!("{target} doesn't combine files"))?;
     let [first, _, ..] = srcs else {
-        return Err("Merge needs two PDFs or more".into());
+        return Err(too_few.into());
     };
+    let pictures = target == "tool:onepdf";
+    if pictures && srcs.len() > MAX_PICTURES {
+        return Err(format!("One PDF takes up to {MAX_PICTURES} pictures"));
+    }
     let work = tempfile::Builder::new()
         .prefix("convert-wheel-")
         .tempdir()
@@ -730,21 +748,31 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
     for (i, src) in srcs.iter().enumerate() {
         let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let fail = |e: String| format!("{name}: {}", redact(&e, src, work.path()));
-        if formats::extension(src).as_deref() != Some("pdf") {
-            return Err(fail("only PDFs can be merged".into()));
+        let ext = formats::extension(src).unwrap_or_default();
+        if !formats::tool_takes(target, &ext) {
+            return Err(fail(only.into()));
         }
         let meta = fs::metadata(src).map_err(|e| fail(format!("can't read the file: {e}")))?;
         if !meta.is_file() {
             return Err(fail("this is not a regular file".into()));
         }
-        let staged = work.path().join(format!("input-{i}.pdf"));
+        let staged = work.path().join(format!("input-{i}.{ext}"));
         fs::copy(src, &staged).map_err(|e| fail(format!("can't read the file: {e}")))?;
-        if !read_head(&staged)?.starts_with(b"%PDF-") {
-            return Err(fail("this is not a valid .pdf file".into()));
+        if pictures {
+            let page = picture_page(&staged, work.path(), i).map_err(fail)?;
+            let as_pdf = format!("page-{i}.pdf");
+            let picture = Mutool { path: mutool.clone(), src: &page, deadline };
+            picture.run_args(work.path(), &["convert", "-o", &as_pdf], &[]).map_err(fail)?;
+            inputs.push(work.path().join(as_pdf));
+            pages += 1;
+        } else {
+            if !read_head(&staged)?.starts_with(b"%PDF-") {
+                return Err(fail("this is not a valid .pdf file".into()));
+            }
+            let pdf = Mutool { path: mutool.clone(), src: &staged, deadline };
+            pages += pdf.page_count(work.path()).map_err(fail)?;
+            inputs.push(staged);
         }
-        let pdf = Mutool { path: mutool.clone(), src: &staged, deadline };
-        pages += pdf.page_count(work.path()).map_err(fail)?;
-        inputs.push(staged);
     }
     if pages > MAX_TEXT_PAGES {
         return Err(format!("together these PDFs have {pages} pages: Merge takes up to {MAX_TEXT_PAGES}"));
@@ -756,7 +784,8 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
     run_tool(cmd, limit).map_err(|f| redact(&password_message(f), first, work.path()))?;
     let merged = Mutool { path: mutool.clone(), src: &out, deadline };
     if !out.is_file() || merged.page_count(work.path())? != pages {
-        return Err("MuPDF couldn't read one of the PDFs".into());
+        let what = if pictures { "pictures" } else { "PDFs" };
+        return Err(format!("MuPDF couldn't read one of the {what}"));
     }
     let stem = first.file_stem().and_then(|s| s.to_str()).ok_or("the file name is not valid text")?;
     let stem = format!("{stem} ({})", tool_suffix(target));
@@ -769,6 +798,28 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
         other => other,
     };
     placed.map_err(|e| format!("can't save the result: {e}"))
+}
+
+/// A picture as page `n` of One PDF, in `work`: upright, on white where it was see-through,
+/// and marked with the resolution that makes its long side as long as an A4 page's
+/// (29.7 cm), which MuPDF then takes as the page size. MuPDF won't go below 72 dpi, so
+/// a picture under 842 pixels keeps a smaller page. Photos go in as JPEG, the rest as
+/// PNG, so screenshots stay sharp.
+fn picture_page(src: &Path, work: &Path, n: usize) -> Result<PathBuf, String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    let photo = matches!(coder, "jpeg" | "heic" | "webp" | "avif");
+    let page = work.join(format!("page-{n}.{}", if photo { "jpg" } else { "png" }));
+    let mut cmd = Command::new(magick()?);
+    cmd.args(IMAGE_LIMITS);
+    cmd.arg(format!("{coder}:{}[0]", src.display())).arg("-auto-orient");
+    cmd.args(["-background", "white", "-alpha", "remove", "-alpha", "off"]);
+    cmd.args(["-units", "PixelsPerInch", "-set", "density", "%[fx:max(w,h)/11.69]"]);
+    if photo {
+        cmd.args(["-quality", "92"]);
+    }
+    cmd.arg(format!("{}:{}", if photo { "jpeg" } else { "png" }, page.display()));
+    run(cmd, QUICK)?;
+    Ok(page)
 }
 
 /// mutool's last line on a failure is only "cannot draw ...": say why when the reason
@@ -1880,6 +1931,23 @@ mod tests {
         let err = combine(&[three.clone(), work.path().join("x.png")], "tool:merge", None, work.path()).unwrap_err();
         assert_eq!(err, "x.png: only PDFs can be merged");
         assert_eq!(convert(&three, "tool:merge", None, work.path()).unwrap_err(), "Merge needs two PDFs or more");
+
+        // Pictures, one page each, in the order dropped.
+        if magick().is_ok() {
+            let mut pictures = Vec::new();
+            for (name, spec) in [("wide.jpg", "60x40"), ("tall.png", "30x50")] {
+                let path = work.path().join(name);
+                let mut make = Command::new(magick().unwrap());
+                make.args(["-size", spec, "xc:orange"]).arg(&path);
+                assert!(make.status().unwrap().success());
+                pictures.push(path);
+            }
+            let one = combine(&pictures, "tool:onepdf", None, work.path()).unwrap();
+            assert_eq!(one, work.path().join("wide (one PDF).pdf"));
+            assert_eq!(pages(&one), 2);
+            let err = combine(&[pictures[0].clone(), three.clone()], "tool:onepdf", None, work.path()).unwrap_err();
+            assert_eq!(err, "report.pdf: only pictures can go into one PDF");
+        }
 
         // A tiny text-only PDF has nothing to shrink, or very little.
         match convert(&three, "tool:smaller", None, work.path()) {
