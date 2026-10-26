@@ -23,7 +23,7 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VIRTUAL_KEY, VK_LBUTTON, VK_RBUTTON, VK_SHIFT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VIRTUAL_KEY, VK_LBUTTON, VK_MENU, VK_RBUTTON, VK_SHIFT};
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IsWindow,
@@ -35,7 +35,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::trigger;
-use crate::wheel::{self, Hover, WheelState};
+use crate::wheel::{self, Hover, WheelState, Which};
 
 const POLL: Duration = Duration::from_millis(30);
 /// Matches the close animation in src/wheel.css.
@@ -52,6 +52,8 @@ pub fn start_trigger(app: AppHandle) {
         let mut start = POINT::default();
         let mut from_files = false;
         let mut shown = false;
+        // Polls in a row with Shift held during this drag.
+        let mut held: u8 = 0;
         loop {
             thread::sleep(POLL);
             let mut pt = POINT::default();
@@ -62,7 +64,7 @@ pub fn start_trigger(app: AppHandle) {
                 if shown {
                     trigger::released(&app);
                 }
-                (was_down, from_files, shown) = (false, false, false);
+                (was_down, from_files, shown, held) = (false, false, false, 0);
                 continue;
             }
             if !was_down {
@@ -70,8 +72,10 @@ pub fn start_trigger(app: AppHandle) {
                 start = pt;
                 from_files = starts_in_file_view(pt);
             }
-            if from_files && !shown && key_down(VK_SHIFT) && moved_past_threshold(start, pt) {
-                trigger::show_wheel(&app, Vec::new());
+            held = if key_down(VK_SHIFT) { held.saturating_add(1) } else { 0 };
+            if from_files && !shown && held >= trigger::KEYS_SETTLE && moved_past_threshold(start, pt) {
+                // VK_MENU is Alt.
+                trigger::show_wheel(&app, Vec::new(), Which::from_keys(key_down(VK_MENU)));
                 shown = true;
             }
         }
