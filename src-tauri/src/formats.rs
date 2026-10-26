@@ -126,6 +126,23 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
         .collect()
 }
 
+/// The Actions wheel: what can be done with the dragged files themselves, whatever
+/// they are. AirDrop is macOS only.
+const ACTIONS: &[&str] = &["act:path", "act:show", "act:terminal", "act:airdrop"];
+
+/// An Actions wheel id ("act:path").
+pub fn is_action(id: &str) -> bool {
+    id.starts_with("act:")
+}
+
+/// The actions for a drag of `count` files, in wheel order.
+pub fn actions_for(count: usize) -> Vec<&'static str> {
+    if count == 0 {
+        return Vec::new();
+    }
+    ACTIONS.iter().copied().filter(|a| *a != "act:airdrop" || cfg!(target_os = "macos")).collect()
+}
+
 /// Every kind with the formats it can become, in menu order.
 pub fn all() -> impl Iterator<Item = (Kind, &'static [&'static str])> {
     KINDS.iter().map(|(kind, _, outs)| (*kind, *outs))
@@ -270,6 +287,15 @@ mod tests {
                 assert!(tools_for(&two).len() <= MAX_SEGMENTS);
             }
         }
+    }
+
+    #[test]
+    fn actions_are_offered_for_any_file() {
+        assert!(actions_for(0).is_empty());
+        let actions = actions_for(2);
+        assert_eq!(actions[..3], ["act:path", "act:show", "act:terminal"]);
+        assert_eq!(actions.contains(&"act:airdrop"), cfg!(target_os = "macos"));
+        assert!(actions.len() <= MAX_SEGMENTS && actions.iter().all(|a| is_action(a) && !is_tool(a)));
     }
 
     #[test]
