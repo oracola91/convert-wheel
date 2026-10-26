@@ -32,7 +32,7 @@ const VIDEO: Duration = Duration::from_secs(3600);
 /// The only containers ffmpeg may read: the ones the wheel accepts. Anything else, a
 /// playlist or concat list disguised as a video for example, is refused instead of
 /// being followed to other files or the network.
-const FFMPEG_FORMATS: &str = "mov,mp4,m4a,matroska,webm,avi,mp3,wav,flac,aiff,ogg,aac";
+const FFMPEG_FORMATS: &str = "mov,mp4,m4a,matroska,webm,avi,mp3,wav,flac,aiff,ogg,aac,asf,srt,webvtt";
 
 /// The error of a conversion ended with Stop.
 pub const STOPPED: &str = "stopped";
@@ -114,7 +114,9 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     // a web page saved as .doc is read as a web page.
     let head = read_head(&input)?;
     let expected: &[u8] = match ext.as_str() {
-        "docx" | "xlsx" | "pptx" | "odt" | "ods" | "odp" | "epub" => b"PK",
+        // Pages, Numbers and Keynote save a ZIP file too (an older package folder is
+        // refused above, as not a regular file).
+        "docx" | "xlsx" | "pptx" | "odt" | "ods" | "odp" | "epub" | "pages" | "numbers" | "key" => b"PK",
         "doc" | "xls" | "ppt" => &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1],
         "rtf" => b"{\\rtf",
         "pdf" => b"%PDF-",
@@ -136,6 +138,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         (None, Kind::Doc) => file(document(&input, &ext, target, &out, &work)),
         (None, Kind::Sheet | Kind::Slides) => file(libreoffice(&input, target, &out)),
         (None, Kind::Pdf) => pdf(&input, target, &out, &work),
+        (None, Kind::Subtitles) => file(ffmpeg(&input, &["-map", "0:s:0"], &out, QUICK)),
     };
     // Tool messages often start with a full path; keep only file names.
     let output = converted.map_err(|e| redact(&e, src, work.path()))?;
@@ -248,6 +251,12 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     }
     if matches!(target, "jpg" | "webp") {
         cmd.args(["-quality", "90"]);
+    }
+    if target == "ico" {
+        // Icons are square, 256 at most, and hold several sizes. A picture that isn't
+        // square is fitted in and padded with transparency rather than stretched.
+        cmd.args(["-resize", "256x256", "-background", "none", "-gravity", "center", "-extent", "256x256"]);
+        cmd.args(["-define", "icon:auto-resize=256,128,64,48,32,16"]);
     }
     let out_coder = if target == "jpg" { "jpeg" } else { target };
     cmd.arg(format!("{out_coder}:{}", out.display()));
@@ -426,6 +435,7 @@ fn audio_args(target: &str) -> &'static [&'static str] {
         "aiff" => &["-c:a", "pcm_s16be"],
         // Homebrew's ffmpeg has no Vorbis encoder; Opus in an Ogg file plays everywhere Ogg does.
         "ogg" | "opus" => &["-c:a", "libopus", "-b:a", "160k"],
+        "wma" => &["-c:a", "wmav2", "-b:a", "192k"],
         // Tools only: they keep the file's own format.
         "aac" => &["-c:a", "aac", "-b:a", "256k"],
         _ => &[],
@@ -550,6 +560,36 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
             out,
             VIDEO,
         ),
+        "mkv" => {
+            // Matroska holds nearly any streams: a fast copy first, as for MP4.
+            let copy = ["-map", "0:v", "-map", "0:a?", "-c", "copy"];
+            if ffmpeg(src, &copy, out, QUICK).is_ok() {
+                return Ok(());
+            }
+            let _ = fs::remove_file(out);
+            // H.264 without MP4's own "+faststart".
+            ffmpeg(src, &H264[..H264.len() - 2], out, VIDEO)
+        }
+        // For older players: MPEG-4 Part 2 (what Xvid makes) with MP3, and Windows
+        // Media 8 with WMA.
+        "avi" => ffmpeg(
+            src,
+            &[
+                "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "mpeg4", "-vtag", "xvid",
+                "-q:v", "3", "-c:a", "libmp3lame", "-q:a", "4",
+            ],
+            out,
+            VIDEO,
+        ),
+        "wmv" => ffmpeg(
+            src,
+            &[
+                "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "wmv2", "-q:v", "3",
+                "-c:a", "wmav2", "-b:a", "192k",
+            ],
+            out,
+            VIDEO,
+        ),
         "gif" => ffmpeg(
             src,
             &[
@@ -571,7 +611,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
 /// files); pandoc is better at the plain formats (HTML, Markdown, text, EPUB).
 fn document(src: &Path, ext: &str, target: &str, out: &Path, work: &TempDir) -> Result<(), String> {
     let ext = formats::canonical(ext);
-    let office_in = matches!(ext, "docx" | "doc" | "odt" | "rtf");
+    let office_in = matches!(ext, "docx" | "doc" | "odt" | "rtf" | "pages");
     match target {
         // Plain text keeps its exact characters through LibreOffice; pandoc would read
         // it as Markdown and change *, # and _.
@@ -583,9 +623,9 @@ fn document(src: &Path, ext: &str, target: &str, out: &Path, work: &TempDir) -> 
             pandoc(src, ext, "docx", &docx)?;
             libreoffice(&docx, target, out)
         }
-        _ if ext == "doc" || ext == "rtf" => {
-            // pandoc can't read .doc, and reads RTF only in recent versions: LibreOffice
-            // turns them into .docx first.
+        _ if matches!(ext, "doc" | "rtf" | "pages") => {
+            // pandoc can't read .doc or Pages, and reads RTF only in recent versions:
+            // LibreOffice turns them into .docx first.
             let docx = work.path().join("intermediate.docx");
             libreoffice(src, "docx", &docx)?;
             pandoc(&docx, "docx", target, out)
@@ -2092,6 +2132,39 @@ mod tests {
         let mono = convert(&song, "tool:mono", None, work.path()).unwrap();
         assert!(probe(&mono).contains("channels=1"), "{}", probe(&mono));
         assert_eq!(convert(&song, "tool:still", None, work.path()).unwrap_err(), ".mp3 files can't be turned into a picture");
+    }
+
+    #[test]
+    fn subtitles_go_both_ways() {
+        if tool("ffmpeg").is_err() {
+            eprintln!("ffmpeg isn't installed: subtitles not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let srt = work.path().join("film.srt");
+        fs::write(&srt, "1\n00:00:01,000 --> 00:00:02,500\nHello there\n").unwrap();
+        let vtt = convert(&srt, "vtt", None, work.path()).unwrap();
+        let text = fs::read_to_string(&vtt).unwrap();
+        assert!(text.starts_with("WEBVTT") && text.contains("00:01.000 --> 00:02.500") && text.contains("Hello there"), "{text}");
+        fs::remove_file(&srt).unwrap();
+        let back = fs::read_to_string(convert(&vtt, "srt", None, work.path()).unwrap()).unwrap();
+        assert!(back.contains("00:00:01,000 --> 00:00:02,500") && back.contains("Hello there"), "{back}");
+    }
+
+    #[test]
+    fn icons_are_square_and_hold_every_size() {
+        if magick().is_err() {
+            eprintln!("ImageMagick isn't installed: icons not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let wide = work.path().join("logo.png");
+        let mut make = Command::new(magick().unwrap());
+        make.args(["-size", "300x200", "xc:orange"]).arg(&wide);
+        assert!(make.status().unwrap().success());
+        let ico = convert(&wide, "ico", None, work.path()).unwrap();
+        let out = Command::new(magick().unwrap()).arg(&ico).args(["-format", "%wx%h,", "info:"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "256x256,128x128,64x64,48x48,32x32,16x16,");
     }
 
     #[test]
