@@ -22,7 +22,7 @@ use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, KeyButMask, Window};
 use x11rb::rust_connection::RustConnection;
 
 use crate::trigger;
-use crate::wheel::{self, Hover, WheelState};
+use crate::wheel::{self, Hover, WheelState, Which};
 
 const POLL: Duration = Duration::from_millis(30);
 /// Matches the close animation in src/wheel.css.
@@ -69,6 +69,8 @@ fn start_x11(app: AppHandle) {
         };
         let root = conn.setup().roots[screen].root;
         let (mut was_down, mut start, mut from_files, mut shown) = (false, (0, 0), false, false);
+        // Polls in a row with Shift held during this drag.
+        let mut held: u8 = 0;
         loop {
             thread::sleep(POLL);
             let pointer = match conn.query_pointer(root).map(|c| c.reply()) {
@@ -84,7 +86,7 @@ fn start_x11(app: AppHandle) {
                 if shown {
                     trigger::released(&app);
                 }
-                (was_down, from_files, shown) = (false, false, false);
+                (was_down, from_files, shown, held) = (false, false, false, 0);
                 continue;
             }
             let (px, py) = (i32::from(pointer.root_x), i32::from(pointer.root_y));
@@ -94,8 +96,11 @@ fn start_x11(app: AppHandle) {
                 from_files = starts_in_file_manager(&conn, root);
             }
             let moved = (px - start.0).abs() > DRAG_THRESHOLD || (py - start.1).abs() > DRAG_THRESHOLD;
-            if from_files && !shown && pointer.mask.contains(KeyButMask::SHIFT) && moved {
-                trigger::show_wheel(&app, Vec::new());
+            held = if pointer.mask.contains(KeyButMask::SHIFT) { held.saturating_add(1) } else { 0 };
+            if from_files && !shown && held >= trigger::KEYS_SETTLE && moved {
+                // MOD1 is Alt.
+                let which = Which::from_keys(pointer.mask.contains(KeyButMask::MOD1));
+                trigger::show_wheel(&app, Vec::new(), which);
                 shown = true;
             }
         }

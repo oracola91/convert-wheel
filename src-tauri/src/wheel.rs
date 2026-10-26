@@ -15,10 +15,32 @@ pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Which wheel opens: Shift while dragging gives the formats, Option+Shift (Alt+Shift
+/// on Windows and Linux) the tools.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Which {
+    #[default]
+    Formats,
+    Tools,
+}
+
+impl Which {
+    /// Option (Alt) held as well as Shift.
+    pub fn from_keys(option: bool) -> Self {
+        if option {
+            Which::Tools
+        } else {
+            Which::Formats
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct WheelState {
-    /// Formats on the wheel right now, in drawing order.
+    /// Formats, or tools ("tool:half"), on the wheel right now, in drawing order.
     pub formats: Mutex<Vec<&'static str>>,
+    /// The wheel that is open, or was last.
+    pub which: Mutex<Which>,
     phase: Mutex<Phase>,
 }
 

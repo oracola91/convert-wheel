@@ -1,4 +1,4 @@
-// Draws the format wheel. The drop itself is handled natively (drop_view.rs), which
+// Draws the wheel: formats, or (Option/Alt+Shift) tools. The drop itself is handled natively (drop_view.rs), which
 // says what is under the cursor. The glass and the file icon in the hub are native too.
 if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
 const { listen } = window.__TAURI__.event;
@@ -20,9 +20,19 @@ const NAMES = {
   xlsx: 'Excel', pptx: 'PowerPoint', mov: 'QuickTime', webp: 'WebP', webm: 'WebM', ogg: 'Ogg',
 };
 
+// The Tools wheel: what each segment says, and what the hub says over it.
+const TOOLS = {
+  'tool:compress': ['Compress', 'Compress'],
+  'tool:half': ['Half size', 'Half size'],
+  'tool:clean': ['No metadata', 'Remove metadata'],
+  'tool:rotate': ['Rotate', 'Rotate right'],
+};
+
 const svg = document.getElementById('wheel');
 let paths = [];
+// Formats, or on the Tools wheel tool ids ("tool:half").
 let formats = [];
+let tools = false;
 // Windows and Linux learn which files are dragged only when they reach the wheel.
 let pending = false;
 // Opened from the keyboard shortcut (Linux): waits for a file instead of a mouse-up.
@@ -81,7 +91,7 @@ function build() {
     g.append(el('path', { d: sectorPath(i, n), 'fill-rule': 'evenodd' }));
     const [x, y] = polar((R_OUT + R_IN) / 2, mid);
     const label = el('text', { x, y });
-    label.textContent = f.toUpperCase();
+    label.textContent = Object.hasOwn(TOOLS, f) ? TOOLS[f][0] : f.toUpperCase();
     g.append(label);
     svg.append(g);
     return g;
@@ -110,11 +120,12 @@ function show(raw) {
     hubLabel.textContent = 'Cancel';
   } else if (hover.segment !== null) {
     const f = formats[hover.segment];
-    hubLabel.textContent = `To ${Object.hasOwn(NAMES, f) ? NAMES[f] : f.toUpperCase()}`;
+    if (Object.hasOwn(TOOLS, f)) hubLabel.textContent = TOOLS[f][1];
+    else hubLabel.textContent = `To ${Object.hasOwn(NAMES, f) ? NAMES[f] : f.toUpperCase()}`;
   } else if (pending) {
     hubLabel.textContent = pinned ? 'Drag a file here' : 'Drop here';
   } else if (formats.length === 0) {
-    hubLabel.textContent = 'No formats';
+    hubLabel.textContent = tools ? 'No tools' : 'No formats';
   } else if (pinned) {
     hubLabel.textContent = 'Esc to close';
   } else {
@@ -132,11 +143,17 @@ function restart(className) {
 // be stuck on screen; anything unexpected becomes an empty list.
 function readWheel(payload) {
   const list = (value) => (Array.isArray(value) ? value.filter((v) => typeof v === 'string') : []);
-  return { paths: list(payload?.paths), formats: list(payload?.formats), pending: payload?.pending === true };
+  return {
+    paths: list(payload?.paths),
+    formats: list(payload?.formats),
+    pending: payload?.pending === true,
+    tools: payload?.tools === true,
+  };
 }
 
 listen('wheel-show', (event) => {
-  ({ paths, formats, pending } = readWheel(event.payload));
+  ({ paths, formats, pending, tools } = readWheel(event.payload));
+  svg.setAttribute('aria-label', tools ? 'Tools for the file' : 'Formats to convert to');
   pinned = event.payload?.pinned === true;
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   build();
@@ -149,7 +166,7 @@ listen('wheel-show', (event) => {
 listen('wheel-formats', (event) => {
   if (!open) return;
   const keep = lastHover;
-  ({ paths, formats, pending } = readWheel(event.payload));
+  ({ paths, formats, pending, tools } = readWheel(event.payload));
   build();
   show(keep);
 });
