@@ -14,7 +14,7 @@ Every version is on the repo's [Releases page](https://github.com/oracola91/conv
 
 None of the files is code-signed yet, so each system warns once on first launch. The steps below say how to get past that.
 
-Convert Wheel does the converting with five free tools that are installed separately: **ffmpeg** (audio, video), **ImageMagick** (images), **pandoc** (documents), **LibreOffice** (office files, and documents to PDF) and **MuPDF** (PDFs to pictures and text). Install them first; the commands are in each section. A format whose tool is missing fails with a notification that names the install command.
+Convert Wheel does the converting with five free tools that are installed separately: **ffmpeg** (audio, video), **ImageMagick** (images), **pandoc** (documents), **LibreOffice** (office files, and documents to PDF) and **MuPDF** (PDFs to pictures and text). Install them first; the commands are in each section. A format whose tool is missing fails with a notification. On macOS and Windows that notification points to **Install …** in the app's menu, which installs the tool with Homebrew or winget; on Linux it names the install command.
 
 ## macOS
 
@@ -24,6 +24,8 @@ Convert Wheel does the converting with five free tools that are installed separa
 brew install ffmpeg imagemagick pandoc mupdf-tools
 brew install --cask libreoffice
 ```
+
+Or install only the ones you need, when you need them: when a drop needs a missing one, the menu offers **Install …** and runs the same `brew install` for you.
 
 **2. The app:** open the `.dmg` and drag Convert Wheel onto Applications.
 
@@ -50,6 +52,8 @@ winget install Gyan.FFmpeg ImageMagick.ImageMagick JohnMacFarlane.Pandoc TheDocu
 ```
 
 Sign out and back in afterwards, so apps started from the Start menu see the new tools.
+
+Or install only the ones you need, when you need them: when a drop needs a missing one, the menu offers **Install …** and runs the same `winget install` for you (no sign-out needed). Packages that install for all users, such as LibreOffice, still ask for admin rights.
 
 **2. The app**, one of:
 
