@@ -70,6 +70,39 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
     (Kind::Pdf, &["pdf"], &["docx", "jpg", "png", "txt"]),
 ];
 
+/// The Tools wheel: what can be done to a file while it keeps its format, by the id
+/// the wheel and the converter use, with the formats each tool takes. Animated GIFs are
+/// left out: a tool would have to handle every frame.
+const TOOLS: &[(&str, &[&str])] = &[
+    ("tool:compress", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif"]),
+    ("tool:half", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    ("tool:clean", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif"]),
+    ("tool:rotate", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+];
+
+/// A Tools wheel id ("tool:half") rather than a format.
+pub fn is_tool(id: &str) -> bool {
+    id.starts_with("tool:")
+}
+
+/// Whether `tool` works on .`ext` files.
+pub fn tool_takes(tool: &str, ext: &str) -> bool {
+    TOOLS.iter().any(|(id, ins)| *id == tool && ins.contains(&ext))
+}
+
+/// Tools that work on every dragged file, in wheel order.
+pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
+    let exts: Vec<String> = paths.iter().filter_map(|p| extension(Path::new(p))).collect();
+    if exts.is_empty() || exts.len() != paths.len() {
+        return Vec::new();
+    }
+    TOOLS
+        .iter()
+        .filter(|(_, ins)| exts.iter().all(|e| ins.contains(&e.as_str())))
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 /// Every kind with the formats it can become, in menu order.
 pub fn all() -> impl Iterator<Item = (Kind, &'static [&'static str])> {
     KINDS.iter().map(|(kind, _, outs)| (*kind, *outs))
@@ -183,6 +216,19 @@ mod tests {
     fn word_files_offer_pdf() {
         assert!(formats_for(&v(&["/tmp/a.docx"]), all_shown).contains(&"pdf"));
         assert!(formats_for(&v(&["/tmp/a.doc"]), all_shown).contains(&"docx"));
+    }
+
+    #[test]
+    fn tools_are_offered_when_every_file_takes_them() {
+        let all = ["tool:compress", "tool:half", "tool:clean", "tool:rotate"];
+        assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), all);
+        // BMP has no metadata to remove and nothing to compress it with.
+        assert_eq!(tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])), ["tool:half", "tool:rotate"]);
+        assert!(tools_for(&v(&["/tmp/a.gif"])).is_empty());
+        assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
+        assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
+        assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));
+        assert!(TOOLS.len() <= MAX_SEGMENTS && TOOLS.iter().all(|(id, _)| is_tool(id)));
     }
 
     #[test]

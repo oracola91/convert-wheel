@@ -1,4 +1,5 @@
-//! Watches for a file drag with Shift held and shows the wheel under the cursor.
+//! Watches for a file drag with Shift held and shows the wheel under the cursor: the
+//! formats, or with Option (Alt) held too, the tools.
 //!
 //! macOS has no "drag started" notification for other apps, so this polls three
 //! things the window server shares with everyone: the drag pasteboard's change
@@ -12,10 +13,13 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::formats;
-use crate::wheel::{self, Hover, WheelState};
+use crate::wheel::{self, Hover, WheelState, Which};
 
 #[cfg(target_os = "macos")]
 const POLL: Duration = Duration::from_millis(30);
+/// Polls Shift must be held before the wheel opens, so Option (Alt) pressed a moment
+/// after it still picks the Tools wheel.
+pub(crate) const KEYS_SETTLE: u8 = 2;
 /// How long the wheel stays after the button is released, so a drop on it can land.
 const HIDE_DELAY: Duration = Duration::from_millis(400);
 /// A wheel opened before its files were known (Windows, Linux) closes if the drag
@@ -39,6 +43,8 @@ struct WheelShow {
     /// Opened from the keyboard shortcut: stays open until a drop, Esc or a click in
     /// the middle, instead of closing when the mouse button goes up.
     pinned: bool,
+    /// The Tools wheel: `formats` holds tool ids ("tool:half").
+    tools: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -48,6 +54,8 @@ pub fn start(app: AppHandle) {
         // The drag pasteboard changed while the button was down: a drag is under way.
         let mut dragging = false;
         let mut shown = false;
+        // Polls in a row with Shift held during this drag.
+        let mut held: u8 = 0;
         loop {
             thread::sleep(POLL);
             // AppKit hands back autoreleased objects; without a pool on this thread
@@ -65,16 +73,18 @@ pub fn start(app: AppHandle) {
                     }
                     dragging = false;
                     shown = false;
+                    held = 0;
                     return;
                 }
-                if dragging && !shown && macos::shift_down() {
+                held = if macos::shift_down() { held.saturating_add(1) } else { 0 };
+                if dragging && !shown && held >= KEYS_SETTLE {
                     let paths = macos::dragged_files();
                     // Not a file drag (text, a tab, ...): ignore it until the next drag.
                     if paths.is_empty() {
                         dragging = false;
                         return;
                     }
-                    show_wheel(&app, paths);
+                    show_wheel(&app, paths, Which::from_keys(macos::option_down()));
                     shown = true;
                 }
             });
@@ -95,14 +105,20 @@ pub fn start(app: AppHandle) {
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 pub fn start(_app: AppHandle) {}
 
-fn formats_for(app: &AppHandle, paths: &[String]) -> Vec<&'static str> {
-    let settings = app.state::<crate::settings::Store>().get();
-    formats::formats_for(paths, |kind, f| settings.shows(kind, f))
+/// What the wheel offers for `paths`: formats the user left on the wheel, or tools.
+fn items_for(app: &AppHandle, paths: &[String], which: Which) -> Vec<&'static str> {
+    match which {
+        Which::Formats => {
+            let settings = app.state::<crate::settings::Store>().get();
+            formats::formats_for(paths, |kind, f| settings.shows(kind, f))
+        }
+        Which::Tools => formats::tools_for(paths),
+    }
 }
 
-pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>) {
+pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>, which: Which) {
     let pending = paths.is_empty();
-    let generation = open_wheel(app, paths, false);
+    let generation = open_wheel(app, paths, false, which);
     #[cfg(any(windows, target_os = "linux"))]
     if pending {
         close_later(app, generation, PENDING_TIMEOUT, true);
@@ -113,7 +129,7 @@ pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>) {
 /// Opens the wheel from the keyboard shortcut and closes it again if no file comes.
 #[cfg(target_os = "linux")]
 pub(crate) fn show_pinned(app: &AppHandle) {
-    let generation = open_wheel(app, Vec::new(), true);
+    let generation = open_wheel(app, Vec::new(), true, Which::Formats);
     close_later(app, generation, PINNED_TIMEOUT, false);
 }
 
@@ -131,15 +147,17 @@ fn close_later(app: &AppHandle, generation: u64, delay: Duration, only_if_waitin
 }
 
 /// Opens the wheel and returns its generation.
-fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool) -> u64 {
-    let formats = formats_for(app, &paths);
+fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -> u64 {
+    let formats = items_for(app, &paths, which);
     let state = app.state::<WheelState>();
     *wheel::lock(&state.formats) = formats.clone();
+    *wheel::lock(&state.which) = which;
+    let tools = which == Which::Tools;
     let pending = paths.is_empty();
     let generation = state.open(pending);
     let first = paths.first().cloned();
     let glass = cfg!(target_os = "macos");
-    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned });
+    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, tools });
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -154,17 +172,20 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool) -> u64 {
 }
 
 /// The files reached the wheel on a system that couldn't tell earlier which files
-/// were being dragged: work out their formats and redraw the wheel.
+/// were being dragged: work out their formats (or tools) and redraw the wheel.
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
-    let formats = formats_for(app, &paths);
     let state = app.state::<WheelState>();
+    let which = *wheel::lock(&state.which);
+    let formats = items_for(app, &paths, which);
     *wheel::lock(&state.formats) = formats.clone();
     state.files_known();
-    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false });
+    let tools = which == Which::Tools;
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, tools });
 }
 
-/// A drop on the wheel. Converts when it landed on a format and says whether it did.
+/// A drop on the wheel. Converts (or runs the tool) when it landed on a segment and
+/// says whether it did.
 pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -> bool {
     let format = hover
         .segment
@@ -245,6 +266,10 @@ mod macos {
 
     pub fn shift_down() -> bool {
         NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Shift)
+    }
+
+    pub fn option_down() -> bool {
+        NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Option)
     }
 
     pub fn dragged_files() -> Vec<String> {
