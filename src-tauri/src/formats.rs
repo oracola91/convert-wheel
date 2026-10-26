@@ -104,7 +104,7 @@ const TOOLS: &[(&str, &[&str])] = &[
 
 /// A tool that turns the whole drop into one file, instead of working on each file.
 pub fn combines(id: &str) -> bool {
-    matches!(id, "tool:merge" | "tool:onepdf")
+    matches!(id, "tool:merge" | "tool:onepdf" | "act:zip" | "act:tgz" | "act:tar")
 }
 
 /// A Tools wheel id ("tool:half") rather than a format.
@@ -132,20 +132,29 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
-/// they are. AirDrop is macOS only.
-const ACTIONS: &[&str] = &["act:path", "act:show", "act:terminal", "act:airdrop"];
+/// they are. AirDrop is macOS only; Unpack only when every file is an archive.
+const ACTIONS: &[&str] = &["act:path", "act:show", "act:terminal", "act:airdrop", "act:zip", "act:tgz", "act:tar", "act:unpack"];
 
 /// An Actions wheel id ("act:path").
 pub fn is_action(id: &str) -> bool {
     id.starts_with("act:")
 }
 
-/// The actions for a drag of `count` files, in wheel order.
-pub fn actions_for(count: usize) -> Vec<&'static str> {
-    if count == 0 {
+/// The actions for the dragged files, in wheel order.
+pub fn actions_for(paths: &[String]) -> Vec<&'static str> {
+    if paths.is_empty() {
         return Vec::new();
     }
-    ACTIONS.iter().copied().filter(|a| *a != "act:airdrop" || cfg!(target_os = "macos")).collect()
+    let archives = paths.iter().all(|p| crate::archive::is_archive(p));
+    ACTIONS
+        .iter()
+        .copied()
+        .filter(|a| match *a {
+            "act:airdrop" => cfg!(target_os = "macos"),
+            "act:unpack" => archives,
+            _ => true,
+        })
+        .collect()
 }
 
 /// Every kind with the formats it can become, in menu order.
@@ -305,10 +314,12 @@ mod tests {
 
     #[test]
     fn actions_are_offered_for_any_file() {
-        assert!(actions_for(0).is_empty());
-        let actions = actions_for(2);
+        assert!(actions_for(&[]).is_empty());
+        let actions = actions_for(&v(&["/tmp/a.txt", "/tmp/Photos"]));
         assert_eq!(actions[..3], ["act:path", "act:show", "act:terminal"]);
         assert_eq!(actions.contains(&"act:airdrop"), cfg!(target_os = "macos"));
+        assert!(actions.ends_with(&["act:zip", "act:tgz", "act:tar"]));
+        assert!(actions_for(&v(&["/tmp/a.zip", "/tmp/b.tar.gz"])).ends_with(&["act:tar", "act:unpack"]));
         assert!(actions.len() <= MAX_SEGMENTS && actions.iter().all(|a| is_action(a) && !is_tool(a)));
     }
 
