@@ -1,7 +1,9 @@
-//! The menu bar icon and its menu: how the last conversion went, updates, Open at
-//! Login, where converted files go, and which formats the wheel offers.
+//! The menu bar icon and its menu: how the last conversion went, converters to
+//! install, updates, Open at Login, where converted files go, and which formats the
+//! wheel offers.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
@@ -9,13 +11,16 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Manager, Wry};
 
 use crate::settings::{self, SaveTo, Store};
-use crate::{formats, login, reveal, update};
+use crate::{converters, formats, login, reveal, update};
 
 const SAVE_NEXT: &str = "save:next";
 const SAVE_DOWNLOADS: &str = "save:downloads";
 const LOGIN: &str = "login";
 const LAST: &str = "last";
 const STOP: &str = "stop";
+const INSTALL: &str = "install";
+/// Where the Install item goes while converters are missing: under Stop Converting.
+const INSTALL_AT: usize = 4;
 const UPDATE: &str = "update";
 const TOOLTIP: &str = "Convert Wheel: hold Shift while dragging a file";
 const SHOW_LOG: &str = "log";
@@ -27,6 +32,10 @@ const FORMAT: &str = "fmt:";
 
 pub struct TrayMenu(Menu<Wry>);
 
+/// The Install item, kept while it is out of the menu. The lock keeps two threads from
+/// both putting it in.
+struct InstallItem(Mutex<MenuItem<Wry>>);
+
 pub fn build(app: &App) -> tauri::Result<()> {
     let current = app.state::<Store>().get();
     let version = format!("Convert Wheel {}", app.package_info().version);
@@ -36,6 +45,8 @@ pub fn build(app: &App) -> tauri::Result<()> {
     // something, a click on it shows the result.
     let last = MenuItem::with_id(app, LAST, "Last: nothing converted yet", false, None::<&str>)?;
     let stop = MenuItem::with_id(app, STOP, "Stop Converting", false, None::<&str>)?;
+    // Only in the menu once a drop found a converter missing; see show_install.
+    let install = MenuItem::with_id(app, INSTALL, "Install", true, None::<&str>)?;
     let update = MenuItem::with_id(app, UPDATE, "Check for Updates…", true, None::<&str>)?;
     let show_log = MenuItem::with_id(app, SHOW_LOG, "Show Log", true, None::<&str>)?;
 
@@ -83,6 +94,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
         .on_menu_event(on_event)
         .build(app)?;
     app.manage(TrayMenu(menu));
+    app.manage(InstallItem(Mutex::new(install)));
     Ok(())
 }
 
@@ -115,6 +127,29 @@ fn short(line: &str) -> String {
 fn set_tooltip(app: &AppHandle, text: &str) {
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(text));
+    }
+}
+
+/// Offers to install the converters drops found missing (`text` such as "Install
+/// ffmpeg…"), or with None takes the item out of the menu again.
+pub fn show_install(app: &AppHandle, text: Option<&str>, enabled: bool) {
+    let (Some(menu), Some(install)) = (app.try_state::<TrayMenu>(), app.try_state::<InstallItem>()) else {
+        return;
+    };
+    let item = install.0.lock().unwrap_or_else(|e| e.into_inner());
+    let shown = find(menu.0.items().unwrap_or_default(), INSTALL).is_some();
+    match text {
+        Some(text) => {
+            let _ = item.set_text(text);
+            let _ = item.set_enabled(enabled);
+            if !shown {
+                let _ = menu.0.insert(&*item, INSTALL_AT);
+            }
+        }
+        None if shown => {
+            let _ = menu.0.remove(&*item);
+        }
+        None => {}
     }
 }
 
@@ -209,6 +244,7 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
         SHOW_LOG => show_log(app),
         LAST => reveal::show_last(app),
         STOP => crate::stop_converting(app),
+        INSTALL => converters::install(app),
         UPDATE => {
             if update::pending(app).is_some() {
                 update::install_soon(app);
