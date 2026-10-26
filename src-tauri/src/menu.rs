@@ -9,16 +9,18 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Manager, Wry};
 
 use crate::settings::{self, SaveTo, Store};
-use crate::{formats, login, update};
+use crate::{formats, login, reveal, update};
 
 const SAVE_NEXT: &str = "save:next";
 const SAVE_DOWNLOADS: &str = "save:downloads";
 const LOGIN: &str = "login";
 const LAST: &str = "last";
+const STOP: &str = "stop";
 const UPDATE: &str = "update";
+const TOOLTIP: &str = "Convert Wheel: hold Shift while dragging a file";
 const SHOW_LOG: &str = "log";
 /// Longest "Last: …" line, so the menu stays a sensible width.
-const LAST_MAX_CHARS: usize = 70;
+pub const LAST_MAX_CHARS: usize = 70;
 const QUIT: &str = "quit";
 /// Format switches are "fmt:" followed by the settings key, e.g. "fmt:image:avif".
 const FORMAT: &str = "fmt:";
@@ -30,8 +32,10 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let version = format!("Convert Wheel {}", app.package_info().version);
     let title = MenuItem::with_id(app, "version", version, false, None::<&str>)?;
     let hint = MenuItem::with_id(app, "hint", "Hold Shift while dragging a file", false, None::<&str>)?;
-    // Feedback that stays put even when notifications are off.
+    // Feedback that stays put even when notifications are off. Once a drop produced
+    // something, a click on it shows the result.
     let last = MenuItem::with_id(app, LAST, "Last: nothing converted yet", false, None::<&str>)?;
+    let stop = MenuItem::with_id(app, STOP, "Stop Converting", false, None::<&str>)?;
     let update = MenuItem::with_id(app, UPDATE, "Check for Updates…", true, None::<&str>)?;
     let show_log = MenuItem::with_id(app, SHOW_LOG, "Show Log", true, None::<&str>)?;
 
@@ -61,7 +65,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let sep = || PredefinedMenuItem::separator(app);
     let menu = Menu::with_items(
         app,
-        &[&title, &hint, &last, &sep()?, &update, &login, &save, &shown, &sep()?, &show_log, &quit],
+        &[&title, &hint, &last, &stop, &sep()?, &update, &login, &save, &shown, &sep()?, &show_log, &quit],
     )?;
 
     // macOS: a template icon it tints to match the menu bar, light or dark. Windows'
@@ -73,7 +77,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
         Some(icon) => TrayIconBuilder::with_id("main").icon(icon.clone()),
         None => TrayIconBuilder::with_id("main"),
     };
-    tray.tooltip("Convert Wheel: hold Shift while dragging a file")
+    tray.tooltip(TOOLTIP)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(on_event)
@@ -83,13 +87,35 @@ pub fn build(app: &App) -> tauri::Result<()> {
 }
 
 /// Puts how the last drop went in the menu, for example "Last: Converted to PDF:
-/// report.pdf", cut short to keep the menu narrow.
-pub fn show_last_result(app: &AppHandle, text: &str) {
-    let mut line = format!("Last: {text}");
+/// report.pdf", cut short to keep the menu narrow. `clickable`: the drop produced
+/// files, and a click on the line shows them.
+pub fn show_last_result(app: &AppHandle, text: &str, clickable: bool) {
+    set_text(app, LAST, &short(&format!("Last: {text}")), clickable);
+    set_text(app, STOP, "Stop Converting", false);
+    set_tooltip(app, TOOLTIP);
+}
+
+/// While a drop converts: how far it has got, in the menu and the menu bar icon's
+/// tooltip, and Stop Converting can be chosen.
+pub fn show_progress(app: &AppHandle, line: &str) {
+    set_text(app, LAST, &short(line), false);
+    set_text(app, STOP, "Stop Converting", true);
+    set_tooltip(app, &format!("Convert Wheel: {line}"));
+}
+
+fn short(line: &str) -> String {
     if line.chars().count() > LAST_MAX_CHARS {
-        line = line.chars().take(LAST_MAX_CHARS - 1).collect::<String>() + "…";
+        line.chars().take(LAST_MAX_CHARS - 1).collect::<String>() + "…"
+    } else {
+        line.to_string()
     }
-    set_text(app, LAST, &line, true);
+}
+
+/// Linux trays show no tooltip; there this does nothing.
+fn set_tooltip(app: &AppHandle, text: &str) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(text));
+    }
 }
 
 pub enum UpdateState<'a> {
@@ -118,9 +144,7 @@ fn set_text(app: &AppHandle, id: &str, text: &str, enabled: bool) {
     if let Some(item) = find(menu.0.items().unwrap_or_default(), id) {
         if let Some(item) = item.as_menuitem() {
             let _ = item.set_text(text);
-            if id != LAST {
-                let _ = item.set_enabled(enabled);
-            }
+            let _ = item.set_enabled(enabled);
         }
     }
 }
@@ -131,16 +155,7 @@ fn show_log(app: &AppHandle) {
         crate::notify(app, "No log yet", "Convert Wheel hasn't written a log on this computer.");
         return;
     };
-    let shown = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg("-R").arg(&file).spawn()
-    } else if cfg!(windows) {
-        std::process::Command::new("explorer").arg(format!("/select,{}", file.display())).spawn()
-    } else {
-        std::process::Command::new("xdg-open").arg(file.parent().unwrap_or(&file)).spawn()
-    };
-    if let Err(e) = shown {
-        crate::notify(app, "Couldn't open the log folder", &format!("{e}. The log is at {}", file.display()));
-    }
+    reveal::show(app, vec![file]);
 }
 
 /// Quitting while conversions run asks for a second Quit within 10 seconds.
@@ -192,6 +207,8 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
     match id {
         QUIT => quit(app),
         SHOW_LOG => show_log(app),
+        LAST => reveal::show_last(app),
+        STOP => crate::stop_converting(app),
         UPDATE => {
             if update::pending(app).is_some() {
                 update::install_soon(app);
