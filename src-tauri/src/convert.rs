@@ -8,11 +8,13 @@
 //! ("report.pdf", "report 2.pdf", ...), so nothing is ever overwritten. Tools get
 //! paths as separate arguments, never a shell line, and each has a time limit.
 
+use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -31,6 +33,9 @@ const VIDEO: Duration = Duration::from_secs(3600);
 /// playlist or concat list disguised as a video for example, is refused instead of
 /// being followed to other files or the network.
 const FFMPEG_FORMATS: &str = "mov,mp4,m4a,matroska,webm,avi,mp3,wav,flac,aiff,ogg,aac";
+
+/// The error of a conversion ended with Stop.
+pub const STOPPED: &str = "stopped";
 
 /// Pictures of a PDF's pages: at most this many pages; print resolution; and a size
 /// cap, so a page that claims to be metres wide can't need gigabytes of memory.
@@ -251,14 +256,84 @@ fn audio_args(target: &str) -> &'static [&'static str] {
 
 fn ffmpeg(src: &Path, args: &[&str], out: &Path, limit: Duration) -> Result<(), String> {
     let mut cmd = Command::new(tool("ffmpeg")?);
+    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
+    // A long run writes how far it is to a file next to the result, for the menu. Quick
+    // ones (a stream copy) aren't worth asking ffprobe for the length first.
+    let progress = out.with_extension("progress");
+    let watch = match control() {
+        Some(control) if limit > QUICK => media_length(src, out).map(|length| (control, length)),
+        _ => None,
+    };
+    if watch.is_some() {
+        cmd.arg("-progress").arg(format!("file:{}", progress.display()));
+    }
     // Local files only, our containers only, and the input named as a file so that a
     // name like "concat:..." can't be read as an instruction.
-    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error"])
-        .args(["-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-i"])
+    cmd.args(["-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-i"])
         .arg(format!("file:{}", src.display()))
         .args(args)
         .arg(out);
-    run(cmd, limit)
+    let Some((control, length)) = watch else {
+        return run(cmd, limit);
+    };
+    // Twice a second, the time ffmpeg has reached against the whole length.
+    let finished = AtomicBool::new(false);
+    let result = thread::scope(|s| {
+        s.spawn(|| {
+            while !finished.load(Ordering::SeqCst) {
+                if let Some(at) = progress_at(&file_tail(&progress)) {
+                    control.set_percent(Some(percent_of(at, length)));
+                }
+                thread::sleep(Duration::from_millis(500));
+            }
+        });
+        let result = run(cmd, limit);
+        finished.store(true, Ordering::SeqCst);
+        result
+    });
+    control.set_percent(None);
+    result
+}
+
+/// How long an audio or video file plays, from ffprobe, locked down like ffmpeg. None
+/// when ffprobe is missing or can't tell: the conversion then runs without a percent.
+fn media_length(src: &Path, out: &Path) -> Option<Duration> {
+    let answer = out.with_file_name("length.txt");
+    let mut cmd = Command::new(tool("ffprobe").ok()?);
+    cmd.args(["-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS])
+        .args(["-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "-o"])
+        .arg(format!("file:{}", answer.display()))
+        .arg(format!("file:{}", src.display()));
+    run(cmd, QUICK).ok()?;
+    let seconds: f64 = fs::read_to_string(&answer).ok()?.trim().parse().ok()?;
+    (seconds.is_finite() && seconds > 0.0).then(|| Duration::from_secs_f64(seconds))
+}
+
+/// The end of a file that keeps growing, without reading all of it each time.
+fn file_tail(path: &Path) -> String {
+    let Ok(mut file) = fs::File::open(path) else {
+        return String::new();
+    };
+    let len = file.seek(SeekFrom::End(0)).unwrap_or(0);
+    let _ = file.seek(SeekFrom::Start(len.saturating_sub(2048)));
+    let mut bytes = Vec::new();
+    let _ = file.read_to_end(&mut bytes);
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// The time ffmpeg has reached, from the last complete `out_time_us=` line of its
+/// -progress output. It says "N/A" before the first frame.
+fn progress_at(text: &str) -> Option<Duration> {
+    text.lines()
+        .rev()
+        .filter_map(|l| l.strip_prefix("out_time_us="))
+        .find_map(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_micros)
+}
+
+/// 99 at most: the last percent comes when the file is really in place.
+fn percent_of(at: Duration, length: Duration) -> u8 {
+    (at.as_secs_f64() / length.as_secs_f64() * 100.0).clamp(0.0, 99.0) as u8
 }
 
 fn audio(src: &Path, target: &str, out: &Path) -> Result<(), String> {
@@ -589,6 +664,69 @@ fn read_head(path: &Path) -> Result<Vec<u8>, String> {
     Ok(head)
 }
 
+/// What the app sees of a drop being converted, and can do to it: how far its tool
+/// has got, when the tool says, and Stop. Conversions run under one with `under`.
+pub struct Control {
+    stop: AtomicBool,
+    /// Percent done of the tool running now, or NO_PERCENT.
+    percent: AtomicU8,
+}
+
+const NO_PERCENT: u8 = u8::MAX;
+
+impl Control {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT) })
+    }
+
+    /// Ends the tool running now, with everything it started, and keeps the drop from
+    /// starting another. What it wrote so far stays in the work folder, which goes.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    /// How far the running tool is, in percent, for tools that report it (ffmpeg).
+    pub fn percent(&self) -> Option<u8> {
+        Some(self.percent.load(Ordering::SeqCst)).filter(|&p| p != NO_PERCENT)
+    }
+
+    fn set_percent(&self, percent: Option<u8>) {
+        self.percent.store(percent.map_or(NO_PERCENT, |p| p.min(100)), Ordering::SeqCst);
+    }
+}
+
+thread_local! {
+    /// The Control of the drop this thread is converting. One per thread, so tests that
+    /// run side by side can't stop each other's tools.
+    static CONTROL: RefCell<Option<Arc<Control>>> = const { RefCell::new(None) };
+}
+
+/// Runs `convert` calls made inside `f` under `control`.
+pub fn under<T>(control: &Arc<Control>, f: impl FnOnce() -> T) -> T {
+    /// Clears the thread's Control however `f` ends, a panic included.
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CONTROL.with(|c| c.borrow_mut().take());
+        }
+    }
+    CONTROL.with(|c| *c.borrow_mut() = Some(Arc::clone(control)));
+    let _reset = Reset;
+    f()
+}
+
+fn control() -> Option<Arc<Control>> {
+    CONTROL.with(|c| c.borrow().clone())
+}
+
+fn stop_asked() -> bool {
+    control().is_some_and(|c| c.stopped())
+}
+
 /// A tool that didn't finish well: the message for the notification, and the end of
 /// its error output, for callers that look for a known cause in it.
 struct Failure {
@@ -615,6 +753,9 @@ fn run_tool(mut cmd: Command, limit: Duration) -> Result<(), Failure> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    if stop_asked() {
+        return Err(STOPPED.to_string().into());
+    }
     // Error output goes to a temporary file, not a pipe: a chatty tool can't fill the
     // pipe and stall while we wait for it.
     let mut errors = tempfile::tempfile().map_err(|e| format!("work file: {e}"))?;
@@ -654,6 +795,10 @@ fn wait(child: &mut Child, name: &str, limit: Duration, errors: &mut fs::File) -
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
+            Ok(None) if stop_asked() => {
+                stop(child);
+                return Err(STOPPED.to_string().into());
+            }
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(100)),
             Ok(None) => {
                 stop(child);
@@ -1114,6 +1259,85 @@ mod tests {
         let err = run(cmd, Duration::from_millis(500)).unwrap_err();
         assert!(err.contains("took longer"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_ends_the_running_tool_and_starts_no_other() {
+        let control = Control::new();
+        let stopper = Arc::clone(&control);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            stopper.stop();
+        });
+        let started = Instant::now();
+        under(&control, || {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            assert_eq!(run(cmd, Duration::from_secs(60)).unwrap_err(), STOPPED);
+            assert!(started.elapsed() < Duration::from_secs(5));
+            // The next tool of the same drop doesn't start at all.
+            let mut next = Command::new("sleep");
+            next.arg("30");
+            assert_eq!(run(next, Duration::from_secs(60)).unwrap_err(), STOPPED);
+        });
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // Outside the drop, tools run again.
+        assert!(super::control().is_none());
+    }
+
+    /// A real video conversion reports how far it is, and Stop ends it without leaving
+    /// anything next to the original. Skipped where ffmpeg or ffprobe is missing.
+    #[test]
+    fn a_video_reports_its_percent_and_can_be_stopped() {
+        let (Ok(ffmpeg), Ok(_)) = (tool("ffmpeg"), tool("ffprobe")) else {
+            eprintln!("ffmpeg or ffprobe isn't installed: video progress not tested");
+            return;
+        };
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("clip.mov");
+        let made = Command::new(ffmpeg)
+            .args(["-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=120:size=640x360:rate=30"])
+            .args(["-c:v", "mpeg4", "-q:v", "5"])
+            .arg(&src)
+            .status()
+            .unwrap();
+        assert!(made.success());
+
+        let control = Control::new();
+        let watcher = Arc::clone(&control);
+        let seen = thread::spawn(move || {
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(60) {
+                if let Some(p) = watcher.percent() {
+                    watcher.stop();
+                    return Some(p);
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            watcher.stop();
+            None
+        });
+        let result = under(&control, || convert(&src, "webm", None, work.path()));
+        let percent = seen.join().unwrap();
+        assert!(percent.is_some_and(|p| p < 100), "no percent came: {percent:?}");
+        assert_eq!(result.unwrap_err(), STOPPED);
+        assert_eq!(control.percent(), None);
+        let left: Vec<_> = fs::read_dir(work.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("clip.mov")]);
+    }
+
+    #[test]
+    fn ffmpeg_progress_is_read_from_its_last_complete_line() {
+        assert_eq!(progress_at(""), None);
+        assert_eq!(progress_at("out_time_us=N/A\nprogress=continue\n"), None);
+        let text = "out_time_us=1500000\nprogress=continue\nout_time_us=3000000\nprogress=continue\nout_ti";
+        assert_eq!(progress_at(text), Some(Duration::from_secs(3)));
+        let length = Duration::from_secs(12);
+        assert_eq!(percent_of(Duration::from_secs(3), length), 25);
+        // Not 100 before the result is in place, and never more.
+        assert_eq!(percent_of(Duration::from_secs(12), length), 99);
+        assert_eq!(percent_of(Duration::from_secs(30), length), 99);
     }
 
     #[test]
