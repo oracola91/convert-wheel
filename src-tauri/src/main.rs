@@ -8,6 +8,8 @@ mod formats;
 mod linux;
 mod log;
 mod login;
+#[cfg(target_os = "macos")]
+mod mac_notification;
 mod menu;
 mod reveal;
 mod settings;
@@ -273,18 +275,26 @@ static NOTIFICATION_ID: AtomicI32 = AtomicI32::new(1);
 /// Shows a notification. If the system refuses, the message goes to the log, and the
 /// menu's last-result line still shows how the last drop went.
 pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
-    show_notification(app, NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst), title, body);
+    show_notification(app, NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst), title, body, &[]);
 }
 
 /// `notify` for a finished drop. A click on the notification shows `done`, the files
 /// it produced, in the file manager.
 fn notify_done(app: &AppHandle, title: &str, body: &str, done: Vec<PathBuf>) {
     let id = NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst);
+    show_notification(app, id, title, body, &done);
     app.state::<reveal::Results>().finished(id, done);
-    show_notification(app, id, title, body);
 }
 
-fn show_notification(app: &AppHandle, id: i32, title: &str, body: &str) {
+/// On macOS a click on the notification shows `files`; elsewhere the click is matched
+/// to the drop by `id`.
+fn show_notification(app: &AppHandle, id: i32, title: &str, body: &str, files: &[PathBuf]) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = id;
+        mac_notification::show(app, title, body, files);
+    }
+    #[cfg(not(target_os = "macos"))]
     if let Err(e) = app.notification().builder().id(id).title(title).body(body).show() {
         log::line(&format!("notification not shown ({e}): {title}: {body}"));
     }
@@ -402,6 +412,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(reveal::Results::default());
     app.manage(NowConverting::default());
     // Before any notification: the ones shown earlier never report a click.
+    #[cfg(target_os = "macos")]
+    mac_notification::install(app.handle());
     let handle = app.handle().clone();
     app.notification().on_action(move |action| {
         if action.action_id() == "tap" {
