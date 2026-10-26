@@ -8,7 +8,10 @@ mod formats;
 mod linux;
 mod log;
 mod login;
+#[cfg(target_os = "macos")]
+mod mac_notification;
 mod menu;
+mod reveal;
 mod settings;
 mod trigger;
 mod update;
@@ -20,9 +23,11 @@ mod win32;
 
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_notification::NotificationExt;
@@ -37,6 +42,81 @@ pub(crate) fn busy_jobs() -> usize {
 struct Job {
     paths: Vec<String>,
     format: String,
+}
+
+/// The drop being converted: how far it has got, for the menu, and its Stop switch.
+struct Running {
+    control: Arc<convert::Control>,
+    label: String,
+    count: usize,
+    /// The file being converted: its place in the drop (from 1), its name, and when
+    /// it started.
+    file: Mutex<(usize, String, Instant)>,
+}
+
+impl Running {
+    fn new(label: &str, paths: &[String]) -> Self {
+        let first = paths.first().map(|p| file_name(Path::new(p))).unwrap_or_default();
+        Running {
+            control: convert::Control::new(),
+            label: label.to_string(),
+            count: paths.len(),
+            file: Mutex::new((1, first, Instant::now())),
+        }
+    }
+
+    fn at(&self, place: usize, name: String) {
+        *self.file.lock().unwrap_or_else(|e| e.into_inner()) = (place, name, Instant::now());
+    }
+
+    fn line(&self) -> String {
+        let (place, name, since) = self.file.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        progress_line(&self.label, self.count, place, &name, self.control.percent(), since.elapsed())
+    }
+}
+
+/// Longer file names are cut in the progress line, so the percent after them still
+/// fits in the menu.
+const NAME_MAX_CHARS: usize = 32;
+
+/// The menu's progress line: "Converting holiday.mov to MP4… 42%", or for a batch
+/// "Converting 3 of 10 to PNG…". A tool that doesn't say how far it is gets the time
+/// so far instead, once that is long enough to wonder whether it is stuck.
+fn progress_line(label: &str, count: usize, place: usize, name: &str, percent: Option<u8>, elapsed: Duration) -> String {
+    let what = if count == 1 {
+        let name = if name.chars().count() > NAME_MAX_CHARS {
+            name.chars().take(NAME_MAX_CHARS - 1).collect::<String>() + "…"
+        } else {
+            name.to_string()
+        };
+        format!("Converting {name} to {label}…")
+    } else {
+        format!("Converting {place} of {count} to {label}…")
+    };
+    match (percent, elapsed.as_secs()) {
+        (Some(p), _) => format!("{what} {p}%"),
+        (None, s) if s < 10 => what,
+        (None, s) if s < 60 => format!("{what} {s} s"),
+        (None, s) => format!("{what} {} min", s / 60),
+    }
+}
+
+/// The drop being converted now, if any, for Stop Converting in the menu.
+#[derive(Default)]
+struct NowConverting(Mutex<Option<Arc<Running>>>);
+
+impl NowConverting {
+    fn set(&self, running: Option<Arc<Running>>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = running;
+    }
+}
+
+/// Stop Converting: ends the drop being converted now. Drops queued after it still run.
+pub(crate) fn stop_converting(app: &AppHandle) {
+    if let Some(running) = app.state::<NowConverting>().0.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        log::line(&format!("stop asked while converting to {}", running.label));
+        running.control.stop();
+    }
 }
 
 /// Esc or a click in the middle of a wheel that was opened from the keyboard shortcut.
@@ -61,28 +141,62 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
     thread::spawn(move || {
         for job in rx {
             let label = job.format.to_uppercase();
-            menu::show_last_result(&app, &format!("Converting to {label}…"));
-            // A bug in one job must not end the worker, or every later drop would
-            // vanish without a word. (The panic itself is logged by the panic hook.)
-            let (title, body) = panic::catch_unwind(AssertUnwindSafe(|| run_job(&app, &job, &label)))
+            let running = Arc::new(Running::new(&label, &job.paths));
+            app.state::<NowConverting>().set(Some(Arc::clone(&running)));
+            menu::show_progress(&app, &running.line());
+            let (finished, done_signal) = mpsc::channel::<()>();
+            let (title, body, done) = thread::scope(|s| {
+                let (app, running) = (&app, &running);
+                s.spawn(move || keep_progress_shown(app, running, done_signal));
+                // A bug in one job must not end the worker, or every later drop would
+                // vanish without a word. (The panic itself is logged by the panic hook.)
+                let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                    convert::under(&running.control, || run_job(app, &job, running))
+                }))
                 .unwrap_or_else(|_| {
-                    (format!("Couldn't convert to {label}"), "Convert Wheel hit an internal error.".to_string())
+                    let body = "Convert Wheel hit an internal error.".to_string();
+                    (format!("Couldn't convert to {label}"), body, Vec::new())
                 });
+                drop(finished);
+                result
+            });
+            app.state::<NowConverting>().set(None);
             JOBS.fetch_sub(1, Ordering::SeqCst);
-            notify(&app, &title, &body);
-            // The menu keeps the reason too, for when notifications are off.
-            menu::show_last_result(&app, &format!("{title}: {body}"));
+            let something = !done.is_empty();
+            notify_done(&app, &title, &body, done);
+            // The menu keeps the reason too, for when notifications are off, and a
+            // click on it shows the result like a click on the notification.
+            menu::show_last_result(&app, &format!("{title}: {body}"), something);
         }
     });
     tx
 }
 
-fn run_job(app: &AppHandle, job: &Job, label: &str) -> (String, String) {
+/// Keeps the menu's progress line current, twice a second, until `finished` closes.
+fn keep_progress_shown(app: &AppHandle, running: &Running, finished: Receiver<()>) {
+    let mut shown = String::new();
+    while let Err(RecvTimeoutError::Timeout) = finished.recv_timeout(Duration::from_millis(500)) {
+        let line = running.line();
+        if line != shown {
+            menu::show_progress(app, &line);
+            shown = line;
+        }
+    }
+}
+
+/// Converts a drop's files. Returns the notification's title and text, and the files
+/// it produced.
+fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Vec<PathBuf>) {
+    let label = running.label.as_str();
     let slow = job.paths.iter().any(|p| {
         formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
     });
     if slow {
-        notify(app, &format!("Converting to {label}…"), "Video can take a while.");
+        notify(
+            app,
+            &format!("Converting to {label}…"),
+            "Video can take a while. The menu shows how far it is, and can stop it.",
+        );
     }
     // The system's Downloads folder, which also finds one that was moved or renamed.
     let downloads = app.path().download_dir().unwrap_or_else(|_| convert::downloads());
@@ -94,25 +208,39 @@ fn run_job(app: &AppHandle, job: &Job, label: &str) -> (String, String) {
     let mut failed: Vec<(String, String)> = Vec::new();
     // Results that ended up in Downloads although they were meant to go next to the original.
     let mut moved = false;
-    for p in &job.paths {
+    for (place, p) in job.paths.iter().enumerate() {
+        if running.control.stopped() {
+            break;
+        }
         let src = Path::new(p);
+        running.at(place + 1, file_name(src));
         match convert::convert(src, &job.format, save_in.as_deref(), &downloads) {
             Ok(out) => {
                 log::line(&format!("converted {} to {}", file_name(src), file_name(&out)));
                 moved |= save_in.is_none() && out.parent() != src.parent();
                 done.push(out);
             }
+            Err(_) if running.control.stopped() => break,
             Err(e) => {
                 log::line(&format!("failed {}: {e}", file_name(src)));
                 failed.push((file_name(src), e));
             }
         }
     }
+    // Stopped before the end: a Stop that comes once the last file is done changes nothing.
+    if done.len() + failed.len() < job.paths.len() {
+        log::line(&format!("stopped after {} of {} files", done.len() + failed.len(), job.paths.len()));
+        let body = match done.len() {
+            0 => "Nothing was converted.".to_string(),
+            n => format!("{n} of {} files done.", job.paths.len()),
+        };
+        return (format!("Stopped converting to {label}"), body, done);
+    }
     let (title, mut body) = summary(label, &done, &failed);
     if moved {
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
     }
-    (title, body)
+    (title, body, done)
 }
 
 fn file_name(p: &Path) -> String {
@@ -141,10 +269,33 @@ fn summary(label: &str, done: &[PathBuf], failed: &[(String, String)]) -> (Strin
     }
 }
 
+/// Numbers every notification, so a click on one can be matched to the drop it reported.
+static NOTIFICATION_ID: AtomicI32 = AtomicI32::new(1);
+
 /// Shows a notification. If the system refuses, the message goes to the log, and the
 /// menu's last-result line still shows how the last drop went.
 pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
-    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+    show_notification(app, NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst), title, body, &[]);
+}
+
+/// `notify` for a finished drop. A click on the notification shows `done`, the files
+/// it produced, in the file manager.
+fn notify_done(app: &AppHandle, title: &str, body: &str, done: Vec<PathBuf>) {
+    let id = NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst);
+    show_notification(app, id, title, body, &done);
+    app.state::<reveal::Results>().finished(id, done);
+}
+
+/// On macOS a click on the notification shows `files`; elsewhere the click is matched
+/// to the drop by `id`.
+fn show_notification(app: &AppHandle, id: i32, title: &str, body: &str, files: &[PathBuf]) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = id;
+        mac_notification::show(app, title, body, files);
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Err(e) = app.notification().builder().id(id).title(title).body(body).show() {
         log::line(&format!("notification not shown ({e}): {title}: {body}"));
     }
 }
@@ -258,6 +409,19 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let (store, settings_problem) = settings::Store::load(app.path().app_config_dir()?.join("settings.json"));
     app.manage(store);
     app.manage(update::Pending::default());
+    app.manage(reveal::Results::default());
+    app.manage(NowConverting::default());
+    // Before any notification: the ones shown earlier never report a click.
+    #[cfg(target_os = "macos")]
+    mac_notification::install(app.handle());
+    let handle = app.handle().clone();
+    app.notification().on_action(move |action| {
+        if action.action_id() == "tap" {
+            if let Some(shown) = action.notification() {
+                reveal::show_notified(&handle, shown.id());
+            }
+        }
+    })?;
     menu::build(app)?;
     app.manage(start_worker(app.handle().clone()));
     app.manage(wheel::WheelState::default());
@@ -280,4 +444,32 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         update::install_soon(app.handle());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_progress_line_says_how_far_a_drop_is() {
+        let secs = Duration::from_secs;
+        assert_eq!(progress_line("MP4", 1, 1, "holiday.mov", Some(42), secs(90)), "Converting holiday.mov to MP4… 42%");
+        assert_eq!(progress_line("PNG", 10, 3, "c.heic", None, secs(1)), "Converting 3 of 10 to PNG…");
+        assert_eq!(progress_line("PNG", 10, 3, "c.heic", Some(7), secs(1)), "Converting 3 of 10 to PNG… 7%");
+        // Without a percent, the time so far, once it is worth showing.
+        assert_eq!(progress_line("PDF", 1, 1, "a.docx", None, secs(9)), "Converting a.docx to PDF…");
+        assert_eq!(progress_line("PDF", 1, 1, "a.docx", None, secs(45)), "Converting a.docx to PDF… 45 s");
+        assert_eq!(progress_line("PDF", 1, 1, "a.docx", None, secs(150)), "Converting a.docx to PDF… 2 min");
+        // A long name is cut, so the percent stays within the menu's line.
+        let long = "Family holiday in the mountains, summer 2026, part one.mov";
+        let line = progress_line("WEBM", 1, 1, long, Some(42), secs(90));
+        assert_eq!(line, "Converting Family holiday in the mountains… to WEBM… 42%");
+        assert!(format!("Last: {line}").chars().count() <= menu::LAST_MAX_CHARS);
+    }
+
+    #[test]
+    fn the_first_line_already_names_the_file() {
+        let running = Running::new("PNG", &["/tmp/photo.heic".to_string()]);
+        assert_eq!(running.line(), "Converting photo.heic to PNG…");
+    }
 }
