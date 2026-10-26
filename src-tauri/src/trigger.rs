@@ -1,5 +1,5 @@
 //! Watches for a file drag with Shift held and shows the wheel under the cursor: the
-//! formats, or with Option (Alt) held too, the tools.
+//! formats, with Option (Alt) held too the tools, with Control the actions.
 //!
 //! macOS has no "drag started" notification for other apps, so this polls three
 //! things the window server shares with everyone: the drag pasteboard's change
@@ -17,8 +17,8 @@ use crate::wheel::{self, Hover, WheelState, Which};
 
 #[cfg(target_os = "macos")]
 const POLL: Duration = Duration::from_millis(30);
-/// Polls Shift must be held before the wheel opens, so Option (Alt) pressed a moment
-/// after it still picks the Tools wheel.
+/// Polls Shift must be held before the wheel opens, so Option (Alt) or Control pressed
+/// a moment after it still picks the Tools or Actions wheel.
 pub(crate) const KEYS_SETTLE: u8 = 2;
 /// How long the wheel stays after the button is released, so a drop on it can land.
 const HIDE_DELAY: Duration = Duration::from_millis(400);
@@ -43,8 +43,9 @@ struct WheelShow {
     /// Opened from the keyboard shortcut: stays open until a drop, Esc or a click in
     /// the middle, instead of closing when the mouse button goes up.
     pinned: bool,
-    /// The Tools wheel: `formats` holds tool ids ("tool:half").
-    tools: bool,
+    /// "formats", "tools" or "actions": for the Tools wheel `formats` holds tool ids
+    /// ("tool:half"), for the Actions wheel action ids ("act:path").
+    wheel: Which,
 }
 
 #[cfg(target_os = "macos")]
@@ -84,7 +85,7 @@ pub fn start(app: AppHandle) {
                         dragging = false;
                         return;
                     }
-                    show_wheel(&app, paths, Which::from_keys(macos::option_down()));
+                    show_wheel(&app, paths, Which::from_keys(macos::option_down(), macos::control_down()));
                     shown = true;
                 }
             });
@@ -113,6 +114,7 @@ fn items_for(app: &AppHandle, paths: &[String], which: Which) -> Vec<&'static st
             formats::formats_for(paths, |kind, f| settings.shows(kind, f))
         }
         Which::Tools => formats::tools_for(paths),
+        Which::Actions => formats::actions_for(paths.len()),
     }
 }
 
@@ -152,12 +154,11 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
     let state = app.state::<WheelState>();
     *wheel::lock(&state.formats) = formats.clone();
     *wheel::lock(&state.which) = which;
-    let tools = which == Which::Tools;
     let pending = paths.is_empty();
     let generation = state.open(pending);
     let first = paths.first().cloned();
     let glass = cfg!(target_os = "macos");
-    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, tools });
+    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which });
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -180,8 +181,7 @@ pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
     let formats = items_for(app, &paths, which);
     *wheel::lock(&state.formats) = formats.clone();
     state.files_known();
-    let tools = which == Which::Tools;
-    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, tools });
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which });
 }
 
 /// A drop on the wheel. Converts (or runs the tool) when it landed on a segment and
@@ -191,6 +191,12 @@ pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -
         .segment
         .and_then(|i| wheel::lock(&app.state::<WheelState>().formats).get(i).copied());
     match format {
+        // Actions are quick and convert nothing: they skip the conversion queue.
+        Some(action) if !paths.is_empty() && formats::is_action(action) => {
+            hide_wheel(app, true, None);
+            crate::actions::run(app, action, paths);
+            true
+        }
         Some(format) if !paths.is_empty() => {
             hide_wheel(app, true, None);
             crate::enqueue(app, paths, format.to_string());
@@ -270,6 +276,10 @@ mod macos {
 
     pub fn option_down() -> bool {
         NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Option)
+    }
+
+    pub fn control_down() -> bool {
+        NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control)
     }
 
     pub fn dragged_files() -> Vec<String> {
