@@ -35,7 +35,7 @@ The wheel only shows formats that every dragged file can become. The new file la
 
 A PDF with several pages becomes a folder of pictures next to it, `report (PNG)` holding `report 1.png`, `report 2.png` and so on, at 150 dpi; at most the first 100 pages, and the folder name says so when there were more. Text is taken from PDFs of up to 2000 pages. As text or a Word file, a PDF keeps its words and paragraphs but not its layout, tables or pictures. A scanned PDF has no text to take out. A PDF that needs a password to open is refused with a note to save a copy without it. For a Word file that keeps the layout, open the PDF in Word itself.
 
-A notification says when a drop is done or why it failed. A click on it opens the folder with the new files selected (on Windows only while the notification is on screen, not from the Action Center). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
+A notification says when a drop is done or why it failed. A click on it opens the folder with the new files selected (on Windows only while the notification is on screen, not from the Action Center; on macOS also later from Notification Center). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
 
 ## On Windows and Linux
 
@@ -177,6 +177,7 @@ SECURITY.md                how to report a security problem
   src/convert.rs           the conversions
   src/menu.rs              menu bar icon and menu
   src/reveal.rs            showing results selected in the file manager
+  src/mac_notification.rs  macOS notifications, whose click shows the files
   src/settings.rs          saved choices (where files go, hidden formats)
   src/login.rs             Open at Login on each system
   src/drop_view.rs         macOS: the drop target over the wheel
