@@ -72,12 +72,14 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
 
 /// The Tools wheel: what can be done to a file while it keeps its format, by the id
 /// the wheel and the converter use, with the formats each tool takes. Animated GIFs are
-/// left out: a tool would have to handle every frame. Merge needs two files or more.
+/// left out: a tool would have to handle every frame (One PDF takes their first).
+/// Merge and One PDF need two files or more.
 const TOOLS: &[(&str, &[&str])] = &[
     ("tool:compress", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif"]),
     ("tool:half", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     ("tool:clean", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif"]),
     ("tool:rotate", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    ("tool:onepdf", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:merge", &["pdf"]),
     ("tool:split", &["pdf"]),
     ("tool:smaller", &["pdf"]),
@@ -85,7 +87,7 @@ const TOOLS: &[(&str, &[&str])] = &[
 
 /// A tool that turns the whole drop into one file, instead of working on each file.
 pub fn combines(id: &str) -> bool {
-    id == "tool:merge"
+    matches!(id, "tool:merge" | "tool:onepdf")
 }
 
 /// A Tools wheel id ("tool:half") rather than a format.
@@ -228,11 +230,14 @@ mod tests {
 
     #[test]
     fn tools_are_offered_when_every_file_takes_them() {
-        let all = ["tool:compress", "tool:half", "tool:clean", "tool:rotate"];
-        assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), all);
+        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate"];
+        assert_eq!(tools_for(&v(&["/tmp/a.JPG"])), one);
+        let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:onepdf"];
+        assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), two);
         // BMP has no metadata to remove and nothing to compress it with.
-        assert_eq!(tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])), ["tool:half", "tool:rotate"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])), ["tool:half", "tool:rotate", "tool:onepdf"]);
         assert!(tools_for(&v(&["/tmp/a.gif"])).is_empty());
+        assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:onepdf"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
         assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:smaller"]);
