@@ -66,6 +66,17 @@ For video and audio (with ffmpeg):
 
 Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland the keyboard shortcut opens only the Formats wheel for now.
 
+## The Actions wheel
+
+Hold Control+Shift while dragging and a third wheel opens: what can be done with the dragged files themselves, whatever they are, folders too. None of it changes a file.
+
+- **Copy path**: the full path on the clipboard, one per line for several files.
+- **Show**: opens the folder with the files selected.
+- **Terminal**: a terminal in the file's folder (in a dragged folder itself): Terminal on macOS, PowerShell on Windows, GNOME Terminal, Console, Konsole or the system's default on Linux. The folder is handed over as the starting folder, never inside a command line.
+- **AirDrop** (macOS): the AirDrop window for the files.
+
+On a Mac, start the drag first and then press Control+Shift: Control held before the click turns it into a right-click. Copying and moving files, sharing on Windows and a shelf for files come later ([ROADMAP](ROADMAP.md), stage 3).
+
 ## On Windows and Linux
 
 Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS:

@@ -1,4 +1,5 @@
-// Draws the wheel: formats, or (Option/Alt+Shift) tools. The drop itself is handled natively (drop_view.rs), which
+// Draws the wheel: formats, (Option/Alt+Shift) tools or (Control+Shift) actions.
+// The drop itself is handled natively (drop_view.rs), which
 // says what is under the cursor. The glass and the file icon in the hub are native too.
 if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
 const { listen } = window.__TAURI__.event;
@@ -20,7 +21,7 @@ const NAMES = {
   xlsx: 'Excel', pptx: 'PowerPoint', mov: 'QuickTime', webp: 'WebP', webm: 'WebM', ogg: 'Ogg',
 };
 
-// The Tools wheel: what each segment says, and what the hub says over it.
+// The Tools and Actions wheels: what each segment says, and what the hub says over it.
 const TOOLS = {
   'tool:compress': ['Compress', 'Compress'],
   'tool:half': ['Half size', 'Half size'],
@@ -33,13 +34,18 @@ const TOOLS = {
   'tool:still': ['First frame', 'First frame as JPEG'],
   'tool:loudness': ['Loudness', 'Even out loudness'],
   'tool:mono': ['Mono', 'Mix down to mono'],
+  'act:path': ['Copy path', 'Copy path'],
+  'act:show': ['Show', 'Show in folder'],
+  'act:terminal': ['Terminal', 'Open Terminal here'],
+  'act:airdrop': ['AirDrop', 'Send with AirDrop'],
 };
 
 const svg = document.getElementById('wheel');
 let paths = [];
-// Formats, or on the Tools wheel tool ids ("tool:half").
+// Formats, or tool ids ("tool:half") or action ids ("act:path").
 let formats = [];
-let tools = false;
+// "formats", "tools" or "actions".
+let wheel = 'formats';
 // Windows and Linux learn which files are dragged only when they reach the wheel.
 let pending = false;
 // Opened from the keyboard shortcut (Linux): waits for a file instead of a mouse-up.
@@ -132,7 +138,7 @@ function show(raw) {
   } else if (pending) {
     hubLabel.textContent = pinned ? 'Drag a file here' : 'Drop here';
   } else if (formats.length === 0) {
-    hubLabel.textContent = tools ? 'No tools' : 'No formats';
+    hubLabel.textContent = { tools: 'No tools', actions: 'No actions' }[wheel] ?? 'No formats';
   } else if (pinned) {
     hubLabel.textContent = 'Esc to close';
   } else {
@@ -154,13 +160,14 @@ function readWheel(payload) {
     paths: list(payload?.paths),
     formats: list(payload?.formats),
     pending: payload?.pending === true,
-    tools: payload?.tools === true,
+    wheel: ['tools', 'actions'].includes(payload?.wheel) ? payload.wheel : 'formats',
   };
 }
 
 listen('wheel-show', (event) => {
-  ({ paths, formats, pending, tools } = readWheel(event.payload));
-  svg.setAttribute('aria-label', tools ? 'Tools for the file' : 'Formats to convert to');
+  ({ paths, formats, pending, wheel } = readWheel(event.payload));
+  const names = { tools: 'Tools for the file', actions: 'Actions for the file' };
+  svg.setAttribute('aria-label', names[wheel] ?? 'Formats to convert to');
   pinned = event.payload?.pinned === true;
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   build();
@@ -173,7 +180,7 @@ listen('wheel-show', (event) => {
 listen('wheel-formats', (event) => {
   if (!open) return;
   const keep = lastHover;
-  ({ paths, formats, pending, tools } = readWheel(event.payload));
+  ({ paths, formats, pending, wheel } = readWheel(event.payload));
   build();
   show(keep);
 });
