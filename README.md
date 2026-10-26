@@ -79,6 +79,7 @@ The ring icon in the menu bar opens:
 - **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
 - **Last: …**: how the last drop went, for when notifications are off. A click on it opens the folder with the new files selected, like a click on the notification. While a drop converts, the line shows how far it is: "Converting 3 of 10 to PNG…", with a percent for audio and video, or the time so far for a tool that doesn't report one.
 - **Stop Converting**: ends the drop being converted now. Files already done stay; the one in progress leaves nothing behind. Drops queued after it still run.
+- **Install ffmpeg…** (macOS and Windows): appears when a drop needed a converter that isn't installed, and the notification points to it. It runs `brew install` on macOS or `winget install` on Windows for that converter (several in a row: "Install ffmpeg and MuPDF…"), checks the app can now find it, and says so; then drop the files again. Without Homebrew it opens brew.sh; without winget it says to get App Installer from the Microsoft Store. On Windows, choosing it accepts the package's terms as typing the command would, and packages that install for all users, such as LibreOffice, still ask for admin rights. The package manager's last lines go to the log. On Linux the notification still names the `apt` command (it needs an admin password); the setup script installs everything at once.
 - **Check for Updates… / Install Update … and Restart**.
 - **Quit Convert Wheel**.
 
@@ -159,6 +160,7 @@ Word's default font since 2023, Aptos, ships inside Word only, and its licence l
 - **Formats** (`src-tauri/src/formats.rs`): what each kind of file can become.
 - **Converter** (`src-tauri/src/convert.rs`): picks the tool and its settings, then places the result safely.
 - **Queue** (`src-tauri/src/main.rs`): one worker converts drops in order, keeps the menu's progress line current, then posts the notification.
+- **Installing converters** (`src-tauri/src/converters.rs`): remembers the converters drops found missing, offers them in the menu, and runs `brew install` or `winget install` with fixed package names, never a shell line.
 - **Showing results** (`src-tauri/src/reveal.rs`): opens Finder, Explorer or the Linux file manager with the new files selected, through each system's own call rather than a command line.
 - **Wheel** (`src/`): plain HTML, CSS and JavaScript in a transparent window. No frontend framework and no npm runtime packages. It opens and closes along the same path with no bounce, and follows Reduce Motion, Increase Contrast and dark mode.
 
@@ -176,6 +178,7 @@ SECURITY.md                how to report a security problem
   src/formats.rs           formats offered per file type
   src/convert.rs           the conversions
   src/menu.rs              menu bar icon and menu
+  src/converters.rs        installing a missing converter from the menu
   src/reveal.rs            showing results selected in the file manager
   src/mac_notification.rs  macOS notifications, whose click shows the files
   src/settings.rs          saved choices (where files go, hidden formats)

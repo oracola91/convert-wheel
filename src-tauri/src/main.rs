@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod convert;
+mod converters;
 #[cfg(target_os = "macos")]
 mod drop_view;
 mod formats;
@@ -223,7 +224,7 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
             Err(_) if running.control.stopped() => break,
             Err(e) => {
                 log::line(&format!("failed {}: {e}", file_name(src)));
-                failed.push((file_name(src), e));
+                failed.push((file_name(src), converters::offer(app, e)));
             }
         }
     }
@@ -411,6 +412,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(update::Pending::default());
     app.manage(reveal::Results::default());
     app.manage(NowConverting::default());
+    app.manage(converters::Missing::default());
     // Before any notification: the ones shown earlier never report a click.
     #[cfg(target_os = "macos")]
     mac_notification::install(app.handle());
