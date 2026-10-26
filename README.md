@@ -23,13 +23,16 @@ This is our own build, written from scratch. The idea comes from what the paid T
 
 | Files | Can become | Done by |
 |---|---|---|
-| Images: JPG, PNG, HEIC, WebP, TIFF, BMP, GIF, AVIF | JPG, PNG, HEIC, WebP, TIFF, GIF, AVIF, PDF | ImageMagick |
-| Audio: MP3, WAV, M4A, AAC, FLAC, AIFF, OGG, Opus | MP3, M4A, WAV, FLAC, AIFF, OGG | ffmpeg |
-| Video: MP4, MOV, M4V, MKV, WebM, AVI | MP4, MOV, WebM, GIF, MP3 (sound only) | ffmpeg |
-| Documents: DOCX, DOC, ODT, RTF, Markdown, HTML, TXT, EPUB | PDF, DOCX, ODT, HTML, Markdown, TXT, EPUB | LibreOffice for PDF and office formats, pandoc for the rest |
-| Spreadsheets: XLSX, XLS, ODS, CSV | PDF, XLSX, ODS, CSV (first sheet) | LibreOffice |
-| Presentations: PPTX, PPT, ODP | PDF, PPTX, ODP | LibreOffice |
+| Images: JPG, PNG, HEIC, WebP, TIFF, BMP, GIF, AVIF | JPG, PNG, HEIC, WebP, TIFF, GIF, AVIF, BMP, ICO, PDF | ImageMagick |
+| Audio: MP3, WAV, M4A, AAC, FLAC, AIFF, OGG, Opus, WMA | MP3, M4A, WAV, FLAC, AIFF, OGG, Opus, WMA | ffmpeg |
+| Video: MP4, MOV, M4V, MKV, WebM, AVI, WMV | MP4, MOV, WebM, MKV, AVI, WMV, GIF, MP3 (sound only) | ffmpeg |
+| Documents: DOCX, DOC, ODT, RTF, Pages, Markdown, HTML, TXT, EPUB | PDF, DOCX, ODT, HTML, Markdown, TXT, EPUB | LibreOffice for PDF and office formats, pandoc for the rest |
+| Spreadsheets: XLSX, XLS, ODS, CSV, Numbers | PDF, XLSX, ODS, CSV (first sheet) | LibreOffice |
+| Presentations: PPTX, PPT, ODP, Keynote | PDF, PPTX, ODP | LibreOffice |
 | PDF | JPG, PNG (a picture of each page), TXT, DOCX (the text only) | MuPDF (`mutool`); pandoc for DOCX |
+| Subtitles: SRT, VTT | SRT, VTT | ffmpeg |
+
+An icon (ICO) holds the picture at 256, 128, 64, 48, 32 and 16 pixels, fitted into a square with see-through edges rather than stretched. MKV is a fast copy of the streams when they fit, H.264 otherwise; AVI is MPEG-4 Part 2 (what Xvid makes) with MP3, and WMV is Windows Media 8 with WMA, for older players. Pages, Numbers and Keynote files go through LibreOffice, which reads them; a file saved as a package folder (older versions) is refused: save it as a single file. Subtitles should be UTF-8.
 
 The wheel only shows formats that every dragged file can become. The new file lands next to the original. If the name is taken it becomes `name 2.ext`, `name 3.ext` and so on. Nothing is ever overwritten.
 
