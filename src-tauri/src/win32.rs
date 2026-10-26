@@ -23,7 +23,9 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VIRTUAL_KEY, VK_LBUTTON, VK_MENU, VK_RBUTTON, VK_SHIFT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_MENU, VK_RBUTTON, VK_SHIFT,
+};
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IsWindow,
@@ -75,7 +77,8 @@ pub fn start_trigger(app: AppHandle) {
             held = if key_down(VK_SHIFT) { held.saturating_add(1) } else { 0 };
             if from_files && !shown && held >= trigger::KEYS_SETTLE && moved_past_threshold(start, pt) {
                 // VK_MENU is Alt.
-                trigger::show_wheel(&app, Vec::new(), Which::from_keys(key_down(VK_MENU)));
+                let which = Which::from_keys(key_down(VK_MENU), key_down(VK_CONTROL));
+                trigger::show_wheel(&app, Vec::new(), which);
                 shown = true;
             }
         }

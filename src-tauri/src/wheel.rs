@@ -16,21 +16,23 @@ pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Which wheel opens: Shift while dragging gives the formats, Option+Shift (Alt+Shift
-/// on Windows and Linux) the tools.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// on Windows and Linux) the tools, Control+Shift the actions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Which {
     #[default]
     Formats,
     Tools,
+    Actions,
 }
 
 impl Which {
-    /// Option (Alt) held as well as Shift.
-    pub fn from_keys(option: bool) -> Self {
-        if option {
-            Which::Tools
-        } else {
-            Which::Formats
+    /// The keys held with Shift: Option (Alt) or Control. Control wins when both are.
+    pub fn from_keys(option: bool, control: bool) -> Self {
+        match (option, control) {
+            (_, true) => Which::Actions,
+            (true, false) => Which::Tools,
+            (false, false) => Which::Formats,
         }
     }
 }

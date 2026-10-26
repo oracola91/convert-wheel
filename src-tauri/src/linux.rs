@@ -99,7 +99,7 @@ fn start_x11(app: AppHandle) {
             held = if pointer.mask.contains(KeyButMask::SHIFT) { held.saturating_add(1) } else { 0 };
             if from_files && !shown && held >= trigger::KEYS_SETTLE && moved {
                 // MOD1 is Alt.
-                let which = Which::from_keys(pointer.mask.contains(KeyButMask::MOD1));
+                let which = Which::from_keys(pointer.mask.contains(KeyButMask::MOD1), pointer.mask.contains(KeyButMask::CONTROL));
                 trigger::show_wheel(&app, Vec::new(), which);
                 shown = true;
             }
