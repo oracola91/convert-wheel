@@ -66,19 +66,28 @@ enum Output {
 
 /// Converts `src` to `target` (a format from the wheel) and returns the new file, or
 /// for a PDF with several pages turned into pictures, the new folder that holds them.
+/// A Tools wheel `target` ("tool:half") keeps the format and names the result after
+/// the tool instead: "photo (half size).jpg".
 /// It goes in `save_in`, or next to the original when that is None. If the original's
 /// folder can't be written to (a mounted disk image, another app's folder), it goes to
 /// `fallback` (Downloads) instead.
 pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
     let ext = formats::extension(src).ok_or("the file has no extension")?;
     let kind = formats::kind_of(&ext).ok_or_else(|| format!(".{ext} files are not supported"))?;
-    if !formats::outputs_for(&ext).contains(&target) {
-        return Err(format!(".{ext} files can't become .{target}"));
+    let tool = formats::is_tool(target).then_some(target);
+    match tool {
+        Some(t) if !formats::tool_takes(t, &ext) => return Err(format!(".{ext} files can't be {}", tool_suffix(t))),
+        None if !formats::outputs_for(&ext).contains(&target) => return Err(format!(".{ext} files can't become .{target}")),
+        _ => {}
     }
     let stem = src
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or("the file name is not valid text")?;
+    let (stem, out_ext) = match tool {
+        Some(t) => (format!("{stem} ({})", tool_suffix(t)), formats::canonical(&ext).to_string()),
+        None => (stem.to_string(), target.to_string()),
+    };
     // Not a folder, a device or a pipe (a pipe would block the read below forever).
     let meta = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?;
     if !meta.is_file() {
@@ -88,7 +97,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         .prefix("convert-wheel-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
-    let out = work.path().join(format!("result.{target}"));
+    let out = work.path().join(format!("result.{out_ext}"));
 
     // Audio and video can be huge; ffmpeg reads them in place, locked down instead.
     let input = if matches!(kind, Kind::Audio | Kind::Video) {
@@ -115,26 +124,32 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     }
 
     let file = |done: Result<(), String>| done.map(|()| Output::File);
-    let converted = match kind {
-        Kind::Image => file(image(&input, target, &out)),
-        Kind::Audio => file(audio(&input, target, &out)),
-        Kind::Video => file(video(&input, &ext, target, &out)),
-        Kind::Doc => file(document(&input, &ext, target, &out, &work)),
-        Kind::Sheet | Kind::Slides => file(libreoffice(&input, target, &out)),
-        Kind::Pdf => pdf(&input, target, &out, &work),
+    let converted = match (tool, kind) {
+        (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
+        (Some(_), _) => Err("the Tools wheel works on pictures only".to_string()),
+        (None, Kind::Image) => file(image(&input, target, &out)),
+        (None, Kind::Audio) => file(audio(&input, target, &out)),
+        (None, Kind::Video) => file(video(&input, &ext, target, &out)),
+        (None, Kind::Doc) => file(document(&input, &ext, target, &out, &work)),
+        (None, Kind::Sheet | Kind::Slides) => file(libreoffice(&input, target, &out)),
+        (None, Kind::Pdf) => pdf(&input, target, &out, &work),
     };
     // Tool messages often start with a full path; keep only file names.
     let output = converted.map_err(|e| redact(&e, src, work.path()))?;
     if matches!(output, Output::File) && !out.is_file() {
         return Err("the converter finished but wrote no file".into());
     }
+    // A compressed copy that is no smaller is no use: say so instead of saving it.
+    if tool == Some("tool:compress") && fs::metadata(&out).map_or(true, |m| m.len() >= meta.len()) {
+        return Err("it is already as small as Compress makes it".into());
+    }
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
         None => src.parent().ok_or("the file has no folder")?.to_path_buf(),
     };
     let save = |dir: &Path| match &output {
-        Output::File => place(&out, dir, stem, target),
-        Output::Pages { files, cut } => place_pages(files, *cut, dir, stem, target),
+        Output::File => place(&out, dir, &stem, &out_ext),
+        Output::Pages { files, cut } => place_pages(files, *cut, dir, &stem, target),
     };
     let placed = match save(&dir) {
         Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| save(fallback)),
@@ -216,12 +231,7 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     // Multi-page outputs keep every frame; the rest take the first one.
     let frame = if matches!(target, "pdf" | "tiff" | "gif") { "" } else { "[0]" };
     let mut cmd = Command::new(magick()?);
-    // Caps for a small file that claims to be a huge picture, before it is decoded.
-    cmd.args([
-        "-limit", "memory", "1GiB", "-limit", "map", "2GiB", "-limit", "disk", "4GiB",
-        "-limit", "width", "32KP", "-limit", "height", "32KP", "-limit", "area", "1GP",
-        "-limit", "time", "110",
-    ]);
+    cmd.args(IMAGE_LIMITS);
     cmd.arg(format!("{coder}:{}{frame}", src.display())).arg("-auto-orient");
     if target == "jpg" {
         // JPEG has no transparency; without this, transparent areas turn black.
@@ -239,6 +249,63 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
             e
         }
     })
+}
+
+/// Caps for a small file that claims to be a huge picture, before it is decoded.
+const IMAGE_LIMITS: &[&str] = &[
+    "-limit", "memory", "1GiB", "-limit", "map", "2GiB", "-limit", "disk", "4GiB",
+    "-limit", "width", "32KP", "-limit", "height", "32KP", "-limit", "area", "1GP",
+    "-limit", "time", "110",
+];
+
+/// What a Tools wheel tool adds to the file name: "photo (half size).jpg".
+fn tool_suffix(tool: &str) -> &'static str {
+    match tool {
+        "tool:compress" => "compressed",
+        "tool:half" => "half size",
+        "tool:clean" => "no metadata",
+        "tool:rotate" => "rotated",
+        _ => "changed",
+    }
+}
+
+/// Runs a Tools wheel tool on a picture. The result is written in the picture's real
+/// format, upright, with its colour profile; other metadata stays too, except with
+/// Remove Metadata.
+fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    let mut cmd = Command::new(magick()?);
+    cmd.args(IMAGE_LIMITS);
+    // Upright first, so a photo that was only turned by its EXIF tag still looks the
+    // same once the tag is gone or the picture is changed.
+    cmd.arg(format!("{coder}:{}[0]", src.display())).arg("-auto-orient");
+    match tool {
+        // PNG has no quality setting: fewer colours (256, dithered) is what shrinks it.
+        "tool:compress" if coder == "png" => cmd.args(["-colors", "256"]),
+        "tool:compress" if coder == "tiff" => cmd.args(["-compress", "zip"]),
+        "tool:compress" if coder == "jpeg" => cmd.args(["-quality", "70"]),
+        // The newer formats look as good as JPEG at a lower number.
+        "tool:compress" => cmd.args(["-quality", "55"]),
+        "tool:half" => cmd.args(["-resize", "50%"]),
+        // Every profile but the colour one (EXIF with the camera and location, XMP,
+        // IPTC), and comments.
+        "tool:clean" => cmd.args(["+profile", "!icc,*", "+set", "comment"]),
+        "tool:rotate" => cmd.args(["-rotate", "90"]),
+        other => return Err(format!("unknown tool {other}")),
+    };
+    // Written again, a lossy picture should look and weigh about the same. JPEG keeps
+    // the original's own quality when none is given; for the newer formats ImageMagick
+    // can't tell, and 80 is close to what phones and browsers use (90 made files
+    // three times bigger).
+    if tool != "tool:compress" && matches!(coder, "webp" | "heic" | "avif") {
+        cmd.args(["-quality", "80"]);
+    }
+    if coder == "png" {
+        // ImageMagick would otherwise add its own dates to a PNG.
+        cmd.args(["-define", "png:exclude-chunks=date,time"]);
+    }
+    cmd.arg(format!("{coder}:{}", out.display()));
+    run(cmd, QUICK)
 }
 
 fn audio_args(target: &str) -> &'static [&'static str] {
@@ -1555,6 +1622,66 @@ mod tests {
         let docx = convert(&src, "docx", None, work.path()).unwrap();
         assert_eq!(docx, work.path().join("letter.docx"));
         assert!(fs::read(&docx).unwrap().starts_with(b"PK"));
+    }
+
+    /// Width x height, as ImageMagick reads it.
+    fn picture_size(path: &Path) -> String {
+        let out = Command::new(magick().unwrap()).arg(path).args(["-format", "%wx%h", "info:"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn image_tools_keep_the_format_and_name_the_result() {
+        if magick().is_err() {
+            eprintln!("ImageMagick isn't installed: image tools not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let plain = work.path().join("plain.jpg");
+        let mut make = Command::new(magick().unwrap());
+        make.args(["-size", "40x30", "gradient:red-blue"]).arg(&plain);
+        assert!(make.status().unwrap().success());
+        // A camera's EXIF block, with a marker standing in for the location.
+        let jpeg = fs::read(&plain).unwrap();
+        let payload = [&b"Exif\0\0II*\0\x08\0\0\0\0\0\0\0"[..], b"WHERE-I-WAS"].concat();
+        let mut photo_bytes = jpeg[..2].to_vec();
+        photo_bytes.extend([0xFF, 0xE1]);
+        photo_bytes.extend(((payload.len() + 2) as u16).to_be_bytes());
+        photo_bytes.extend(&payload);
+        photo_bytes.extend(&jpeg[2..]);
+        let photo = work.path().join("photo.jpeg");
+        fs::write(&photo, &photo_bytes).unwrap();
+        let has = |path: &Path, needle: &[u8]| fs::read(path).unwrap().windows(needle.len()).any(|w| w == needle);
+
+        let half = convert(&photo, "tool:half", None, work.path()).unwrap();
+        assert_eq!(half, work.path().join("photo (half size).jpg"));
+        assert_eq!(picture_size(&half), "20x15");
+        assert!(has(&half, b"WHERE-I-WAS"), "only Remove Metadata removes metadata");
+
+        let rotated = convert(&photo, "tool:rotate", None, work.path()).unwrap();
+        assert_eq!(rotated, work.path().join("photo (rotated).jpg"));
+        assert_eq!(picture_size(&rotated), "30x40");
+
+        let clean = convert(&photo, "tool:clean", None, work.path()).unwrap();
+        assert_eq!(clean, work.path().join("photo (no metadata).jpg"));
+        assert!(!has(&clean, b"WHERE-I-WAS") && !has(&clean, b"Exif\0\0"));
+        assert_eq!(picture_size(&clean), "40x30");
+
+        let small = convert(&photo, "tool:compress", None, work.path()).unwrap();
+        assert_eq!(small, work.path().join("photo (compressed).jpg"));
+        assert!(fs::metadata(&small).unwrap().len() < photo_bytes.len() as u64);
+
+        // Nothing replaces anything: the same tool again makes a second file.
+        assert_eq!(convert(&photo, "tool:half", None, work.path()).unwrap(), work.path().join("photo (half size) 2.jpg"));
+
+        let bmp = work.path().join("old.bmp");
+        let mut make = Command::new(magick().unwrap());
+        make.args(["-size", "8x8", "xc:white"]).arg(format!("bmp3:{}", bmp.display()));
+        assert!(make.status().unwrap().success());
+        assert_eq!(convert(&bmp, "tool:compress", None, work.path()).unwrap_err(), ".bmp files can't be compressed");
+        let gif = work.path().join("anim.gif");
+        fs::write(&gif, b"GIF89a").unwrap();
+        assert_eq!(convert(&gif, "tool:rotate", None, work.path()).unwrap_err(), ".gif files can't be rotated");
     }
 
     #[test]
