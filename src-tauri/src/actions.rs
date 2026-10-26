@@ -4,7 +4,9 @@
 //! their folder, and AirDrop (macOS) offers to send them.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(not(windows))]
+use std::process::Stdio;
 use std::thread;
 
 use tauri::AppHandle;
@@ -104,9 +106,9 @@ fn set_clipboard(_app: &AppHandle, text: String, done: impl FnOnce(Result<(), St
 /// Another app may hold the clipboard for a moment, so opening it is tried a few times.
 #[cfg(windows)]
 fn windows_clipboard(text: &str) -> Result<(), String> {
-    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Foundation::{GlobalFree, HANDLE};
     use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::Ole::CF_UNICODETEXT;
 
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
@@ -130,7 +132,7 @@ fn windows_clipboard(text: &str) -> Result<(), String> {
             let ptr = GlobalLock(mem) as *mut u16;
             if ptr.is_null() {
                 let _ = GlobalFree(Some(mem));
-                return Err(windows::core::Error::from_win32());
+                return Err(windows::core::Error::from_thread());
             }
             std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
             // Reports an "error" once the lock count reaches zero, which is the point.
