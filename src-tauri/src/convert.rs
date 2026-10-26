@@ -86,7 +86,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         .and_then(|s| s.to_str())
         .ok_or("the file name is not valid text")?;
     let (stem, out_ext) = match tool {
-        Some(t) => (format!("{base} ({})", tool_suffix(t)), formats::canonical(&ext).to_string()),
+        Some(t) => (format!("{base} ({})", tool_suffix(t)), tool_out_ext(t, &ext)),
         None => (base.to_string(), target.to_string()),
     };
     // Not a folder, a device or a pipe (a pipe would block the read below forever).
@@ -128,6 +128,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     let converted = match (tool, kind) {
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
+        (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
         (Some(_), _) => Err("the Tools wheel has no tools for this kind of file yet".to_string()),
         (None, Kind::Image) => file(image(&input, target, &out)),
         (None, Kind::Audio) => file(audio(&input, target, &out)),
@@ -276,6 +277,9 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:merge" => "merged",
         "tool:onepdf" => "one PDF",
         "tool:smaller" => "smaller",
+        "tool:still" => "first frame",
+        "tool:loudness" => "even loudness",
+        "tool:mono" => "mono",
         _ => "changed",
     }
 }
@@ -291,8 +295,87 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:onepdf" => "put into one PDF",
         "tool:split" => "split",
         "tool:smaller" => "made smaller",
+        "tool:still" => "turned into a picture",
+        "tool:loudness" => "evened out",
+        "tool:mono" => "mixed down to mono",
         _ => "changed",
     }
+}
+
+/// The format a tool's result is in: the file's own, except First Frame's picture.
+fn tool_out_ext(tool_id: &str, ext: &str) -> String {
+    match tool_id {
+        "tool:still" => "jpg".into(),
+        _ => formats::canonical(ext).into(),
+    }
+}
+
+/// Loudness the way podcasts and streaming services aim for it (EBU R128 style):
+/// -16 LUFS, peaks at most -1.5 dB, a loudness range of 11.
+const LOUDNORM: &str = "loudnorm=I=-16:TP=-1.5:LRA=11";
+
+/// Runs a Tools wheel tool on audio or video (`ext`, its own format). Like the
+/// conversions, it goes through `ffmpeg`, locked down to local files and our formats.
+fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), String> {
+    let own = formats::canonical(ext);
+    let video = formats::kind_of(ext) == Some(Kind::Video);
+    match tool_id {
+        // The picture and sound as they are, without the file's and the streams'
+        // metadata (where and when it was recorded, the device, tags, cover art) or
+        // the data tracks phones keep it in. A copy: quick, nothing is encoded again.
+        "tool:clean" => {
+            let streams: &[&str] = if video { &["-map", "0:v", "-map", "0:a?"] } else { &["-map", "0:a"] };
+            let mut args = streams.to_vec();
+            args.extend(["-map_metadata", "-1", "-map_chapters", "-1", "-c", "copy", "-fflags", "+bitexact"]);
+            ffmpeg(src, &args, out, AUDIO)
+        }
+        "tool:compress" => {
+            // At most 1920 on the long side, and even sizes, which H.264 needs.
+            const FIT: &str = "scale=w='if(gte(iw,ih),min(1920,iw),-2)':h='if(gte(iw,ih),-2,min(1920,ih))',\
+                               scale=trunc(iw/2)*2:trunc(ih/2)*2";
+            let mut args = vec!["-map", "0:v:0", "-map", "0:a?", "-vf", FIT];
+            if own == "webm" {
+                args.extend(["-c:v", "libvpx-vp9", "-crf", "38", "-b:v", "0", "-deadline", "good", "-cpu-used", "4"]);
+                args.extend(["-row-mt", "1", "-c:a", "libopus", "-b:a", "96k"]);
+            } else {
+                args.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "28", "-pix_fmt", "yuv420p"]);
+                args.extend(["-c:a", "aac", "-b:a", "128k"]);
+                if own != "mkv" {
+                    args.extend(["-movflags", "+faststart"]);
+                }
+            }
+            ffmpeg(src, &args, out, VIDEO)
+        }
+        "tool:still" => ffmpeg(src, &["-map", "0:v:0", "-frames:v", "1", "-q:v", "2", "-update", "1"], out, QUICK),
+        "tool:loudness" | "tool:mono" => {
+            let mut args = vec!["-map", "0:a:0", "-map_metadata", "0"];
+            let rate;
+            if tool_id == "tool:loudness" {
+                // loudnorm works at 192 kHz; the result goes back to the file's own rate.
+                rate = sample_rate(src, out).unwrap_or(48_000).to_string();
+                args.extend(["-af", LOUDNORM, "-ar", &rate]);
+            } else {
+                args.extend(["-ac", "1"]);
+            }
+            args.extend_from_slice(audio_args(own));
+            ffmpeg(src, &args, out, AUDIO)
+        }
+        other => Err(format!("unknown tool {other}")),
+    }
+}
+
+/// The sample rate of a file's first audio stream, from ffprobe, locked down like
+/// ffmpeg. None when ffprobe is missing or can't tell.
+fn sample_rate(src: &Path, out: &Path) -> Option<u32> {
+    let answer = out.with_file_name("rate.txt");
+    let mut cmd = Command::new(tool("ffprobe").ok()?);
+    cmd.args(["-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS])
+        .args(["-select_streams", "a:0", "-show_entries", "stream=sample_rate"])
+        .args(["-of", "default=noprint_wrappers=1:nokey=1", "-o"])
+        .arg(format!("file:{}", answer.display()))
+        .arg(format!("file:{}", src.display()));
+    run(cmd, QUICK).ok()?;
+    fs::read_to_string(&answer).ok()?.trim().parse().ok().filter(|r| (8_000..=384_000).contains(r))
 }
 
 /// Runs a Tools wheel tool on a picture. The result is written in the picture's real
@@ -342,7 +425,9 @@ fn audio_args(target: &str) -> &'static [&'static str] {
         "flac" => &["-c:a", "flac"],
         "aiff" => &["-c:a", "pcm_s16be"],
         // Homebrew's ffmpeg has no Vorbis encoder; Opus in an Ogg file plays everywhere Ogg does.
-        "ogg" => &["-c:a", "libopus", "-b:a", "160k"],
+        "ogg" | "opus" => &["-c:a", "libopus", "-b:a", "160k"],
+        // Tools only: they keep the file's own format.
+        "aac" => &["-c:a", "aac", "-b:a", "256k"],
         _ => &[],
     }
 }
@@ -1954,6 +2039,59 @@ mod tests {
             Ok(smaller) => assert_eq!(pages(&smaller), 3),
             Err(e) => assert_eq!(e, "it is already as small as Smaller makes it"),
         }
+    }
+
+    /// What ffprobe says about a file's first audio stream and its tags.
+    fn probe(path: &Path) -> String {
+        let out = Command::new(tool("ffprobe").unwrap())
+            .args(["-v", "error", "-show_entries", "format_tags:stream=channels", "-of", "flat"])
+            .arg(path)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[test]
+    fn media_tools_on_a_short_clip() {
+        if tool("ffmpeg").is_err() || tool("ffprobe").is_err() {
+            eprintln!("ffmpeg isn't installed: media tools not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let clip = work.path().join("clip.mp4");
+        let mut make = Command::new(tool("ffmpeg").unwrap());
+        make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=2"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-shortest"])
+            .args(["-c:v", "libx264", "-crf", "18", "-c:a", "aac", "-metadata", "location=+48.85+002.29/"])
+            .args(["-metadata", "title=Holiday"])
+            .arg(&clip);
+        assert!(make.status().unwrap().success());
+        assert!(probe(&clip).contains("Holiday"));
+
+        let clean = convert(&clip, "tool:clean", None, work.path()).unwrap();
+        assert_eq!(clean, work.path().join("clip (no metadata).mp4"));
+        let tags = probe(&clean);
+        assert!(!tags.contains("Holiday") && !tags.contains("48.85"), "{tags}");
+
+        let still = convert(&clip, "tool:still", None, work.path()).unwrap();
+        assert_eq!(still, work.path().join("clip (first frame).jpg"));
+        assert!(fs::read(&still).unwrap().starts_with(&[0xFF, 0xD8]));
+
+        let small = convert(&clip, "tool:compress", None, work.path()).unwrap();
+        assert_eq!(small, work.path().join("clip (compressed).mp4"));
+
+        let song = work.path().join("song.mp3");
+        let mut make = Command::new(tool("ffmpeg").unwrap());
+        make.args(["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ac", "2"])
+            .args(["-metadata", "title=Tune"])
+            .arg(&song);
+        assert!(make.status().unwrap().success());
+        let even = convert(&song, "tool:loudness", None, work.path()).unwrap();
+        assert_eq!(even, work.path().join("song (even loudness).mp3"));
+        assert!(probe(&even).contains("Tune"), "loudness keeps the tags");
+        let mono = convert(&song, "tool:mono", None, work.path()).unwrap();
+        assert!(probe(&mono).contains("channels=1"), "{}", probe(&mono));
+        assert_eq!(convert(&song, "tool:still", None, work.path()).unwrap_err(), ".mp3 files can't be turned into a picture");
     }
 
     #[test]

@@ -56,7 +56,15 @@ For PDFs (with MuPDF):
 - **Split**: one PDF per page in a new folder, "report (pages)/report 01.pdf"; the first 100 pages, and the folder name says so when there were more.
 - **Smaller**: pictures above 225 dpi scaled down to 150 dpi and photos saved again as JPEG at quality 60, each only where that is smaller; fonts and streams compressed, unused and duplicate parts dropped. Text stays text. Older MuPDF without the picture options (Ubuntu's own packages) only tidies the file, which seldom makes it much smaller. Not saved if it isn't smaller.
 
-On Wayland the keyboard shortcut opens only the Formats wheel for now. Tools for video and audio come next ([ROADMAP](ROADMAP.md), stage 2).
+For video and audio (with ffmpeg):
+
+- **Compress** (MP4, MOV, M4V, MKV, WebM): at most 1920 pixels on the long side; H.264 at CRF 28 with AAC 128k, or for WebM VP9 at CRF 38 with Opus 96k. Not saved if it isn't smaller.
+- **Remove metadata** (video and audio): a copy of the picture and sound without the file's and the streams' metadata (where and when it was recorded, the device, tags, cover art, chapters) or the data tracks phones keep it in. Nothing is encoded again, so it is quick.
+- **First frame** (video): the first frame as a JPEG: "clip (first frame).jpg".
+- **Loudness** (audio): evened out to -16 LUFS with peaks at most -1.5 dB (ffmpeg's loudnorm), at the file's own sample rate, tags kept.
+- **Mono** (audio): both channels mixed into one.
+
+Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland the keyboard shortcut opens only the Formats wheel for now.
 
 ## On Windows and Linux
 

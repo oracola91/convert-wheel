@@ -103,6 +103,21 @@ impl Words {
                 "Stopped splitting",
             ),
             "tool:smaller" => tool("Shrinking {}", "Made smaller", "Made {} files smaller", "shrink", "Stopped shrinking"),
+            "tool:still" => tool(
+                "Taking the first frame of {}",
+                "Saved the first frame",
+                "Saved the first frame of {} files",
+                "take the first frame of",
+                "Stopped taking frames",
+            ),
+            "tool:loudness" => tool(
+                "Evening out the loudness of {}",
+                "Evened out the loudness",
+                "Evened out the loudness of {} files",
+                "even out the loudness of",
+                "Stopped evening out the loudness",
+            ),
+            "tool:mono" => tool("Mixing {} down to mono", "Made mono", "Made {} files mono", "mix down", "Stopped mixing down"),
             format => {
                 let label = format.to_uppercase();
                 Words {
@@ -267,13 +282,16 @@ fn keep_progress_shown(app: &AppHandle, running: &Running, finished: Receiver<()
 /// it produced.
 fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Vec<PathBuf>) {
     let words = &running.words;
-    let slow = job.paths.iter().any(|p| {
-        formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
-    });
+    // Converting or compressing video is slow; the video tools that copy are quick.
+    let encodes = !formats::is_tool(&job.format) || job.format == "tool:compress";
+    let slow = encodes
+        && job.paths.iter().any(|p| {
+            formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
+        });
     if slow {
         notify(
             app,
-            &(words.doing.replace("{} ", "") + "…"),
+            &(words.doing.replace("{} ", "").replace(" {}", "") + "…"),
             "Video can take a while. The menu shows how far it is, and can stop it.",
         );
     }
