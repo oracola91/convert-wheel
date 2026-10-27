@@ -240,6 +240,12 @@ pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -
         .segment
         .and_then(|i| wheel::lock(&app.state::<WheelState>().formats).get(i).copied());
     match format {
+        // Crop first opens its window; the job is queued from there.
+        Some(tool) if !paths.is_empty() && formats::opens_editor(tool) => {
+            hide_wheel(app, true, None);
+            crate::editor::open(app, paths);
+            true
+        }
         // Actions are quick and convert nothing: they skip the conversion queue.
         Some(action) if !paths.is_empty() && formats::is_action(action) => {
             hide_wheel(app, true, None);
