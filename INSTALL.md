@@ -35,7 +35,7 @@ Or install only the ones you need, when you need them: when a drop needs a missi
 xattr -dr com.apple.quarantine "/Applications/Convert Wheel.app"
 ```
 
-**4. Use it:** a ring icon appears in the menu bar (top right); there is no Dock icon. Hold Shift while dragging a file in Finder and the wheel opens; hold Option+Shift for the Tools wheel (pictures: compress, half size, remove metadata, rotate, read a QR code, crop, one PDF; PDFs: merge, split, smaller; video: compress, remove metadata, first frame; audio: compress, remove metadata, loudness, mono); start a drag and then hold Control+Shift for the Actions wheel (copy path, show in folder, terminal, AirDrop, make a ZIP / TAR.GZ / TAR, unpack). The keys can change the wheel during the drag, without letting go of the file. Allow notifications when macOS asks. Open at Login is in the ring icon's menu.
+**4. Use it:** a ring icon appears in the menu bar (top right); there is no Dock icon. Hold Shift while dragging a file in Finder and the wheel opens; hold Option+Shift for the Tools wheel (pictures: compress, half size, remove metadata, rotate, read a QR code, crop, one PDF; PDFs: merge, split, smaller; video: compress, remove metadata, trim, first frame; audio: compress, remove metadata, trim, loudness, mono); start a drag and then hold Control+Shift for the Actions wheel (copy path, show in folder, terminal, AirDrop, make a ZIP / TAR.GZ / TAR, unpack). The keys can change the wheel during the drag, without letting go of the file. Allow notifications when macOS asks. Open at Login is in the ring icon's menu.
 
 **From the source instead:** `./scripts/install-macos.sh` builds the app on this Mac, installs it in Applications and starts it. A local build needs no Gatekeeper step.
 
