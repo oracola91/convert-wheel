@@ -230,7 +230,7 @@ function show(raw) {
 }
 
 function restart(className) {
-  svg.classList.remove('opening', 'closing', 'switching');
+  svg.classList.remove('opening', 'closing');
   void svg.getBoundingClientRect();
   if (className) svg.classList.add(className);
 }
@@ -270,12 +270,12 @@ listen('wheel-show', (event) => {
 listen('wheel-formats', (event) => {
   if (!open) return;
   const keep = lastHover;
-  const before = wheel;
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   nameWheel();
+  // No fade-in: in the wheel's window macOS can hold an animation at its first
+  // frame, which left a switched-to wheel with invisible segments.
   build();
   show(keep);
-  if (wheel !== before) restart('switching');
 });
 
 listen('wheel-hover', (event) => {
