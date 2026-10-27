@@ -37,7 +37,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::trigger;
-use crate::wheel::{self, Hover, WheelState, Which};
+use crate::wheel::{self, Hover, KeyFollower, WheelState, Which};
 
 const POLL: Duration = Duration::from_millis(30);
 /// Matches the close animation in src/wheel.css.
@@ -56,6 +56,7 @@ pub fn start_trigger(app: AppHandle) {
         let mut shown = false;
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
+        let mut keys = KeyFollower::default();
         loop {
             thread::sleep(POLL);
             let mut pt = POINT::default();
@@ -67,6 +68,7 @@ pub fn start_trigger(app: AppHandle) {
                     trigger::released(&app);
                 }
                 (was_down, from_files, shown, held) = (false, false, false, 0);
+                keys = KeyFollower::default();
                 continue;
             }
             if !was_down {
@@ -80,6 +82,8 @@ pub fn start_trigger(app: AppHandle) {
                 let which = Which::from_keys(key_down(VK_MENU), key_down(VK_CONTROL));
                 trigger::show_wheel(&app, Vec::new(), which);
                 shown = true;
+            } else if shown {
+                trigger::follow_keys(&app, &mut keys, key_down(VK_SHIFT), key_down(VK_MENU), key_down(VK_CONTROL));
             }
         }
     });

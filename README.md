@@ -85,6 +85,10 @@ Archives go through bsdtar (libarchive): built into macOS and into Windows 10 an
 
 On a Mac, start the drag first and then press Control+Shift: Control held before the click turns it into a right-click. Copying and moving files, sharing on Windows and a shelf for files come later ([ROADMAP](ROADMAP.md), stage 3).
 
+### Switching wheels in one drag
+
+Once a wheel is open, the keys keep choosing: add Option (Alt) and it becomes the Tools wheel, press Control instead and it becomes the Actions wheel, keep only Shift and it is the formats again. With no keys held the wheel stays as it is, so they can be let go on the way to a segment. On Linux this works with X11; the Wayland shortcut opens the formats wheel only.
+
 ## On Windows and Linux
 
 Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS:

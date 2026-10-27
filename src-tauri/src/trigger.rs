@@ -1,5 +1,6 @@
 //! Watches for a file drag with Shift held and shows the wheel under the cursor: the
-//! formats, with Option (Alt) held too the tools, with Control the actions.
+//! formats, with Option (Alt) held too the tools, with Control the actions. While the
+//! wheel is open the keys keep choosing, so one drag can move between the wheels.
 //!
 //! macOS has no "drag started" notification for other apps, so this polls three
 //! things the window server shares with everyone: the drag pasteboard's change
@@ -13,7 +14,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::formats;
-use crate::wheel::{self, Hover, WheelState, Which};
+use crate::wheel::{self, Hover, KeyFollower, WheelState, Which};
 
 #[cfg(target_os = "macos")]
 const POLL: Duration = Duration::from_millis(30);
@@ -57,6 +58,7 @@ pub fn start(app: AppHandle) {
         let mut shown = false;
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
+        let mut keys = KeyFollower::default();
         loop {
             thread::sleep(POLL);
             // AppKit hands back autoreleased objects; without a pool on this thread
@@ -75,6 +77,7 @@ pub fn start(app: AppHandle) {
                     dragging = false;
                     shown = false;
                     held = 0;
+                    keys = KeyFollower::default();
                     return;
                 }
                 held = if macos::shift_down() { held.saturating_add(1) } else { 0 };
@@ -87,6 +90,8 @@ pub fn start(app: AppHandle) {
                     }
                     show_wheel(&app, paths, Which::from_keys(macos::option_down(), macos::control_down()));
                     shown = true;
+                } else if shown {
+                    follow_keys(&app, &mut keys, macos::shift_down(), macos::option_down(), macos::control_down());
                 }
             });
         }
@@ -148,12 +153,45 @@ fn close_later(app: &AppHandle, generation: u64, delay: Duration, only_if_waitin
     });
 }
 
+/// Puts on the wheel what `which` (or, with None, the wheel already chosen) offers for
+/// `paths`. All under the `which` lock, so a switch and the files arriving (Windows,
+/// Linux) can't leave one wheel's items on another.
+fn fill(app: &AppHandle, paths: &[String], which: Option<Which>) -> (Which, Vec<&'static str>) {
+    let state = app.state::<WheelState>();
+    let mut current = wheel::lock(&state.which);
+    if let Some(which) = which {
+        *current = which;
+    }
+    let formats = items_for(app, paths, *current);
+    *wheel::lock(&state.formats) = formats.clone();
+    *wheel::lock(&state.paths) = paths.to_vec();
+    (*current, formats)
+}
+
+/// One poll of the keys while the wheel is open: switches it when they ask for another.
+pub(crate) fn follow_keys(app: &AppHandle, keys: &mut KeyFollower, shift: bool, option: bool, control: bool) {
+    let current = *wheel::lock(&app.state::<WheelState>().which);
+    if let Some(which) = keys.poll(current, KEYS_SETTLE, shift, option, control) {
+        switch_wheel(app, which);
+    }
+}
+
+/// Shows another wheel for the same drag, without closing the window.
+fn switch_wheel(app: &AppHandle, which: Which) {
+    let state = app.state::<WheelState>();
+    if !state.is_open() {
+        return;
+    }
+    let paths = wheel::lock(&state.paths).clone();
+    let (which, formats) = fill(app, &paths, Some(which));
+    let pending = paths.is_empty();
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which });
+}
+
 /// Opens the wheel and returns its generation.
 fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -> u64 {
-    let formats = items_for(app, &paths, which);
+    let (_, formats) = fill(app, &paths, Some(which));
     let state = app.state::<WheelState>();
-    *wheel::lock(&state.formats) = formats.clone();
-    *wheel::lock(&state.which) = which;
     let pending = paths.is_empty();
     let generation = state.open(pending);
     let first = paths.first().cloned();
@@ -176,11 +214,8 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
 /// were being dragged: work out their formats (or tools) and redraw the wheel.
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
-    let state = app.state::<WheelState>();
-    let which = *wheel::lock(&state.which);
-    let formats = items_for(app, &paths, which);
-    *wheel::lock(&state.formats) = formats.clone();
-    state.files_known();
+    let (which, formats) = fill(app, &paths, None);
+    app.state::<WheelState>().files_known();
     let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which });
 }
 
