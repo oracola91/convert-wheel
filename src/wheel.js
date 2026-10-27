@@ -31,6 +31,7 @@ const TOOLS = {
   'tool:crop': ['Crop', 'Crop and turn'],
   'tool:trim': ['Trim', 'Trim the ends'],
   'tool:join': ['Join', 'Join into one'],
+  'tool:target': ['To a size', 'Compress to a size'],
   'tool:onepdf': ['One PDF', 'Into one PDF'],
   'tool:merge': ['Merge', 'Merge into one'],
   'tool:split': ['Split', 'One file per page'],
