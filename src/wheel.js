@@ -169,10 +169,14 @@ function readWheel(payload) {
   };
 }
 
-listen('wheel-show', (event) => {
-  ({ paths, formats, pending, wheel } = readWheel(event.payload));
+function nameWheel() {
   const names = { tools: 'Tools for the file', actions: 'Actions for the file' };
   svg.setAttribute('aria-label', names[wheel] ?? 'Formats to convert to');
+}
+
+listen('wheel-show', (event) => {
+  ({ paths, formats, pending, wheel } = readWheel(event.payload));
+  nameWheel();
   pinned = event.payload?.pinned === true;
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   build();
@@ -180,12 +184,17 @@ listen('wheel-show', (event) => {
   restart('opening');
 });
 
-// The files arrived (Windows, Linux): draw their formats without replaying the open,
-// and keep lit whatever the cursor is already over.
+// The files arrived (Windows, Linux), or the keys switched to another wheel: draw it
+// without replaying the open, and keep lit whatever the cursor is already over, if
+// the new wheel has that segment. The native side reports the new one as soon as the
+// cursor moves or a key changes.
 listen('wheel-formats', (event) => {
   if (!open) return;
   const keep = lastHover;
   ({ paths, formats, pending, wheel } = readWheel(event.payload));
+  nameWheel();
+  // No fade-in: in the wheel's window macOS can hold an animation at its first
+  // frame, which left a switched-to wheel with invisible segments.
   build();
   show(keep);
 });
