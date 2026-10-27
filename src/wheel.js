@@ -10,11 +10,17 @@ const SIZE = 340;
 const C = SIZE / 2;
 const R_OUT = 160;
 const R_IN = 62;
-const HUB_R = R_IN - 6;
+// A rim of plain glass shows around the segments, and a ring of it around the hub.
+const RIM = 9;
+const SEG_OUT = R_OUT - RIM;
+const HUB_R = R_IN - 10;
 // How far the segment under the cursor moves out toward it.
 const LIFT = 7;
-// Rounded corners, so each segment reads as a soft bubble.
-const CORNER = 12;
+// Rounded corners, so each segment reads as a soft cushion; the gap between two
+// segments is the same width all the way along.
+const CORNER_OUT = 16;
+const CORNER_IN = 9;
+const GAP = 7;
 const NS = 'http://www.w3.org/2000/svg';
 
 // What the hub says over a segment. Anything not listed shows in capitals.
@@ -60,6 +66,9 @@ let pinned = false;
 let segments = [];
 let hub = null;
 let hubLabel = null;
+let hubPill = null;
+// The dragged files' total size in bytes, or null (a folder, or not known yet).
+let bytes = null;
 // Between wheel-show and wheel-close. Late events for a closed wheel are ignored.
 let open = false;
 // Counts closes, so clearing the page after one doesn't hit a wheel opened since.
@@ -80,33 +89,50 @@ function polar(r, a) {
 function sectorPath(i, n) {
   if (n === 1) {
     // A full ring: two half circles each way, the hole cut out by the even-odd rule.
-    return `M ${C} ${C - R_OUT} A ${R_OUT} ${R_OUT} 0 1 1 ${C} ${C + R_OUT} A ${R_OUT} ${R_OUT} 0 1 1 ${C} ${C - R_OUT} Z ` +
+    return `M ${C} ${C - SEG_OUT} A ${SEG_OUT} ${SEG_OUT} 0 1 1 ${C} ${C + SEG_OUT} A ${SEG_OUT} ${SEG_OUT} 0 1 1 ${C} ${C - SEG_OUT} Z ` +
       `M ${C} ${C - R_IN} A ${R_IN} ${R_IN} 0 1 0 ${C} ${C + R_IN} A ${R_IN} ${R_IN} 0 1 0 ${C} ${C - R_IN} Z`;
   }
-  const gap = 0.03;
-  const a0 = (i / n) * 2 * Math.PI + gap;
-  const a1 = ((i + 1) / n) * 2 * Math.PI - gap;
-  // Each corner is a small circle touching the edge and the ring; a narrow segment
-  // gets smaller corners, so the two at the hub never meet.
-  let rc = CORNER;
-  while (rc > 2 && 2 * Math.asin(rc / (R_IN + rc)) > 0.8 * (a1 - a0)) rc -= 1;
-  const outer = Math.asin(rc / (R_OUT - rc));
-  const inner = Math.asin(rc / (R_IN + rc));
-  const edgeOut = Math.sqrt((R_OUT - rc) ** 2 - rc ** 2);
-  const edgeIn = Math.sqrt((R_IN + rc) ** 2 - rc ** 2);
-  const pt = (r, a) => polar(r, a).map((v) => v.toFixed(2)).join(' ');
+  // Each side runs half a gap off the line from the centre, so gaps keep one width.
+  const h = GAP / 2;
+  const a0 = (i / n) * 2 * Math.PI;
+  const a1 = ((i + 1) / n) * 2 * Math.PI;
+  // A point `d` along the line at angle `a`, moved `side` across it (clockwise > 0).
+  const along = (d, a, side) => [C + d * Math.sin(a) + side * Math.cos(a), C - d * Math.cos(a) + side * Math.sin(a)];
+  const fmt = ([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`;
+  // Each corner is a small circle touching the side and the ring; a narrow segment
+  // gets smaller corners at the hub, so the two there never meet.
+  let ri = CORNER_IN;
+  while (ri > 2 && 2 * Math.asin((h + ri) / (R_IN + ri)) > 0.85 * (a1 - a0)) ri -= 1;
+  const ro = CORNER_OUT;
+  const tOut = Math.asin((h + ro) / (SEG_OUT - ro));
+  const tIn = Math.asin((h + ri) / (R_IN + ri));
+  const dOut = Math.sqrt((SEG_OUT - ro) ** 2 - (h + ro) ** 2);
+  const dIn = Math.sqrt((R_IN + ri) ** 2 - (h + ri) ** 2);
   const large = (span) => (span > Math.PI ? 1 : 0);
   return [
-    `M ${pt(edgeOut, a0)}`,
-    `A ${rc} ${rc} 0 0 1 ${pt(R_OUT, a0 + outer)}`,
-    `A ${R_OUT} ${R_OUT} 0 ${large(a1 - a0 - 2 * outer)} 1 ${pt(R_OUT, a1 - outer)}`,
-    `A ${rc} ${rc} 0 0 1 ${pt(edgeOut, a1)}`,
-    `L ${pt(edgeIn, a1)}`,
-    `A ${rc} ${rc} 0 0 1 ${pt(R_IN, a1 - inner)}`,
-    `A ${R_IN} ${R_IN} 0 ${large(a1 - a0 - 2 * inner)} 0 ${pt(R_IN, a0 + inner)}`,
-    `A ${rc} ${rc} 0 0 1 ${pt(edgeIn, a0)}`,
+    `M ${fmt(along(dOut, a0, h))}`,
+    `A ${ro} ${ro} 0 0 1 ${fmt(polar(SEG_OUT, a0 + tOut))}`,
+    `A ${SEG_OUT} ${SEG_OUT} 0 ${large(a1 - a0 - 2 * tOut)} 1 ${fmt(polar(SEG_OUT, a1 - tOut))}`,
+    `A ${ro} ${ro} 0 0 1 ${fmt(along(dOut, a1, -h))}`,
+    `L ${fmt(along(dIn, a1, -h))}`,
+    `A ${ri} ${ri} 0 0 1 ${fmt(polar(R_IN, a1 - tIn))}`,
+    `A ${R_IN} ${R_IN} 0 ${large(a1 - a0 - 2 * tIn)} 0 ${fmt(polar(R_IN, a0 + tIn))}`,
+    `A ${ri} ${ri} 0 0 1 ${fmt(along(dIn, a0, h))}`,
     'Z',
   ].join(' ');
+}
+
+// "2.2 MB", the way Finder counts (1000 bytes to a kilobyte).
+function sizeText(n) {
+  if (n < 1000) return `${n} bytes`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1000;
+  let u = 0;
+  while (v >= 1000 && u < units.length - 1) {
+    v /= 1000;
+    u += 1;
+  }
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[u]}`;
 }
 
 // The shine every segment and the hub get, as on a bubble lit from above: bright at
@@ -121,6 +147,7 @@ function sheen() {
   defs.append(
     gradient('sheen', [[0, 'sheen-top'], [0.5, 'sheen-mid'], [1, 'sheen-end']]),
     gradient('rim', [[0, 'rim-top'], [0.55, 'rim-mid'], [1, 'rim-end']]),
+    gradient('accent', [[0, 'accent-top'], [1, 'accent-end']]),
   );
   return defs;
 }
@@ -130,6 +157,13 @@ function build() {
   svg.replaceChildren(sheen());
   // Without the system's glass behind it (Windows), the page draws its own disc.
   svg.append(el('circle', { cx: C, cy: C, r: R_OUT, class: 'disc' }));
+  // The glass rim around the segments and the ring around the hub, each with its edge
+  // catching the light.
+  svg.append(
+    el('circle', { cx: C, cy: C, r: R_OUT - RIM / 2, class: 'bezel', 'stroke-width': RIM }),
+    el('circle', { cx: C, cy: C, r: (R_IN + HUB_R) / 2, class: 'bezel', 'stroke-width': R_IN - HUB_R }),
+    el('circle', { cx: C, cy: C, r: R_OUT - 0.75, class: 'edge' }),
+  );
   const n = formats.length;
   segments = formats.map((f, i) => {
     const mid = n === 1 ? 0 : ((i + 0.5) / n) * 2 * Math.PI;
@@ -141,18 +175,21 @@ function build() {
     }
     const d = sectorPath(i, n);
     g.append(el('path', { d, 'fill-rule': 'evenodd', class: 'body' }), el('path', { d, 'fill-rule': 'evenodd', class: 'shine' }));
-    const [x, y] = polar((R_OUT + R_IN) / 2, mid);
+    const [x, y] = polar((SEG_OUT + R_IN) / 2, mid);
     const label = el('text', { x, y });
-    label.textContent = Object.hasOwn(TOOLS, f) ? TOOLS[f][0] : f.toUpperCase();
+    label.textContent = (Object.hasOwn(TOOLS, f) ? TOOLS[f][0] : f).toUpperCase();
     g.append(label);
     svg.append(g);
     return g;
   });
   hub = el('circle', { cx: C, cy: C, r: HUB_R, class: 'hub' });
   const hubShine = el('circle', { cx: C, cy: C, r: HUB_R, class: 'shine' });
-  // The native file icon sits above the centre; the label goes under it.
-  hubLabel = el('text', { x: C, y: C + 28, class: 'hub-label' });
-  svg.append(hub, hubShine, hubLabel);
+  // The native file icon sits above the centre; the label goes under it, on a pill.
+  const tag = el('g', { class: 'hub-tag' });
+  hubPill = el('rect', { y: C + 30 - 11, height: 22, rx: 11, ry: 11, class: 'pill' });
+  hubLabel = el('text', { x: C, y: C + 30, class: 'hub-label' });
+  tag.append(hubPill, hubLabel);
+  svg.append(hub, hubShine, tag);
   show({ segment: null, hub: false });
 }
 
@@ -182,8 +219,14 @@ function show(raw) {
   } else if (pinned) {
     hubLabel.textContent = 'Esc to close';
   } else {
-    hubLabel.textContent = paths.length === 1 ? '1 file' : `${paths.length} files`;
+    const count = paths.length === 1 ? '1 file' : `${paths.length} files`;
+    if (bytes === null) hubLabel.textContent = count;
+    else hubLabel.textContent = paths.length === 1 ? sizeText(bytes) : `${count} · ${sizeText(bytes)}`;
   }
+  // The pill fits the words.
+  const width = Math.ceil(hubLabel.getComputedTextLength()) + 22;
+  hubPill.setAttribute('x', C - width / 2);
+  hubPill.setAttribute('width', width);
 }
 
 function restart(className) {
@@ -201,6 +244,7 @@ function readWheel(payload) {
     formats: list(payload?.formats),
     pending: payload?.pending === true,
     wheel: ['tools', 'actions'].includes(payload?.wheel) ? payload.wheel : 'formats',
+    bytes: Number.isSafeInteger(payload?.bytes) && payload.bytes >= 0 ? payload.bytes : null,
   };
 }
 
@@ -210,7 +254,7 @@ function nameWheel() {
 }
 
 listen('wheel-show', (event) => {
-  ({ paths, formats, pending, wheel } = readWheel(event.payload));
+  ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   nameWheel();
   pinned = event.payload?.pinned === true;
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
@@ -227,7 +271,7 @@ listen('wheel-formats', (event) => {
   if (!open) return;
   const keep = lastHover;
   const before = wheel;
-  ({ paths, formats, pending, wheel } = readWheel(event.payload));
+  ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   nameWheel();
   build();
   show(keep);
@@ -253,6 +297,7 @@ listen('wheel-close', (event) => {
       segments = [];
       hub = null;
       hubLabel = null;
+      hubPill = null;
     }
   }, 250);
 });
