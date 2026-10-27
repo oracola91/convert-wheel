@@ -67,6 +67,7 @@ For video and audio (with ffmpeg):
 - **First frame** (video): the first frame as a JPEG: "clip (first frame).jpg".
 - **Loudness** (audio): evened out to -16 LUFS with peaks at most -1.5 dB (ffmpeg's loudnorm), at the file's own sample rate, tags kept.
 - **Mono** (audio): both channels mixed into one.
+- **Join** (two or more sound files, or two or more videos): one after another, in the order dropped, as one file in the first one's format: "clip (joined).mp4". Every part is encoded again, so different formats, sizes and rates fit: videos take the first one's size (the others fitted in, with bars) and frame rate, and a video without sound gets silence for its length. Up to 50 files.
 - **Trim** (audio and video, one file at a time): opens a window with the sound's loudness along its length, a video's frames above it, and the part to keep between two ends to drag (or times to type, "1:23.4"). Play plays that part first (files up to 20 minutes). Enter trims, Esc cancels, Space plays. The cut is exact, not at the nearest keyframe: the part is encoded again in the file's own format at the menu's quality. The result is "clip (trimmed).mp4".
 
 Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland the keyboard shortcut opens only the Formats wheel for now.
