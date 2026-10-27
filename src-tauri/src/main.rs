@@ -133,6 +133,15 @@ impl Words {
             ),
             "tool:crop" => tool("Cropping {}", "Cropped", "Cropped {} files", "crop", "Stopped cropping"),
             "tool:trim" => tool("Trimming {}", "Trimmed", "Trimmed {} files", "trim", "Stopped trimming"),
+            "tool:target" => tool(
+                "Compressing {} to a size",
+                "Compressed to a size",
+                "Compressed {} files to a size",
+                "compress",
+                "Stopped compressing",
+            ),
+            // Join makes one file of the whole drop: "{}" is "3 files".
+            "tool:join" => tool("Joining {}", "Joined into one file", "Joined {} files", "join", "Stopped joining"),
             "act:zip" => tool("Making a ZIP of {}", "Made a ZIP", "Made a ZIP of {} files", "zip", "Stopped making the ZIP"),
             "act:tgz" => tool("Making a TAR.GZ of {}", "Made a TAR.GZ", "Made a TAR.GZ of {} files", "pack", "Stopped packing"),
             "act:tar" => tool("Making a TAR of {}", "Made a TAR", "Made a TAR of {} files", "pack", "Stopped packing"),
@@ -325,7 +334,7 @@ fn keep_progress_shown(app: &AppHandle, running: &Running, finished: Receiver<()
 fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Vec<PathBuf>) {
     let words = &running.words;
     // Converting or compressing video is slow; the video tools that copy are quick.
-    let encodes = !formats::is_tool(&job.format) || job.format == "tool:compress";
+    let encodes = !formats::is_tool(&job.format) || matches!(job.format.as_str(), "tool:compress" | "tool:trim" | "tool:join" | "tool:target");
     let slow = encodes
         && job.paths.iter().any(|p| {
             formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
@@ -584,7 +593,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {

@@ -96,7 +96,14 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         .and_then(|s| s.to_str())
         .ok_or("the file name is not valid text")?;
     let (stem, out_ext) = match tool {
-        Some(t) => (format!("{base} ({})", tool_suffix(t)), tool_out_ext(t, &ext)),
+        Some(t) => {
+            // Compress to a Size names the size: "photo (under 2 MB).jpg".
+            let suffix = match (t, control().and_then(|c| c.edit)) {
+                ("tool:target", Some(Edit::Size(bytes))) => format!("under {}", size_text(bytes)),
+                _ => tool_suffix(t).to_string(),
+            };
+            (format!("{base} ({suffix})"), tool_out_ext(t, &ext))
+        }
         None => (base.to_string(), target.to_string()),
     };
     // Not a folder, a device or a pipe (a pipe would block the read below forever).
@@ -139,6 +146,10 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     let file = |done: Result<(), String>| done.map(|()| Output::File);
     let converted = match (tool, kind) {
         (Some("tool:qr"), Kind::Image) => file(read_qr(&input, &out, work.path())),
+        (Some("tool:target"), Kind::Image) => file(size_limit().and_then(|limit| image_to_size(&input, &out, limit))),
+        (Some("tool:target"), Kind::Audio | Kind::Video) => {
+            file(size_limit().and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
+        }
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
@@ -308,6 +319,8 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:qr" => "QR code",
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
+        "tool:join" => "joined",
+        "tool:target" => "compressed",
         _ => "changed",
     }
 }
@@ -329,6 +342,8 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:qr" => "read for QR codes",
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
+        "tool:join" => "joined",
+        "tool:target" => "compressed to a size",
         _ => "changed",
     }
 }
@@ -621,27 +636,39 @@ fn copy_streams(src: &Path, extra: &[&str], out: &Path) -> bool {
 /// Media 8 with WMA (WMV), at most 1920 wide. H.264 in yuv420p needs even width and
 /// height; phone and screen recordings often aren't, so round down by a pixel there.
 fn video_encode(target: &str) -> Option<Vec<&'static str>> {
+    let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND];
+    match target {
+        "mp4" | "mov" | "m4v" | "mkv" => args.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]),
+        "avi" | "wmv" => args.extend(["-vf", FIT_HD]),
+        _ => {}
+    }
+    args.extend(video_codec(target)?);
+    Some(args)
+}
+
+/// The encoders of `video_encode`, without the streams and the picture's fit: for
+/// Join, which builds those itself.
+fn video_codec(target: &str) -> Option<Vec<&'static str>> {
     let level = quality().video;
     // MPEG-4 Part 2 and Windows Media 8 take a fixed quantiser: lower is better.
     let quantiser = level.pick("5", "3", "2");
-    let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND];
-    match target {
+    Some(match target {
         "mp4" | "mov" | "m4v" | "mkv" => {
-            args.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264", "-preset", "medium"]);
-            args.extend(["-crf", level.pick("26", "20", "17"), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
+            let mut args = vec!["-c:v", "libx264", "-preset", "medium", "-crf", level.pick("26", "20", "17")];
+            args.extend(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
             if target != "mkv" {
                 args.extend(["-movflags", "+faststart"]);
             }
+            args
         }
-        "webm" => {
-            args.extend(["-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0", "-deadline", "good"]);
-            args.extend(["-cpu-used", "4", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k"]);
-        }
-        "avi" => args.extend(["-vf", FIT_HD, "-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4"]),
-        "wmv" => args.extend(["-vf", FIT_HD, "-c:v", "wmv2", "-q:v", quantiser, "-c:a", "wmav2", "-b:a", "192k"]),
+        "webm" => vec![
+            "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0", "-deadline", "good", "-cpu-used", "4",
+            "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
+        ],
+        "avi" => vec!["-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4"],
+        "wmv" => vec!["-c:v", "wmv2", "-q:v", quantiser, "-c:a", "wmav2", "-b:a", "192k"],
         _ => return None,
-    }
-    Some(args)
+    })
 }
 
 fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
@@ -908,6 +935,7 @@ fn combine_words(tool_id: &str) -> Option<(&'static str, &'static str)> {
     match tool_id {
         "tool:merge" => Some(("Merge needs two PDFs or more", "only PDFs can be merged")),
         "tool:onepdf" => Some(("One PDF needs two pictures or more", "only pictures can go into one PDF")),
+        "tool:join" => Some(("Join needs two files or more", "only sound files, or only video files, can be joined")),
         _ => None,
     }
 }
@@ -922,6 +950,9 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
     let [first, _, ..] = srcs else {
         return Err(too_few.into());
     };
+    if target == "tool:join" {
+        return join_media(srcs, only, save_in, fallback);
+    }
     let pictures = target == "tool:onepdf";
     if pictures && srcs.len() > MAX_PICTURES {
         return Err(format!("One PDF takes up to {MAX_PICTURES} pictures"));
@@ -976,17 +1007,311 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
         let what = if pictures { "pictures" } else { "PDFs" };
         return Err(format!("MuPDF couldn't read one of the {what}"));
     }
+    place_combined(&out, first, target, "pdf", save_in, fallback)
+}
+
+/// Puts the one result of a drop next to its first file, named after it ("report
+/// (merged).pdf"), or in Downloads when that folder can't be written to.
+fn place_combined(out: &Path, first: &Path, target: &str, ext: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
     let stem = first.file_stem().and_then(|s| s.to_str()).ok_or("the file name is not valid text")?;
     let stem = format!("{stem} ({})", tool_suffix(target));
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
         None => first.parent().ok_or("the file has no folder")?.to_path_buf(),
     };
-    let placed = match place(&out, &dir, &stem, "pdf") {
-        Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| place(&out, fallback, &stem, "pdf")),
+    let placed = match place(out, &dir, &stem, ext) {
+        Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| place(out, fallback, &stem, ext)),
         other => other,
     };
     placed.map_err(|e| format!("can't save the result: {e}"))
+}
+
+/// The size Compress to a Size aims under, from the editor.
+fn size_limit() -> Result<u64, String> {
+    match control().and_then(|c| c.edit) {
+        Some(Edit::Size(bytes)) => Ok(bytes),
+        _ => Err("Compress to a Size opens its window from the wheel".into()),
+    }
+}
+
+/// Compress to a Size for a picture: the highest quality (25 to 92) that comes in at
+/// `limit` bytes or under, found by halving the range. If even the lowest is too big,
+/// the picture is made smaller by about as much as that needs, and the search runs
+/// again. Metadata stays, as with Compress.
+fn image_to_size(src: &Path, out: &Path, limit: u64) -> Result<(), String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    if !matches!(coder, "jpeg" | "heic" | "webp" | "avif") {
+        return Err("only JPEG, HEIC, WebP and AVIF pictures can be compressed to a size".into());
+    }
+    let magick = magick()?;
+    let write = |percent: u32, quality: u32| -> Result<u64, String> {
+        let mut cmd = Command::new(&magick);
+        cmd.args(IMAGE_LIMITS).arg(format!("{coder}:{}[0]", src.display())).arg("-auto-orient");
+        if percent < 100 {
+            cmd.args(["-resize", &format!("{percent}%")]);
+        }
+        cmd.args(["-quality", &quality.to_string()]).arg(format!("{coder}:{}", out.display()));
+        run(cmd, QUICK)?;
+        fs::metadata(out).map(|m| m.len()).map_err(|e| format!("work file: {e}"))
+    };
+    let mut percent = 100;
+    loop {
+        let lowest = write(percent, 25)?;
+        if lowest <= limit {
+            let (mut low, mut high, mut best) = (26, 92, 25);
+            while low <= high {
+                let middle = (low + high) / 2;
+                if write(percent, middle)? <= limit {
+                    best = middle;
+                    low = middle + 1;
+                } else {
+                    high = middle - 1;
+                }
+            }
+            write(percent, best)?;
+            return Ok(());
+        }
+        let next = (f64::from(percent) * (limit as f64 / lowest as f64).sqrt() * 0.9) as u32;
+        if next < 5 || next >= percent {
+            return Err(format!("this picture can't be made {} or smaller", size_text(limit)));
+        }
+        percent = next;
+    }
+}
+
+/// The least a sound or video file can be compressed to, from its length: what the
+/// lowest rates below give, with the container's share. None for anything else.
+pub fn smallest_size(src: &Path) -> Option<u64> {
+    let ext = formats::extension(src)?;
+    let rate = match formats::kind_of(&ext)? {
+        Kind::Video => LEAST_PICTURE + LEAST_VIDEO_SOUND,
+        Kind::Audio => f64::from(sound_codec(formats::canonical(&ext))?.1) * 1000.0,
+        _ => return None,
+    };
+    let work = tempfile::tempdir().ok()?;
+    let length = media_length(src, &work.path().join("probe"))?.as_secs_f64();
+    Some((rate * length / 8.0 / CONTAINER_SHARE).ceil() as u64)
+}
+
+/// The share of a file its streams get; the rest is the container's.
+const CONTAINER_SHARE: f64 = 0.96;
+/// The lowest picture rate worth making, and the sound beside it, in bits a second.
+const LEAST_PICTURE: f64 = 100_000.0;
+const LEAST_VIDEO_SOUND: f64 = 48_000.0;
+
+/// A sound format's encoder and the bit rates it takes, in kbit/s.
+fn sound_codec(own: &str) -> Option<(&'static str, u32, u32)> {
+    match own {
+        "mp3" => Some(("libmp3lame", 32, 320)),
+        "m4a" | "aac" => Some(("aac", 24, 320)),
+        "ogg" | "opus" => Some(("libopus", 8, 256)),
+        "wma" => Some(("wmav2", 32, 192)),
+        _ => None,
+    }
+}
+
+/// Compress to a Size for sound and video: the bit rate the size allows over the file's
+/// length. A result still over the size (rare, two passes aim well) is made again at a
+/// lower rate, once.
+fn media_to_size(src: &Path, ext: &str, out: &Path, work: &Path, limit: u64) -> Result<(), String> {
+    let own = formats::canonical(ext);
+    let video = formats::kind_of(ext) == Some(Kind::Video);
+    let length = media_length(src, out).ok_or("ffprobe couldn't tell how long this file is")?.as_secs_f64();
+    let too_small = || format!("it can't be made {} or smaller: it is too long for that", size_text(limit));
+    let mut rate = limit as f64 * 8.0 * CONTAINER_SHARE / length;
+    for _ in 0..2 {
+        let _ = fs::remove_file(out);
+        if video {
+            video_at_rate(src, own, out, work, rate).ok_or_else(too_small)??;
+        } else {
+            let (codec, least, most) = sound_codec(own).ok_or_else(|| format!("{} files can't be compressed to a size", own.to_uppercase()))?;
+            let kbps = (rate / 1000.0) as u32;
+            if kbps < least {
+                return Err(too_small());
+            }
+            let kbps = format!("{}k", kbps.min(most));
+            ffmpeg(src, &["-map", "0:a:0", "-map_metadata", "0", "-c:a", codec, "-b:a", &kbps], out, AUDIO)?;
+        }
+        let size = fs::metadata(out).map(|m| m.len()).map_err(|e| format!("work file: {e}"))?;
+        if size <= limit {
+            return Ok(());
+        }
+        rate *= 0.92 * limit as f64 / size as f64;
+    }
+    Err(format!("this file can't be made {} or smaller", size_text(limit)))
+}
+
+/// A video at `rate` bits a second in all, in two passes: the first only to learn where
+/// the bits are needed. 96k sound (48k when tight); the picture fitted to 1920, 1280 or
+/// 854 on the long side as the rate drops. None when the rate is too low for a picture.
+fn video_at_rate(src: &Path, own: &str, out: &Path, work: &Path, rate: f64) -> Option<Result<(), String>> {
+    let sound = if rate > 400_000.0 { 96_000.0 } else { LEAST_VIDEO_SOUND };
+    let picture = rate - sound;
+    if picture < LEAST_PICTURE {
+        return None;
+    }
+    let long = if picture < 600_000.0 {
+        854
+    } else if picture < 1_500_000.0 {
+        1280
+    } else {
+        1920
+    };
+    let fit = format!(
+        "scale=w='if(gte(iw,ih),min({long},iw),-2)':h='if(gte(iw,ih),-2,min({long},ih))',scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    );
+    let (v, a) = (format!("{}k", (picture / 1000.0) as u32), format!("{}k", (sound / 1000.0) as u32));
+    let log = work.join("passes").to_string_lossy().into_owned();
+    let (codec, sound_codec): (&[&str], &str) = match own {
+        "mp4" | "mov" | "m4v" | "mkv" => (&["-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p"], "aac"),
+        "webm" => (&["-c:v", "libvpx-vp9", "-deadline", "good", "-cpu-used", "4", "-row-mt", "1"], "libopus"),
+        other => return Some(Err(format!("{} files can't be compressed to a size", other.to_uppercase()))),
+    };
+    let mut first = vec!["-map", "0:v:0", "-vf", &fit];
+    first.extend(codec);
+    first.extend(["-b:v", &v, "-pass", "1", "-passlogfile", &log, "-an", "-f", "null"]);
+    if let Err(e) = ffmpeg(src, &first, &work.join("pass1.null"), VIDEO) {
+        return Some(Err(e));
+    }
+    let mut second = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-map_metadata", "0", "-vf", &fit];
+    second.extend(codec);
+    second.extend(["-b:v", &v, "-pass", "2", "-passlogfile", &log, "-c:a", sound_codec, "-b:a", &a]);
+    if !matches!(own, "mkv" | "webm") {
+        second.extend(["-movflags", "+faststart"]);
+    }
+    Some(ffmpeg(src, &second, out, VIDEO))
+}
+
+/// Join takes at most this many files.
+const MAX_JOIN: usize = 50;
+
+/// The Tools wheel's Join: sound files, or video files, one after another in the order
+/// dropped, as one file in the first one's format: "clip (joined).mp4". Every part is
+/// read and encoded again, so different formats, sizes and rates fit together: videos
+/// take the first one's size (the others fitted inside it, with bars) and frame rate,
+/// sound becomes 48 kHz stereo, and a video without sound gets silence for its length.
+fn join_media(srcs: &[PathBuf], only: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
+    let first = &srcs[0];
+    let own = formats::canonical(&formats::extension(first).unwrap_or_default()).to_string();
+    let video = formats::kind_of(&own) == Some(Kind::Video);
+    if srcs.len() > MAX_JOIN {
+        return Err(format!("Join takes up to {MAX_JOIN} files"));
+    }
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let (width, height, rate) = if video {
+        let (w, h, rate) = video_facts(first, work.path()).ok_or("ffprobe couldn't read the first video")?;
+        let (w, h) = join_size(w, h, &own);
+        (w, h, rate)
+    } else {
+        (0, 0, 0.0)
+    };
+    let mut graph = String::new();
+    let mut parts = String::new();
+    for (i, src) in srcs.iter().enumerate() {
+        let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let fail = |e: &str| format!("{name}: {e}");
+        let ext = formats::extension(src).unwrap_or_default();
+        if !formats::tool_takes("tool:join", &ext) || (formats::kind_of(&ext) == Some(Kind::Video)) != video {
+            return Err(fail(only));
+        }
+        if !fs::metadata(src).is_ok_and(|m| m.is_file()) {
+            return Err(fail("this is not a regular file"));
+        }
+        let sound = format!("aresample=48000,aformat=channel_layouts=stereo[a{i}];");
+        if video {
+            graph += &format!(
+                "[{i}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,\
+                 pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={rate:.3},format=yuv420p[v{i}];"
+            );
+            if has_sound(src, work.path()) {
+                graph += &format!("[{i}:a:0]{sound}");
+            } else {
+                let length = media_length(src, &work.path().join("probe")).ok_or_else(|| fail("ffprobe couldn't tell how long this file is"))?;
+                graph += &format!("anullsrc=r=48000:cl=stereo,atrim=duration={:.3},{sound}", length.as_secs_f64());
+            }
+            parts += &format!("[v{i}][a{i}]");
+        } else {
+            graph += &format!("[{i}:a:0]{sound}");
+            parts += &format!("[a{i}]");
+        }
+    }
+    let joined = if video { "[v][a]" } else { "[a]" };
+    graph += &format!("{parts}concat=n={}:v={}:a=1{joined}", srcs.len(), u8::from(video));
+    let out = work.path().join(format!("joined.{own}"));
+    let mut args = vec!["-filter_complex", graph.as_str()];
+    if video {
+        args.extend(["-map", "[v]", "-map", "[a]"]);
+        args.extend(video_codec(&own).ok_or_else(|| format!("{} files can't be joined", own.to_uppercase()))?);
+    } else {
+        args.extend(["-map", "[a]"]);
+        args.extend(audio_args(&own));
+    }
+    ffmpeg_many(srcs, &args, &out, if video { VIDEO } else { AUDIO }).map_err(|e| redact(&e, first, work.path()))?;
+    place_combined(&out, first, "tool:join", &own, save_in, fallback)
+}
+
+/// Join's picture size: the first video's, in even numbers, and for AVI and WMV at most
+/// 1920 on the long side, like their conversions.
+fn join_size(width: u32, height: u32, target: &str) -> (u32, u32) {
+    let long = width.max(height).max(1);
+    let scale = if matches!(target, "avi" | "wmv") && long > 1920 { 1920.0 / f64::from(long) } else { 1.0 };
+    let even = |n: u32| ((f64::from(n) * scale) as u32 / 2 * 2).max(2);
+    (even(width), even(height))
+}
+
+/// The first video stream's size as it is shown (turned by its rotation) and its frame
+/// rate (30 when it can't be told).
+fn video_facts(src: &Path, work: &Path) -> Option<(u32, u32, f64)> {
+    let answer = work.join("video.txt");
+    let mut cmd = Command::new(tool("ffprobe").ok()?);
+    cmd.args(["-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-select_streams", "v:0"])
+        .args(["-show_entries", "stream=width,height,avg_frame_rate:stream_side_data=rotation"])
+        .args(["-of", "default=noprint_wrappers=1", "-o"])
+        .arg(format!("file:{}", answer.display()))
+        .arg(format!("file:{}", src.display()));
+    run(cmd, QUICK).ok()?;
+    let text = fs::read_to_string(&answer).ok()?;
+    let value = |key: &str| text.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('='));
+    let (width, height): (u32, u32) = (value("width")?.parse().ok()?, value("height")?.parse().ok()?);
+    let turned = value("rotation").and_then(|r| r.parse::<i32>().ok()).is_some_and(|r| r.rem_euclid(180) == 90);
+    let rate = value("avg_frame_rate")
+        .and_then(|r| {
+            let (n, d) = r.split_once('/')?;
+            let (n, d): (f64, f64) = (n.parse().ok()?, d.parse().ok()?);
+            (d > 0.0).then(|| n / d)
+        })
+        .filter(|r| r.is_finite() && *r > 0.0 && *r <= 240.0)
+        .unwrap_or(30.0);
+    Some(if turned { (height, width, rate) } else { (width, height, rate) })
+}
+
+/// Whether a file has a sound track.
+fn has_sound(src: &Path, work: &Path) -> bool {
+    let answer = work.join("sound.txt");
+    let Ok(ffprobe) = tool("ffprobe") else {
+        return false;
+    };
+    let mut cmd = Command::new(ffprobe);
+    cmd.args(["-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-select_streams", "a"])
+        .args(["-show_entries", "stream=index", "-of", "csv=p=0", "-o"])
+        .arg(format!("file:{}", answer.display()))
+        .arg(format!("file:{}", src.display()));
+    run(cmd, QUICK).is_ok() && fs::read_to_string(&answer).is_ok_and(|text| !text.trim().is_empty())
+}
+
+/// ffmpeg with several inputs, each locked down like `ffmpeg`'s one.
+fn ffmpeg_many(srcs: &[PathBuf], args: &[&str], out: &Path, limit: Duration) -> Result<(), String> {
+    let mut cmd = Command::new(tool("ffmpeg")?);
+    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
+    for src in srcs {
+        cmd.args(["-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-i"])
+            .arg(format!("file:{}", src.display()));
+    }
+    cmd.args(args).arg(out);
+    run(cmd, limit)
 }
 
 /// A picture as page `n` of One PDF, in `work`: upright, on white where it was see-through,
@@ -1152,6 +1477,20 @@ pub struct Control {
 pub enum Edit {
     Crop(Crop),
     Trim(Trim),
+    /// Compress to a Size: at most this many bytes.
+    Size(u64),
+}
+
+/// "2 MB", "1.5 MB", "500 KB", the way Finder counts (1000 bytes to a kilobyte).
+pub fn size_text(bytes: u64) -> String {
+    let (value, unit) = match bytes {
+        0..=999 => return format!("{bytes} bytes"),
+        1_000..=999_999 => (bytes as f64 / 1e3, "KB"),
+        1_000_000..=999_999_999 => (bytes as f64 / 1e6, "MB"),
+        _ => (bytes as f64 / 1e9, "GB"),
+    };
+    let text = if value < 10.0 { format!("{value:.1}") } else { format!("{value:.0}") };
+    format!("{} {unit}", text.trim_end_matches(".0"))
 }
 
 /// A trim chosen in the editor: the part of the file from `start_ms` to `end_ms`.
@@ -2292,6 +2631,39 @@ mod tests {
     }
 
     #[test]
+    fn sizes_read_the_way_finder_counts() {
+        assert_eq!(size_text(999), "999 bytes");
+        assert_eq!(size_text(500_000), "500 KB");
+        assert_eq!(size_text(1_500_000), "1.5 MB");
+        assert_eq!(size_text(2_000_000), "2 MB");
+        assert_eq!(size_text(25_000_000), "25 MB");
+        assert_eq!(size_text(1_200_000_000), "1.2 GB");
+    }
+
+    /// Needs ImageMagick. A noisy picture comes in under the size, named after it.
+    #[test]
+    fn a_picture_comes_in_under_the_size() {
+        let Ok(magick) = magick() else {
+            eprintln!("ImageMagick isn't installed: compress to a size not tested");
+            return;
+        };
+        let work = tempfile::tempdir().unwrap();
+        let photo = work.path().join("noise.jpg");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "800x600", "plasma:", "-quality", "95"]).arg(&photo);
+        run(make, QUICK).unwrap();
+        let limit = fs::metadata(&photo).unwrap().len() / 4;
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(limit)));
+        let out = under(&control, || convert(&photo, "tool:target", None, work.path())).unwrap();
+        assert_eq!(out, work.path().join(format!("noise (under {}).jpg", size_text(limit))));
+        assert!(fs::metadata(&out).unwrap().len() <= limit);
+        // Far too small for any quality: smaller pictures until it fits.
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(3_000)));
+        let tiny = under(&control, || convert(&photo, "tool:target", None, work.path())).unwrap();
+        assert!(fs::metadata(&tiny).unwrap().len() <= 3_000);
+    }
+
+    #[test]
     fn a_trim_must_lie_inside_the_file_and_last_a_tenth_of_a_second() {
         let trim = |start_ms, end_ms| Trim { start_ms, end_ms };
         assert!(trim(0, 10_000).check(10_000).is_ok());
@@ -2578,6 +2950,27 @@ mod tests {
         assert!((0.9..1.1).contains(&length), "{length}");
         assert_eq!(convert(&clip, "tool:trim", None, work.path()).unwrap_err(), "Trim opens its window from the wheel");
 
+        // Join: a second, smaller video without sound goes after the first, fitted into
+        // its size, with silence; the result is one 4-second MP4 at 320x240 with sound.
+        let quiet = work.path().join("quiet.mov");
+        let mut make = Command::new(tool("ffmpeg").unwrap());
+        make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=2", "-c:v", "libx264"]).arg(&quiet);
+        assert!(make.status().unwrap().success());
+        let joined = combine(&[clip.clone(), quiet], "tool:join", None, work.path()).unwrap();
+        assert_eq!(joined, work.path().join("clip (joined).mp4"));
+        let length = media_length(&joined, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((3.8..4.3).contains(&length), "{length}");
+        assert_eq!(streams(&joined), "h264\naac\n");
+        assert_eq!(video_facts(&joined, work.path()).map(|(w, h, _)| (w, h)), Some((320, 240)));
+
+        // Compress to a Size: the 2-second clip under 120 KB, in two passes; and how
+        // small it could go.
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(120_000)));
+        let sized = under(&control, || convert(&clip, "tool:target", None, work.path())).unwrap();
+        assert_eq!(sized, work.path().join("clip (under 120 KB).mp4"));
+        assert!(fs::metadata(&sized).unwrap().len() <= 120_000);
+        assert!(smallest_size(&clip).is_some_and(|least| (30_000..50_000).contains(&least)), "{:?}", smallest_size(&clip));
+
         let small = convert(&clip, "tool:compress", None, work.path()).unwrap();
         assert_eq!(small, work.path().join("clip (compressed).mp4"));
 
@@ -2597,6 +2990,21 @@ mod tests {
         assert!(fs::metadata(&small).unwrap().len() < fs::metadata(&song).unwrap().len());
         assert!(probe(&small).contains("Tune"), "compress keeps the tags");
         assert_eq!(convert(&song, "tool:still", None, work.path()).unwrap_err(), ".mp3 files can't be turned into a picture");
+
+        // Compress to a Size for sound: the bit rate that fits.
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(20_000)));
+        let sized = under(&control, || convert(&song, "tool:target", None, work.path())).unwrap();
+        assert!(fs::metadata(&sized).unwrap().len() <= 20_000);
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(2_000)));
+        assert!(under(&control, || convert(&song, "tool:target", None, work.path())).unwrap_err().contains("too long"));
+
+        // Two sound files joined: one MP3 as long as both. A video can't join them.
+        let joined = combine(&[song.clone(), mono.clone()], "tool:join", None, work.path()).unwrap();
+        assert_eq!(joined, work.path().join("song (joined).mp3"));
+        let length = media_length(&joined, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((3.8..4.3).contains(&length), "{length}");
+        let mixed = combine(&[song.clone(), clip.clone()], "tool:join", None, work.path()).unwrap_err();
+        assert_eq!(mixed, "clip.mp4: only sound files, or only video files, can be joined");
     }
 
     #[test]
