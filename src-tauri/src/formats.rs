@@ -106,13 +106,20 @@ const TOOLS: &[(&str, &[&str])] = &[
     ("tool:split", &["pdf"]),
     ("tool:smaller", &["pdf"]),
     ("tool:still", &["mp4", "mov", "m4v", "mkv", "webm", "avi"]),
+    (
+        "tool:join",
+        &[
+            "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg",
+            "opus", "wma",
+        ],
+    ),
     ("tool:loudness", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
     ("tool:mono", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
 ];
 
 /// A tool that turns the whole drop into one file, instead of working on each file.
 pub fn combines(id: &str) -> bool {
-    matches!(id, "tool:merge" | "tool:onepdf" | "act:zip" | "act:tgz" | "act:tar")
+    matches!(id, "tool:merge" | "tool:onepdf" | "tool:join" | "act:zip" | "act:tgz" | "act:tar")
 }
 
 /// A Tools wheel id ("tool:half") rather than a format.
@@ -137,6 +144,8 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
             exts.iter().all(|e| ins.contains(&e.as_str()))
                 && (!combines(id) || paths.len() > 1)
                 && (!opens_editor(id) || paths.len() == 1)
+                // Join takes sound files or video files, not the two together.
+                && (*id != "tool:join" || exts.iter().all(|e| kind_of(e) == kind_of(&exts[0])))
         })
         .map(|(id, _)| *id)
         .take(MAX_SEGMENTS)
@@ -314,7 +323,9 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:trim", "tool:still"]);
         assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:trim", "tool:still"]);
         assert_eq!(tools_for(&v(&["/tmp/a.mp3"])), ["tool:clean", "tool:trim", "tool:loudness", "tool:mono"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:clean", "tool:loudness", "tool:mono"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:clean", "tool:join", "tool:loudness", "tool:mono"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])), ["tool:compress", "tool:clean", "tool:still", "tool:join"]);
+        // Join takes sound files or video files, not the two together.
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
