@@ -13,6 +13,8 @@ const R_IN = 62;
 const HUB_R = R_IN - 6;
 // How far the segment under the cursor moves out toward it.
 const LIFT = 7;
+// Rounded corners, so each segment reads as a soft bubble.
+const CORNER = 12;
 const NS = 'http://www.w3.org/2000/svg';
 
 // What the hub says over a segment. Anything not listed shows in capitals.
@@ -81,20 +83,51 @@ function sectorPath(i, n) {
     return `M ${C} ${C - R_OUT} A ${R_OUT} ${R_OUT} 0 1 1 ${C} ${C + R_OUT} A ${R_OUT} ${R_OUT} 0 1 1 ${C} ${C - R_OUT} Z ` +
       `M ${C} ${C - R_IN} A ${R_IN} ${R_IN} 0 1 0 ${C} ${C + R_IN} A ${R_IN} ${R_IN} 0 1 0 ${C} ${C - R_IN} Z`;
   }
-  const gap = 0.025;
+  const gap = 0.03;
   const a0 = (i / n) * 2 * Math.PI + gap;
   const a1 = ((i + 1) / n) * 2 * Math.PI - gap;
-  const large = a1 - a0 > Math.PI ? 1 : 0;
-  const [x0, y0] = polar(R_OUT, a0);
-  const [x1, y1] = polar(R_OUT, a1);
-  const [x2, y2] = polar(R_IN, a1);
-  const [x3, y3] = polar(R_IN, a0);
-  return `M ${x0} ${y0} A ${R_OUT} ${R_OUT} 0 ${large} 1 ${x1} ${y1} L ${x2} ${y2} A ${R_IN} ${R_IN} 0 ${large} 0 ${x3} ${y3} Z`;
+  // Each corner is a small circle touching the edge and the ring; a narrow segment
+  // gets smaller corners, so the two at the hub never meet.
+  let rc = CORNER;
+  while (rc > 2 && 2 * Math.asin(rc / (R_IN + rc)) > 0.8 * (a1 - a0)) rc -= 1;
+  const outer = Math.asin(rc / (R_OUT - rc));
+  const inner = Math.asin(rc / (R_IN + rc));
+  const edgeOut = Math.sqrt((R_OUT - rc) ** 2 - rc ** 2);
+  const edgeIn = Math.sqrt((R_IN + rc) ** 2 - rc ** 2);
+  const pt = (r, a) => polar(r, a).map((v) => v.toFixed(2)).join(' ');
+  const large = (span) => (span > Math.PI ? 1 : 0);
+  return [
+    `M ${pt(edgeOut, a0)}`,
+    `A ${rc} ${rc} 0 0 1 ${pt(R_OUT, a0 + outer)}`,
+    `A ${R_OUT} ${R_OUT} 0 ${large(a1 - a0 - 2 * outer)} 1 ${pt(R_OUT, a1 - outer)}`,
+    `A ${rc} ${rc} 0 0 1 ${pt(edgeOut, a1)}`,
+    `L ${pt(edgeIn, a1)}`,
+    `A ${rc} ${rc} 0 0 1 ${pt(R_IN, a1 - inner)}`,
+    `A ${R_IN} ${R_IN} 0 ${large(a1 - a0 - 2 * inner)} 0 ${pt(R_IN, a0 + inner)}`,
+    `A ${rc} ${rc} 0 0 1 ${pt(edgeIn, a0)}`,
+    'Z',
+  ].join(' ');
+}
+
+// The shine every segment and the hub get, as on a bubble lit from above: bright at
+// the top fading out, and a rim that catches the light.
+function sheen() {
+  const defs = el('defs', {});
+  const gradient = (id, stops) => {
+    const g = el('linearGradient', { id, x1: 0, y1: 0, x2: 0, y2: 1 });
+    for (const [offset, cls] of stops) g.append(el('stop', { offset, class: cls }));
+    return g;
+  };
+  defs.append(
+    gradient('sheen', [[0, 'sheen-top'], [0.5, 'sheen-mid'], [1, 'sheen-end']]),
+    gradient('rim', [[0, 'rim-top'], [0.55, 'rim-mid'], [1, 'rim-end']]),
+  );
+  return defs;
 }
 
 // Builds the wheel once per drag; hovering only switches classes, so changes animate.
 function build() {
-  svg.replaceChildren();
+  svg.replaceChildren(sheen());
   // Without the system's glass behind it (Windows), the page draws its own disc.
   svg.append(el('circle', { cx: C, cy: C, r: R_OUT, class: 'disc' }));
   const n = formats.length;
@@ -106,7 +139,8 @@ function build() {
       g.style.setProperty('--dx', `${(LIFT * Math.sin(mid)).toFixed(2)}px`);
       g.style.setProperty('--dy', `${(-LIFT * Math.cos(mid)).toFixed(2)}px`);
     }
-    g.append(el('path', { d: sectorPath(i, n), 'fill-rule': 'evenodd' }));
+    const d = sectorPath(i, n);
+    g.append(el('path', { d, 'fill-rule': 'evenodd', class: 'body' }), el('path', { d, 'fill-rule': 'evenodd', class: 'shine' }));
     const [x, y] = polar((R_OUT + R_IN) / 2, mid);
     const label = el('text', { x, y });
     label.textContent = Object.hasOwn(TOOLS, f) ? TOOLS[f][0] : f.toUpperCase();
@@ -115,9 +149,10 @@ function build() {
     return g;
   });
   hub = el('circle', { cx: C, cy: C, r: HUB_R, class: 'hub' });
+  const hubShine = el('circle', { cx: C, cy: C, r: HUB_R, class: 'shine' });
   // The native file icon sits above the centre; the label goes under it.
   hubLabel = el('text', { x: C, y: C + 28, class: 'hub-label' });
-  svg.append(hub, hubLabel);
+  svg.append(hub, hubShine, hubLabel);
   show({ segment: null, hub: false });
 }
 

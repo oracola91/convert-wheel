@@ -222,7 +222,7 @@ Word's default font since 2023, Aptos, ships inside Word only, and its licence l
 ## How it works
 
 - **Trigger** (`src-tauri/src/trigger.rs`): every 30 ms it reads the drag pasteboard's change count, the mouse buttons and the Shift key. These are shared by the window server, so no permission prompt is needed.
-- **Wheel window** (`src-tauri/src/wheel_window.rs`): the native parts. Frosted glass behind the ring (the system material, so it follows light/dark mode and Reduce Transparency), the dragged file's icon in the middle, placement at the cursor kept inside the screen, and the fade in and out.
+- **Wheel window** (`src-tauri/src/wheel_window.rs`): the native parts. Glass behind the ring: Apple's Liquid Glass on macOS 26 and later, the frosted material before (both follow light/dark mode and Reduce Transparency), the dragged file's icon in the middle, placement at the cursor kept inside the screen, and the fade in and out.
 - **Drop target** (`src-tauri/src/drop_view.rs`): a transparent native view on top of the wheel takes the drop. It shrinks the dragged file to a small icon, tells the page which segment to light up, and queues the conversion.
 - **Formats** (`src-tauri/src/formats.rs`): what each kind of file can become, and which tools the Tools wheel offers for it.
 - **Converter** (`src-tauri/src/convert.rs`): picks the tool and its settings, then places the result safely.
