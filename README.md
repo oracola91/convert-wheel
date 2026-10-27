@@ -66,6 +66,7 @@ For video and audio (with ffmpeg):
 - **First frame** (video): the first frame as a JPEG: "clip (first frame).jpg".
 - **Loudness** (audio): evened out to -16 LUFS with peaks at most -1.5 dB (ffmpeg's loudnorm), at the file's own sample rate, tags kept.
 - **Mono** (audio): both channels mixed into one.
+- **Compress** (MP3, M4A, AAC, Ogg, Opus, WMA, FLAC): the same format at a lower bit rate (MP3, M4A and WMA 96k, Ogg and Opus 64k), tags kept; FLAC stays lossless at its strongest packing. Not saved if it isn't smaller. WAV and AIFF have nothing to compress with.
 
 Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland the keyboard shortcut opens only the Formats wheel for now.
 
