@@ -94,6 +94,13 @@ const TOOLS: &[(&str, &[&str])] = &[
     ),
     ("tool:rotate", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     ("tool:crop", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    (
+        "tool:trim",
+        &[
+            "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg",
+            "opus", "wma",
+        ],
+    ),
     ("tool:onepdf", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:merge", &["pdf"]),
     ("tool:split", &["pdf"]),
@@ -138,7 +145,7 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 
 /// A tool that first opens the editing window (one file at a time) instead of running.
 pub fn opens_editor(id: &str) -> bool {
-    id == "tool:crop"
+    matches!(id, "tool:crop" | "tool:trim")
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
@@ -303,8 +310,10 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.bmp"])), ["tool:half", "tool:rotate", "tool:crop"]);
         assert!(tools_for(&v(&["/tmp/a.gif"])).is_empty());
         assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:onepdf"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:still"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:still"]);
+        // Trim opens a window for one file.
+        assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:trim", "tool:still"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:trim", "tool:still"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3"])), ["tool:clean", "tool:trim", "tool:loudness", "tool:mono"]);
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:clean", "tool:loudness", "tool:mono"]);
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());

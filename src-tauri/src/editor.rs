@@ -1,6 +1,7 @@
-//! The editing window some tools open first, Crop for now: the picture with a box to
-//! drag, turned a quarter at a time, then Crop or Cancel. The page only sends numbers
-//! back; which file they apply to stays here, so the page can never name one.
+//! The editing window some tools open first: Crop (the picture with a box to drag,
+//! turned a quarter at a time) and Trim (a sound's or video's loudness and frames, with
+//! a start and an end to drag). The page only sends numbers back; which file they
+//! apply to stays here, so the page can never name one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -10,12 +11,12 @@ use base64::Engine;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
-use crate::convert::{self, Crop};
+use crate::convert::{self, Crop, Edit, Trim};
 use crate::{converters, log, notify};
 
 const LABEL: &str = "editor";
 
-/// The picture being edited, from opening the window to Crop or Cancel.
+/// The file being edited, from opening the window to the tool's button or Cancel.
 #[derive(Default)]
 pub struct Editing(Mutex<Option<Session>>);
 
@@ -25,51 +26,91 @@ impl Editing {
     }
 }
 
-/// What the page needs to draw the picture.
+/// What the page needs: the file's name and what to draw.
 #[derive(Clone, Serialize)]
 pub struct Session {
     #[serde(skip)]
     path: PathBuf,
-    /// The file's name, for the window.
     name: String,
-    /// The picture's size upright, in pixels: the box comes back in these.
-    width: u32,
-    height: u32,
-    /// A JPEG of it, at most 1400 pixels across, as a data: URL.
-    preview: String,
+    #[serde(flatten)]
+    view: View,
 }
 
-/// Opens the editor on one picture. Making its preview takes a moment, so that happens
-/// on a thread of its own and the window opens once it is ready.
-pub fn open(app: &AppHandle, paths: Vec<String>) {
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum View {
+    /// The picture's size upright, in pixels (the box comes back in these), and a JPEG
+    /// of it, at most 1400 pixels across, as a data: URL.
+    Crop { width: u32, height: u32, preview: String },
+    /// The length (the times come back in milliseconds), the loudness along it, and for
+    /// a video eight frames; the sound as a small MP3 to play, when not too long.
+    Trim { length_ms: u64, peaks: Vec<u8>, strip: Option<String>, sound: Option<String> },
+}
+
+impl View {
+    fn page(&self) -> &'static str {
+        match self {
+            View::Crop { .. } => "editor.html",
+            View::Trim { .. } => "trim.html",
+        }
+    }
+
+    fn title(&self, name: &str) -> String {
+        match self {
+            View::Crop { .. } => format!("Crop: {name}"),
+            View::Trim { .. } => format!("Trim: {name}"),
+        }
+    }
+}
+
+fn data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// Opens the editor for `tool` on one file. Reading the file for it takes a moment, so
+/// that happens on a thread of its own and the window opens once it is ready.
+pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "Crop takes one picture at a time", "Drag a single picture onto Crop.");
+        notify(app, "One file at a time", "Crop and Trim open one file: drag just one onto them.");
         return;
     };
-    let (app, path) = (app.clone(), PathBuf::from(path));
-    thread::spawn(move || match convert::preview(&path) {
-        Ok((width, height, jpeg)) => {
-            let name = file_name(&path);
-            let preview = format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(jpeg));
-            *app.state::<Editing>().lock() = Some(Session { path, name: name.clone(), width, height, preview });
-            let handle = app.clone();
-            let _ = app.run_on_main_thread(move || show_window(&handle, &format!("Crop: {name}")));
-        }
-        Err(e) => {
-            log::line(&format!("couldn't open {} in the editor: {e}", file_name(&path)));
-            notify(&app, "Couldn't open the picture", &converters::offer(&app, e));
+    let (app, path, crop) = (app.clone(), PathBuf::from(path), tool == "tool:crop");
+    thread::spawn(move || {
+        let view = if crop {
+            convert::preview(&path)
+                .map(|(width, height, jpeg)| View::Crop { width, height, preview: data_url("image/jpeg", &jpeg) })
+        } else {
+            convert::media_preview(&path).map(|m| View::Trim {
+                length_ms: m.length_ms,
+                peaks: m.peaks,
+                strip: m.strip.map(|jpeg| data_url("image/jpeg", &jpeg)),
+                sound: m.sound.map(|mp3| data_url("audio/mpeg", &mp3)),
+            })
+        };
+        match view {
+            Ok(view) => {
+                let name = file_name(&path);
+                let (page, title) = (view.page(), view.title(&name));
+                *app.state::<Editing>().lock() = Some(Session { path, name, view });
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || show_window(&handle, page, &title));
+            }
+            Err(e) => {
+                log::line(&format!("couldn't open {} in the editor: {e}", file_name(&path)));
+                notify(&app, "Couldn't open the file", &converters::offer(&app, e));
+            }
         }
     });
 }
 
-/// Shows the editor window, or reloads it for the new picture if it is open already.
-fn show_window(app: &AppHandle, title: &str) {
+/// Shows the editor window on `page`, or moves the open one there for the new file.
+fn show_window(app: &AppHandle, page: &str, title: &str) {
     let window = match app.get_webview_window(LABEL) {
         Some(window) => {
-            let _ = window.eval("location.reload()");
+            let _ = window.eval(format!("location.replace('{page}')"));
             window
         }
-        None => match WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("editor.html".into()))
+        None => match WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(page.into()))
             .title(title)
             .inner_size(780.0, 620.0)
             .min_inner_size(560.0, 460.0)
@@ -105,6 +146,21 @@ fn file_name(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// Takes the session if it is for the tool `check` accepts, then queues the job.
+fn finish(app: &AppHandle, editing: &Editing, tool: &str, check: impl FnOnce(&View) -> Result<Edit, String>) -> Result<(), String> {
+    let mut session = editing.lock();
+    let Some(current) = session.as_ref() else {
+        return Err("nothing to do: drag the file onto the wheel again".into());
+    };
+    let edit = check(&current.view)?;
+    let path = current.path.to_string_lossy().into_owned();
+    *session = None;
+    drop(session);
+    close_window(app);
+    crate::enqueue_edit(app, path, tool, edit);
+    Ok(())
+}
+
 /// The page asks what to show when it loads.
 #[tauri::command]
 pub fn editor_session(editing: State<Editing>) -> Option<Session> {
@@ -114,17 +170,19 @@ pub fn editor_session(editing: State<Editing>) -> Option<Session> {
 /// Crop: checks the box against the picture and queues the job.
 #[tauri::command]
 pub fn editor_apply(app: AppHandle, editing: State<Editing>, crop: Crop) -> Result<(), String> {
-    let mut session = editing.lock();
-    let Some(current) = session.as_ref() else {
-        return Err("nothing to crop: drag the picture onto Crop again".into());
-    };
-    crop.check(current.width, current.height)?;
-    let path = current.path.to_string_lossy().into_owned();
-    *session = None;
-    drop(session);
-    close_window(&app);
-    crate::enqueue_crop(&app, path, crop);
-    Ok(())
+    finish(&app, &editing, "tool:crop", |view| match view {
+        View::Crop { width, height, .. } => crop.check(*width, *height).map(|()| Edit::Crop(crop)),
+        View::Trim { .. } => Err("this window trims, it doesn't crop".into()),
+    })
+}
+
+/// Trim: checks the times against the file's length and queues the job.
+#[tauri::command]
+pub fn editor_trim(app: AppHandle, editing: State<Editing>, trim: Trim) -> Result<(), String> {
+    finish(&app, &editing, "tool:trim", |view| match view {
+        View::Trim { length_ms, .. } => trim.check(*length_ms).map(|()| Edit::Trim(trim)),
+        View::Crop { .. } => Err("this window crops, it doesn't trim".into()),
+    })
 }
 
 #[tauri::command]
