@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Crop</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="editor.js" defer></script>
+</head>
+<body>
+  <main>
+    <div id="stage">
+      <canvas id="photo" role="img" aria-label="The picture"></canvas>
+      <div id="box" tabindex="0" role="group" aria-label="Crop box: drag it, or its corners and sides; arrow keys move it">
+        <span class="grid"></span>
+        <span class="handle" data-edge="nw"></span>
+        <span class="handle" data-edge="n"></span>
+        <span class="handle" data-edge="ne"></span>
+        <span class="handle" data-edge="e"></span>
+        <span class="handle" data-edge="se"></span>
+        <span class="handle" data-edge="s"></span>
+        <span class="handle" data-edge="sw"></span>
+        <span class="handle" data-edge="w"></span>
+      </div>
+      <p id="message" hidden></p>
+    </div>
+    <footer>
+      <div class="group" role="group" aria-label="Shape">
+        <button type="button" data-ratio="free" aria-pressed="true">Free</button>
+        <button type="button" data-ratio="original" aria-pressed="false">Original</button>
+        <button type="button" data-ratio="1" aria-pressed="false">Square</button>
+        <button type="button" data-ratio="1.3333333" aria-pressed="false">4:3</button>
+        <button type="button" data-ratio="1.5" aria-pressed="false">3:2</button>
+        <button type="button" data-ratio="1.7777778" aria-pressed="false">16:9</button>
+      </div>
+      <div class="group" role="group" aria-label="Turn">
+        <button type="button" id="left" title="Turn left" aria-label="Turn left">↺</button>
+        <button type="button" id="right" title="Turn right" aria-label="Turn right">↻</button>
+      </div>
+      <output id="size" aria-live="polite"></output>
+      <div class="end">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="button" id="apply" class="primary">Crop</button>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>

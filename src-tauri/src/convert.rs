@@ -304,6 +304,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:still" => "first frame",
         "tool:loudness" => "even loudness",
         "tool:mono" => "mono",
+        "tool:crop" => "cropped",
         _ => "changed",
     }
 }
@@ -322,6 +323,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:still" => "turned into a picture",
         "tool:loudness" => "evened out",
         "tool:mono" => "mixed down to mono",
+        "tool:crop" => "cropped",
         _ => "changed",
     }
 }
@@ -423,6 +425,13 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
         // IPTC), and comments.
         "tool:clean" => cmd.args(["+profile", "!icc,*", "+set", "comment"]),
         "tool:rotate" => cmd.args(["-rotate", "90"]),
+        "tool:crop" => {
+            let crop = control().and_then(|c| c.crop).ok_or("Crop opens its window from the wheel")?;
+            if crop.turns > 0 {
+                cmd.args(["-rotate", &(90 * u32::from(crop.turns)).to_string()]);
+            }
+            cmd.args(["-crop", &format!("{}x{}+{}+{}", crop.width, crop.height, crop.x, crop.y), "+repage"])
+        }
         other => return Err(format!("unknown tool {other}")),
     };
     // Written again, a lossy picture should look and weigh about the same. JPEG keeps
@@ -1109,6 +1118,36 @@ pub struct Control {
     percent: AtomicU8,
     /// The quality levels chosen in the menu when the drop started.
     quality: Quality,
+    /// The box chosen in the editor, for Crop.
+    crop: Option<Crop>,
+}
+
+/// A crop chosen in the editor: the picture, upright, is turned `turns` quarter turns
+/// clockwise, then cut to the box, given in pixels of the turned picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Crop {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub turns: u8,
+}
+
+impl Crop {
+    /// The box lies inside a picture of `width` x `height` (upright) once it is turned.
+    pub fn check(&self, width: u32, height: u32) -> Result<(), String> {
+        let (w, h) = if self.turns % 2 == 1 { (height, width) } else { (width, height) };
+        let inside = self.turns < 4
+            && self.width > 0
+            && self.height > 0
+            && self.x.checked_add(self.width).is_some_and(|right| right <= w)
+            && self.y.checked_add(self.height).is_some_and(|bottom| bottom <= h);
+        if inside {
+            Ok(())
+        } else {
+            Err("the crop box is outside the picture".into())
+        }
+    }
 }
 
 const NO_PERCENT: u8 = u8::MAX;
@@ -1116,11 +1155,12 @@ const NO_PERCENT: u8 = u8::MAX;
 impl Control {
     #[cfg(test)]
     pub fn new() -> Arc<Self> {
-        Self::with_quality(Quality::default())
+        Self::with_edit(Quality::default(), None)
     }
 
-    pub fn with_quality(quality: Quality) -> Arc<Self> {
-        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT), quality })
+    /// A drop's control: the menu's quality, and for Crop the box from the editor.
+    pub fn with_edit(quality: Quality, crop: Option<Crop>) -> Arc<Self> {
+        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT), quality, crop })
     }
 
     /// Ends the tool running now, with everything it started, and keeps the drop from
@@ -1444,6 +1484,29 @@ fn extra_tool_dirs() -> Vec<PathBuf> {
 
 /// ImageMagick 7 is `magick`. Linux distributions that still ship ImageMagick 6 call
 /// it `convert`, with the same options. (On Windows `convert` is a disk tool, so no.)
+/// For the editor: the picture's size upright, in pixels, and a JPEG of it, upright
+/// too, at most 1400 pixels across and on white where it is see-through.
+pub fn preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    let work = tempfile::tempdir().map_err(|e| format!("work folder: {e}"))?;
+    let (jpeg, size) = (work.path().join("preview.jpg"), work.path().join("size.txt"));
+    let mut cmd = Command::new(magick()?);
+    cmd.args(IMAGE_LIMITS)
+        .arg(format!("{coder}:{}[0]", src.display()))
+        .args(["-auto-orient", "-format", "%w %h", "-write"])
+        .arg(format!("info:{}", size.display()))
+        .args(["-background", "white", "-flatten", "-resize", "1400x1400>", "-quality", "85"])
+        .arg(format!("jpeg:{}", jpeg.display()));
+    run(cmd, QUICK)?;
+    let size = fs::read_to_string(&size).unwrap_or_default();
+    let mut numbers = size.split_whitespace().map(|n| n.parse::<u32>().ok());
+    let (Some(Some(width)), Some(Some(height))) = (numbers.next(), numbers.next()) else {
+        return Err("ImageMagick didn't say how big the picture is".into());
+    };
+    let bytes = fs::read(&jpeg).map_err(|e| format!("work file: {e}"))?;
+    Ok((width, height, bytes))
+}
+
 fn magick() -> Result<PathBuf, String> {
     tool("magick").or_else(|e| if cfg!(target_os = "linux") { tool("convert").map_err(|_| e) } else { Err(e) })
 }
@@ -2021,6 +2084,44 @@ mod tests {
     }
 
     #[test]
+    fn a_crop_box_must_lie_inside_the_turned_picture() {
+        let crop = |x, y, width, height, turns| Crop { x, y, width, height, turns };
+        assert!(crop(0, 0, 300, 200, 0).check(300, 200).is_ok());
+        assert!(crop(1, 0, 300, 200, 0).check(300, 200).is_err(), "one pixel too far right");
+        // Turned a quarter, a 300 x 200 picture is 200 x 300.
+        assert!(crop(0, 0, 200, 300, 1).check(300, 200).is_ok());
+        assert!(crop(0, 0, 300, 200, 1).check(300, 200).is_err());
+        assert!(crop(0, 0, 0, 10, 0).check(300, 200).is_err(), "empty");
+        assert!(crop(0, 0, 10, 10, 4).check(300, 200).is_err(), "turns are 0 to 3");
+        assert!(crop(u32::MAX, 0, 10, 10, 0).check(300, 200).is_err(), "no overflow");
+    }
+
+    /// Needs ImageMagick. The editor's box, turned and cut, and its preview's size.
+    #[test]
+    fn crop_turns_then_cuts_the_box() {
+        let Ok(magick) = magick() else {
+            eprintln!("ImageMagick isn't installed: crop not tested");
+            return;
+        };
+        let work = tempfile::tempdir().unwrap();
+        let wide = work.path().join("wide.png");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "300x200", "gradient:red-blue"]).arg(&wide);
+        run(make, QUICK).unwrap();
+        assert_eq!(preview(&wide).map(|(w, h, jpeg)| (w, h, jpeg.starts_with(&[0xFF, 0xD8]))), Ok((300, 200, true)));
+
+        let crop = Crop { x: 10, y: 20, width: 150, height: 120, turns: 1 };
+        let control = Control::with_edit(Quality::default(), Some(crop));
+        let out = under(&control, || convert(&wide, "tool:crop", None, work.path())).unwrap();
+        assert_eq!(out, work.path().join("wide (cropped).png"));
+        let mut size = Command::new(&magick);
+        let size = size.arg("identify").args(["-format", "%w %h"]).arg(&out).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&size.stdout), "150 120");
+        // Without the editor there is no box to cut.
+        assert_eq!(convert(&wide, "tool:crop", None, work.path()).unwrap_err(), "Crop opens its window from the wheel");
+    }
+
+    #[test]
     fn image_tools_keep_the_format_and_name_the_result() {
         if magick().is_err() {
             eprintln!("ImageMagick isn't installed: image tools not tested");
@@ -2300,7 +2401,7 @@ mod tests {
         make.args(["-size", "200x200", "-seed", "3", "plasma:fractal"]).arg(&src);
         assert!(make.status().unwrap().success());
         let size_at = |pictures: Level| {
-            let control = Control::with_quality(Quality { pictures, ..Quality::default() });
+            let control = Control::with_edit(Quality { pictures, ..Quality::default() }, None);
             let out = under(&control, || convert(&src, "jpg", None, work.path())).unwrap();
             fs::metadata(out).unwrap().len()
         };
