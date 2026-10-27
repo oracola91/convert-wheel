@@ -306,6 +306,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:mono" => "mono",
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
+        "tool:join" => "joined",
         _ => "changed",
     }
 }
@@ -326,6 +327,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:mono" => "mixed down to mono",
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
+        "tool:join" => "joined",
         _ => "changed",
     }
 }
@@ -601,27 +603,39 @@ fn copy_streams(src: &Path, extra: &[&str], out: &Path) -> bool {
 /// Media 8 with WMA (WMV), at most 1920 wide. H.264 in yuv420p needs even width and
 /// height; phone and screen recordings often aren't, so round down by a pixel there.
 fn video_encode(target: &str) -> Option<Vec<&'static str>> {
+    let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND];
+    match target {
+        "mp4" | "mov" | "m4v" | "mkv" => args.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]),
+        "avi" | "wmv" => args.extend(["-vf", FIT_HD]),
+        _ => {}
+    }
+    args.extend(video_codec(target)?);
+    Some(args)
+}
+
+/// The encoders of `video_encode`, without the streams and the picture's fit: for
+/// Join, which builds those itself.
+fn video_codec(target: &str) -> Option<Vec<&'static str>> {
     let level = quality().video;
     // MPEG-4 Part 2 and Windows Media 8 take a fixed quantiser: lower is better.
     let quantiser = level.pick("5", "3", "2");
-    let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND];
-    match target {
+    Some(match target {
         "mp4" | "mov" | "m4v" | "mkv" => {
-            args.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264", "-preset", "medium"]);
-            args.extend(["-crf", level.pick("26", "20", "17"), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
+            let mut args = vec!["-c:v", "libx264", "-preset", "medium", "-crf", level.pick("26", "20", "17")];
+            args.extend(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
             if target != "mkv" {
                 args.extend(["-movflags", "+faststart"]);
             }
+            args
         }
-        "webm" => {
-            args.extend(["-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0", "-deadline", "good"]);
-            args.extend(["-cpu-used", "4", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k"]);
-        }
-        "avi" => args.extend(["-vf", FIT_HD, "-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4"]),
-        "wmv" => args.extend(["-vf", FIT_HD, "-c:v", "wmv2", "-q:v", quantiser, "-c:a", "wmav2", "-b:a", "192k"]),
+        "webm" => vec![
+            "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0", "-deadline", "good", "-cpu-used", "4",
+            "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
+        ],
+        "avi" => vec!["-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4"],
+        "wmv" => vec!["-c:v", "wmv2", "-q:v", quantiser, "-c:a", "wmav2", "-b:a", "192k"],
         _ => return None,
-    }
-    Some(args)
+    })
 }
 
 fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
@@ -888,6 +902,7 @@ fn combine_words(tool_id: &str) -> Option<(&'static str, &'static str)> {
     match tool_id {
         "tool:merge" => Some(("Merge needs two PDFs or more", "only PDFs can be merged")),
         "tool:onepdf" => Some(("One PDF needs two pictures or more", "only pictures can go into one PDF")),
+        "tool:join" => Some(("Join needs two files or more", "only sound files, or only video files, can be joined")),
         _ => None,
     }
 }
@@ -902,6 +917,9 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
     let [first, _, ..] = srcs else {
         return Err(too_few.into());
     };
+    if target == "tool:join" {
+        return join_media(srcs, only, save_in, fallback);
+    }
     let pictures = target == "tool:onepdf";
     if pictures && srcs.len() > MAX_PICTURES {
         return Err(format!("One PDF takes up to {MAX_PICTURES} pictures"));
@@ -956,17 +974,155 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
         let what = if pictures { "pictures" } else { "PDFs" };
         return Err(format!("MuPDF couldn't read one of the {what}"));
     }
+    place_combined(&out, first, target, "pdf", save_in, fallback)
+}
+
+/// Puts the one result of a drop next to its first file, named after it ("report
+/// (merged).pdf"), or in Downloads when that folder can't be written to.
+fn place_combined(out: &Path, first: &Path, target: &str, ext: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
     let stem = first.file_stem().and_then(|s| s.to_str()).ok_or("the file name is not valid text")?;
     let stem = format!("{stem} ({})", tool_suffix(target));
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
         None => first.parent().ok_or("the file has no folder")?.to_path_buf(),
     };
-    let placed = match place(&out, &dir, &stem, "pdf") {
-        Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| place(&out, fallback, &stem, "pdf")),
+    let placed = match place(out, &dir, &stem, ext) {
+        Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| place(out, fallback, &stem, ext)),
         other => other,
     };
     placed.map_err(|e| format!("can't save the result: {e}"))
+}
+
+/// Join takes at most this many files.
+const MAX_JOIN: usize = 50;
+
+/// The Tools wheel's Join: sound files, or video files, one after another in the order
+/// dropped, as one file in the first one's format: "clip (joined).mp4". Every part is
+/// read and encoded again, so different formats, sizes and rates fit together: videos
+/// take the first one's size (the others fitted inside it, with bars) and frame rate,
+/// sound becomes 48 kHz stereo, and a video without sound gets silence for its length.
+fn join_media(srcs: &[PathBuf], only: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
+    let first = &srcs[0];
+    let own = formats::canonical(&formats::extension(first).unwrap_or_default()).to_string();
+    let video = formats::kind_of(&own) == Some(Kind::Video);
+    if srcs.len() > MAX_JOIN {
+        return Err(format!("Join takes up to {MAX_JOIN} files"));
+    }
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let (width, height, rate) = if video {
+        let (w, h, rate) = video_facts(first, work.path()).ok_or("ffprobe couldn't read the first video")?;
+        let (w, h) = join_size(w, h, &own);
+        (w, h, rate)
+    } else {
+        (0, 0, 0.0)
+    };
+    let mut graph = String::new();
+    let mut parts = String::new();
+    for (i, src) in srcs.iter().enumerate() {
+        let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let fail = |e: &str| format!("{name}: {e}");
+        let ext = formats::extension(src).unwrap_or_default();
+        if !formats::tool_takes("tool:join", &ext) || (formats::kind_of(&ext) == Some(Kind::Video)) != video {
+            return Err(fail(only));
+        }
+        if !fs::metadata(src).is_ok_and(|m| m.is_file()) {
+            return Err(fail("this is not a regular file"));
+        }
+        let sound = format!("aresample=48000,aformat=channel_layouts=stereo[a{i}];");
+        if video {
+            graph += &format!(
+                "[{i}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,\
+                 pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={rate:.3},format=yuv420p[v{i}];"
+            );
+            if has_sound(src, work.path()) {
+                graph += &format!("[{i}:a:0]{sound}");
+            } else {
+                let length = media_length(src, &work.path().join("probe")).ok_or_else(|| fail("ffprobe couldn't tell how long this file is"))?;
+                graph += &format!("anullsrc=r=48000:cl=stereo,atrim=duration={:.3},{sound}", length.as_secs_f64());
+            }
+            parts += &format!("[v{i}][a{i}]");
+        } else {
+            graph += &format!("[{i}:a:0]{sound}");
+            parts += &format!("[a{i}]");
+        }
+    }
+    let joined = if video { "[v][a]" } else { "[a]" };
+    graph += &format!("{parts}concat=n={}:v={}:a=1{joined}", srcs.len(), u8::from(video));
+    let out = work.path().join(format!("joined.{own}"));
+    let mut args = vec!["-filter_complex", graph.as_str()];
+    if video {
+        args.extend(["-map", "[v]", "-map", "[a]"]);
+        args.extend(video_codec(&own).ok_or_else(|| format!("{} files can't be joined", own.to_uppercase()))?);
+    } else {
+        args.extend(["-map", "[a]"]);
+        args.extend(audio_args(&own));
+    }
+    ffmpeg_many(srcs, &args, &out, if video { VIDEO } else { AUDIO }).map_err(|e| redact(&e, first, work.path()))?;
+    place_combined(&out, first, "tool:join", &own, save_in, fallback)
+}
+
+/// Join's picture size: the first video's, in even numbers, and for AVI and WMV at most
+/// 1920 on the long side, like their conversions.
+fn join_size(width: u32, height: u32, target: &str) -> (u32, u32) {
+    let long = width.max(height).max(1);
+    let scale = if matches!(target, "avi" | "wmv") && long > 1920 { 1920.0 / f64::from(long) } else { 1.0 };
+    let even = |n: u32| ((f64::from(n) * scale) as u32 / 2 * 2).max(2);
+    (even(width), even(height))
+}
+
+/// The first video stream's size as it is shown (turned by its rotation) and its frame
+/// rate (30 when it can't be told).
+fn video_facts(src: &Path, work: &Path) -> Option<(u32, u32, f64)> {
+    let answer = work.join("video.txt");
+    let mut cmd = Command::new(tool("ffprobe").ok()?);
+    cmd.args(["-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-select_streams", "v:0"])
+        .args(["-show_entries", "stream=width,height,avg_frame_rate:stream_side_data=rotation"])
+        .args(["-of", "default=noprint_wrappers=1", "-o"])
+        .arg(format!("file:{}", answer.display()))
+        .arg(format!("file:{}", src.display()));
+    run(cmd, QUICK).ok()?;
+    let text = fs::read_to_string(&answer).ok()?;
+    let value = |key: &str| text.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('='));
+    let (width, height): (u32, u32) = (value("width")?.parse().ok()?, value("height")?.parse().ok()?);
+    let turned = value("rotation").and_then(|r| r.parse::<i32>().ok()).is_some_and(|r| r.rem_euclid(180) == 90);
+    let rate = value("avg_frame_rate")
+        .and_then(|r| {
+            let (n, d) = r.split_once('/')?;
+            let (n, d): (f64, f64) = (n.parse().ok()?, d.parse().ok()?);
+            (d > 0.0).then(|| n / d)
+        })
+        .filter(|r| r.is_finite() && *r > 0.0 && *r <= 240.0)
+        .unwrap_or(30.0);
+    Some(if turned { (height, width, rate) } else { (width, height, rate) })
+}
+
+/// Whether a file has a sound track.
+fn has_sound(src: &Path, work: &Path) -> bool {
+    let answer = work.join("sound.txt");
+    let Ok(ffprobe) = tool("ffprobe") else {
+        return false;
+    };
+    let mut cmd = Command::new(ffprobe);
+    cmd.args(["-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-select_streams", "a"])
+        .args(["-show_entries", "stream=index", "-of", "csv=p=0", "-o"])
+        .arg(format!("file:{}", answer.display()))
+        .arg(format!("file:{}", src.display()));
+    run(cmd, QUICK).is_ok() && fs::read_to_string(&answer).is_ok_and(|text| !text.trim().is_empty())
+}
+
+/// ffmpeg with several inputs, each locked down like `ffmpeg`'s one.
+fn ffmpeg_many(srcs: &[PathBuf], args: &[&str], out: &Path, limit: Duration) -> Result<(), String> {
+    let mut cmd = Command::new(tool("ffmpeg")?);
+    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
+    for src in srcs {
+        cmd.args(["-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-i"])
+            .arg(format!("file:{}", src.display()));
+    }
+    cmd.args(args).arg(out);
+    run(cmd, limit)
 }
 
 /// A picture as page `n` of One PDF, in `work`: upright, on white where it was see-through,
@@ -2462,6 +2618,19 @@ mod tests {
         assert!((0.9..1.1).contains(&length), "{length}");
         assert_eq!(convert(&clip, "tool:trim", None, work.path()).unwrap_err(), "Trim opens its window from the wheel");
 
+        // Join: a second, smaller video without sound goes after the first, fitted into
+        // its size, with silence; the result is one 4-second MP4 at 320x240 with sound.
+        let quiet = work.path().join("quiet.mov");
+        let mut make = Command::new(tool("ffmpeg").unwrap());
+        make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=2", "-c:v", "libx264"]).arg(&quiet);
+        assert!(make.status().unwrap().success());
+        let joined = combine(&[clip.clone(), quiet], "tool:join", None, work.path()).unwrap();
+        assert_eq!(joined, work.path().join("clip (joined).mp4"));
+        let length = media_length(&joined, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((3.8..4.3).contains(&length), "{length}");
+        assert_eq!(streams(&joined), "h264\naac\n");
+        assert_eq!(video_facts(&joined, work.path()).map(|(w, h, _)| (w, h)), Some((320, 240)));
+
         let small = convert(&clip, "tool:compress", None, work.path()).unwrap();
         assert_eq!(small, work.path().join("clip (compressed).mp4"));
 
@@ -2477,6 +2646,14 @@ mod tests {
         let mono = convert(&song, "tool:mono", None, work.path()).unwrap();
         assert!(probe(&mono).contains("channels=1"), "{}", probe(&mono));
         assert_eq!(convert(&song, "tool:still", None, work.path()).unwrap_err(), ".mp3 files can't be turned into a picture");
+
+        // Two sound files joined: one MP3 as long as both. A video can't join them.
+        let joined = combine(&[song.clone(), mono.clone()], "tool:join", None, work.path()).unwrap();
+        assert_eq!(joined, work.path().join("song (joined).mp3"));
+        let length = media_length(&joined, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((3.8..4.3).contains(&length), "{length}");
+        let mixed = combine(&[song.clone(), clip.clone()], "tool:join", None, work.path()).unwrap_err();
+        assert_eq!(mixed, "clip.mp4: only sound files, or only video files, can be joined");
     }
 
     #[test]
