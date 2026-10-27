@@ -32,7 +32,7 @@ This is our own build, written from scratch. The idea comes from what the paid T
 | PDF | JPG, PNG (a picture of each page), TXT, DOCX (the text only) | MuPDF (`mutool`); pandoc for DOCX |
 | Subtitles: SRT, VTT | SRT, VTT | ffmpeg |
 
-An icon (ICO) holds the picture at 256, 128, 64, 48, 32 and 16 pixels, fitted into a square with see-through edges rather than stretched. MKV is a fast copy of the streams when they fit, H.264 otherwise; AVI is MPEG-4 Part 2 (what Xvid makes) with MP3, and WMV is Windows Media 8 with WMA, for older players. Pages, Numbers and Keynote files go through LibreOffice, which reads them; a file saved as a package folder (older versions) is refused: save it as a single file. Subtitles should be UTF-8.
+An icon (ICO) holds the picture at 256, 128, 64, 48, 32 and 16 pixels, fitted into a square with see-through edges rather than stretched. MKV is a fast copy of the streams when they fit, H.264 otherwise; AVI is MPEG-4 Part 2 (what Xvid makes) with MP3, and WMV is Windows Media 8 with WMA, for older players, at most 1920 pixels on the long side. Pages, Numbers and Keynote files go through LibreOffice, which reads them; a file saved as a package folder (older versions) is refused: save it as a single file. Subtitles should be UTF-8.
 
 The wheel only shows formats that every dragged file can become. The new file lands next to the original. If the name is taken it becomes `name 2.ext`, `name 3.ext` and so on. Nothing is ever overwritten.
 
@@ -44,7 +44,7 @@ A notification says when a drop is done or why it failed. A click on it opens th
 
 Hold Option as well as Shift while dragging (Alt+Shift on Windows and on Linux with X11) and a second wheel opens: what can be done to the file while it keeps its format. The result goes next to the original, named after the tool ("photo (half size).jpg"), and never replaces it. For pictures (JPEG, PNG, HEIC, WebP, AVIF and TIFF; BMP gets Half Size and Rotate only; animated GIFs none):
 
-- **Compress**: JPEG at quality 70; HEIC, WebP and AVIF at 55; PNG down to 256 colours (dithered); TIFF with lossless ZIP. A result that isn't smaller is not saved, and the notification says so.
+- **Compress**: JPEG at quality 70; WebP and AVIF at 55, HEIC at 45 (its numbers run higher); PNG down to 256 colours (dithered); TIFF with lossless ZIP. A result that isn't smaller is not saved, and the notification says so.
 - **Half size**: half the width and height.
 - **Remove metadata**: takes out EXIF (camera, date, location), XMP, IPTC and comments, and keeps the colour profile. The picture is turned upright first, so it looks the same without the EXIF turn.
 - **Rotate**: a quarter turn clockwise.
