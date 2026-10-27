@@ -138,6 +138,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
 
     let file = |done: Result<(), String>| done.map(|()| Output::File);
     let converted = match (tool, kind) {
+        (Some("tool:qr"), Kind::Image) => file(read_qr(&input, &out, work.path())),
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
@@ -304,6 +305,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:still" => "first frame",
         "tool:loudness" => "even loudness",
         "tool:mono" => "mono",
+        "tool:qr" => "QR code",
         _ => "changed",
     }
 }
@@ -322,14 +324,17 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:still" => "turned into a picture",
         "tool:loudness" => "evened out",
         "tool:mono" => "mixed down to mono",
+        "tool:qr" => "read for QR codes",
         _ => "changed",
     }
 }
 
-/// The format a tool's result is in: the file's own, except First Frame's picture.
+/// The format a tool's result is in: the file's own, except First Frame's picture and
+/// a QR code's text.
 fn tool_out_ext(tool_id: &str, ext: &str) -> String {
     match tool_id {
         "tool:still" => "jpg".into(),
+        "tool:qr" => "txt".into(),
         _ => formats::canonical(ext).into(),
     }
 }
@@ -351,6 +356,21 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             let streams: &[&str] = if video { &["-map", "0:v", "-map", "0:a?"] } else { &["-map", "0:a"] };
             let mut args = streams.to_vec();
             args.extend(["-map_metadata", "-1", "-map_chapters", "-1", "-c", "copy", "-fflags", "+bitexact"]);
+            ffmpeg(src, &args, out, AUDIO)
+        }
+        // Sound in its own format at a lower bit rate than even the menu's Smaller
+        // Files; FLAC, being lossless, only at its strongest packing.
+        "tool:compress" if !video => {
+            let codec: &[&str] = match own {
+                "mp3" => &["-c:a", "libmp3lame", "-b:a", "96k"],
+                "m4a" | "aac" => &["-c:a", "aac", "-b:a", "96k"],
+                "ogg" | "opus" => &["-c:a", "libopus", "-b:a", "64k"],
+                "wma" => &["-c:a", "wmav2", "-b:a", "96k"],
+                "flac" => &["-c:a", "flac", "-compression_level", "12"],
+                other => return Err(format!("{} files can't be compressed", other.to_uppercase())),
+            };
+            let mut args = vec!["-map", "0:a:0", "-map_metadata", "0"];
+            args.extend(codec);
             ffmpeg(src, &args, out, AUDIO)
         }
         "tool:compress" => {
@@ -1444,6 +1464,55 @@ fn extra_tool_dirs() -> Vec<PathBuf> {
 
 /// ImageMagick 7 is `magick`. Linux distributions that still ship ImageMagick 6 call
 /// it `convert`, with the same options. (On Windows `convert` is a disk tool, so no.)
+/// The text of every QR code in a picture, one per line, into a text file. ImageMagick
+/// reads the picture, whatever its format, into plain grey levels at most 2400 pixels
+/// across; rqrr finds and decodes the codes. The text is only saved, never opened.
+fn read_qr(src: &Path, out: &Path, work: &Path) -> Result<(), String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    let grey = work.join("grey.pgm");
+    let mut cmd = Command::new(magick()?);
+    cmd.args(IMAGE_LIMITS)
+        .arg(format!("{coder}:{}[0]", src.display()))
+        .args(["-auto-orient", "-colorspace", "Gray", "-resize", "2400x2400>", "-depth", "8"])
+        .arg(format!("pgm:{}", grey.display()));
+    run(cmd, QUICK)?;
+    let data = fs::read(&grey).map_err(|e| format!("work file: {e}"))?;
+    let (width, height, pixels) = read_pgm(&data).ok_or("ImageMagick wrote no picture to read")?;
+    let mut image = rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| pixels[y * width + x]);
+    let texts: Vec<String> = image.detect_grids().iter().filter_map(|grid| grid.decode().ok()).map(|(_, text)| text).collect();
+    if texts.is_empty() {
+        return Err("no QR code found in this picture".into());
+    }
+    fs::write(out, texts.join("\n") + "\n").map_err(|e| format!("couldn't save the text: {e}"))
+}
+
+/// Width, height and grey levels of a binary PGM ("P5", 8 bits), as ImageMagick
+/// writes it: four header fields, with comments allowed, then one white-space byte.
+fn read_pgm(data: &[u8]) -> Option<(usize, usize, &[u8])> {
+    let mut fields = Vec::new();
+    let mut i = 0;
+    while fields.len() < 4 {
+        while i < data.len() && (data[i].is_ascii_whitespace() || data[i] == b'#') {
+            if data[i] == b'#' {
+                while i < data.len() && data[i] != b'\n' {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        let start = i;
+        while i < data.len() && !data[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        fields.push(std::str::from_utf8(&data[start..i]).ok()?);
+    }
+    let (width, height, max): (usize, usize, usize) = (fields[1].parse().ok()?, fields[2].parse().ok()?, fields[3].parse().ok()?);
+    let body = data.get(i + 1..)?;
+    let size = width.checked_mul(height)?;
+    (fields[0] == "P5" && max <= 255 && size > 0 && body.len() >= size).then(|| (width, height, &body[..size]))
+}
+
 fn magick() -> Result<PathBuf, String> {
     tool("magick").or_else(|e| if cfg!(target_os = "linux") { tool("convert").map_err(|_| e) } else { Err(e) })
 }
@@ -2021,6 +2090,53 @@ mod tests {
     }
 
     #[test]
+    fn pgm_headers_are_read_with_comments_and_rejected_when_short() {
+        let pgm = b"P5\n# made here\n3 2\n255\n\x00\x10\x20\x30\x40\x50";
+        assert_eq!(read_pgm(pgm), Some((3, 2, &pgm[pgm.len() - 6..])));
+        assert_eq!(read_pgm(b"P5\n3 2\n255\n\x00\x10"), None, "too few pixels");
+        assert_eq!(read_pgm(b"P6\n1 1\n255\n\x00\x00\x00"), None, "colour, not grey");
+        assert_eq!(read_pgm(b""), None);
+    }
+
+    /// Needs ImageMagick. A QR code made here is read back from a PNG; a picture
+    /// without one says so.
+    #[test]
+    fn a_qr_code_is_read_from_a_picture() {
+        let Ok(magick) = magick() else {
+            eprintln!("ImageMagick isn't installed: QR codes not tested");
+            return;
+        };
+        let work = tempfile::tempdir().unwrap();
+        let code = qrcode::QrCode::new(b"https://example.com/convert-wheel").unwrap();
+        let colors = code.to_colors();
+        let (n, scale, quiet) = (code.width(), 8, 4);
+        let side = (n + 2 * quiet) * scale;
+        let mut pgm = format!("P5\n{side} {side}\n255\n").into_bytes();
+        for y in 0..side {
+            for x in 0..side {
+                let (cx, cy) = ((x / scale).checked_sub(quiet), (y / scale).checked_sub(quiet));
+                let dark = matches!((cx, cy), (Some(cx), Some(cy)) if cx < n && cy < n && colors[cy * n + cx] == qrcode::Color::Dark);
+                pgm.push(if dark { 0 } else { 255 });
+            }
+        }
+        let raw = work.path().join("code.pgm");
+        fs::write(&raw, &pgm).unwrap();
+        let png = work.path().join("code.png");
+        let mut make = Command::new(&magick);
+        make.arg(&raw).arg(&png);
+        run(make, QUICK).unwrap();
+        let text = convert(&png, "tool:qr", None, work.path()).unwrap();
+        assert_eq!(text, work.path().join("code (QR code).txt"));
+        assert_eq!(fs::read_to_string(&text).unwrap(), "https://example.com/convert-wheel\n");
+
+        let blank = work.path().join("blank.png");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "200x200", "xc:white"]).arg(&blank);
+        run(make, QUICK).unwrap();
+        assert_eq!(convert(&blank, "tool:qr", None, work.path()).unwrap_err(), "no QR code found in this picture");
+    }
+
+    #[test]
     fn image_tools_keep_the_format_and_name_the_result() {
         if magick().is_err() {
             eprintln!("ImageMagick isn't installed: image tools not tested");
@@ -2251,6 +2367,10 @@ mod tests {
         assert!(probe(&even).contains("Tune"), "loudness keeps the tags");
         let mono = convert(&song, "tool:mono", None, work.path()).unwrap();
         assert!(probe(&mono).contains("channels=1"), "{}", probe(&mono));
+        let small = convert(&song, "tool:compress", None, work.path()).unwrap();
+        assert_eq!(small, work.path().join("song (compressed).mp3"));
+        assert!(fs::metadata(&small).unwrap().len() < fs::metadata(&song).unwrap().len());
+        assert!(probe(&small).contains("Tune"), "compress keeps the tags");
         assert_eq!(convert(&song, "tool:still", None, work.path()).unwrap_err(), ".mp3 files can't be turned into a picture");
     }
 

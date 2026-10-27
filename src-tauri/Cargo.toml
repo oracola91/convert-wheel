@@ -18,6 +18,9 @@ tauri-plugin-single-instance = "=2.5.4"
 tempfile = "3.27"
 # Plain .gz files (one file, not a TAR); already in the build through Tauri.
 flate2 = "1"
+# Reads QR codes for the Tools wheel; pure Rust, no system library.
+# Without its "img" feature: ImageMagick reads the picture, so no image decoders here.
+rqrr = { version = "0.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -62,3 +65,7 @@ x11rb = "0.14"
 # Already in the build through the single-instance plugin; here for the file
 # manager's ShowItems call.
 zbus = "5"
+
+[dev-dependencies]
+# Makes QR codes for the tests to read back.
+qrcode = { version = "0.14", default-features = false }
