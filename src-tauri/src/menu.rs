@@ -1,6 +1,6 @@
 //! The menu bar icon and its menu: how the last conversion went, converters to
-//! install, updates, Open at Login, where converted files go, and which formats the
-//! wheel offers.
+//! install, updates, Open at Login, where converted files go, which formats the wheel
+//! offers, and the quality per kind of file.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -29,6 +29,9 @@ pub const LAST_MAX_CHARS: usize = 70;
 const QUIT: &str = "quit";
 /// Format switches are "fmt:" followed by the settings key, e.g. "fmt:image:avif".
 const FORMAT: &str = "fmt:";
+/// Quality choices are "quality:" followed by the kind and the level, e.g.
+/// "quality:video:best".
+const QUALITY: &str = "quality:";
 
 pub struct TrayMenu(Menu<Wry>);
 
@@ -72,11 +75,26 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let kind_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = kinds.iter().map(|k| k as _).collect();
     let shown = Submenu::with_items(app, "Formats on the Wheel", true, &kind_refs)?;
 
+    let mut levels = Vec::new();
+    for (kind, label) in settings::Quality::KINDS {
+        let items = settings::Level::ALL
+            .iter()
+            .map(|level| {
+                let id = format!("{QUALITY}{kind}:{}", level.key());
+                CheckMenuItem::with_id(app, id, level.label(), true, current.quality.get(kind) == Some(*level), None::<&str>)
+            })
+            .collect::<tauri::Result<Vec<_>>>()?;
+        let refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = items.iter().map(|i| i as _).collect();
+        levels.push(Submenu::with_items(app, label, true, &refs)?);
+    }
+    let level_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = levels.iter().map(|k| k as _).collect();
+    let quality = Submenu::with_items(app, "Quality", true, &level_refs)?;
+
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
     let menu = Menu::with_items(
         app,
-        &[&title, &hint, &last, &stop, &sep()?, &update, &login, &save, &shown, &sep()?, &show_log, &quit],
+        &[&title, &hint, &last, &stop, &sep()?, &update, &login, &save, &shown, &quality, &sep()?, &show_log, &quit],
     )?;
 
     // macOS: a template icon it tints to match the menu bar, light or dark. Windows'
@@ -267,6 +285,22 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             let save_to = store.get().save_to;
             set_check(app, SAVE_NEXT, save_to == SaveTo::NextToOriginal);
             set_check(app, SAVE_DOWNLOADS, save_to == SaveTo::Downloads);
+        }
+        _ if id.starts_with(QUALITY) => {
+            let Some((kind, wanted)) = id[QUALITY.len()..].split_once(':') else {
+                return;
+            };
+            let Some(level) = settings::Level::ALL.into_iter().find(|l| l.key() == wanted) else {
+                return;
+            };
+            if let Err(e) = store.update(|s| s.quality.set(kind, level)) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            // Three choices, exactly one ticked, matching what is saved.
+            let saved = store.get().quality.get(kind);
+            for l in settings::Level::ALL {
+                set_check(app, &format!("{QUALITY}{kind}:{}", l.key()), saved == Some(l));
+            }
         }
         _ => {
             if let Some(key) = id.strip_prefix(FORMAT) {
