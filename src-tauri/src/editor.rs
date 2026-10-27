@@ -1,6 +1,6 @@
 //! The editing window some tools open first: Crop (the picture with a box to drag,
-//! turned a quarter at a time) and Trim (a sound's or video's loudness and frames, with
-//! a start and an end to drag). The page only sends numbers back; which file they
+//! turned a quarter at a time), Trim (a sound's or video's loudness and frames, with a
+//! start and an end to drag) and Compress to a Size (a size to type or pick). The page only sends numbers back; which file they
 //! apply to stays here, so the page can never name one.
 
 use std::path::{Path, PathBuf};
@@ -45,6 +45,9 @@ enum View {
     /// The length (the times come back in milliseconds), the loudness along it, and for
     /// a video eight frames; the sound as a small MP3 to play, when not too long.
     Trim { length_ms: u64, peaks: Vec<u8>, strip: Option<String>, sound: Option<String> },
+    /// The file's size, what it is ("picture", "video", "sound"), and for sound and
+    /// video the least it can be compressed to.
+    Size { bytes: u64, what: &'static str, least: Option<u64> },
 }
 
 impl View {
@@ -52,6 +55,15 @@ impl View {
         match self {
             View::Crop { .. } => "editor.html",
             View::Trim { .. } => "trim.html",
+            View::Size { .. } => "size.html",
+        }
+    }
+
+    /// The window's size and smallest size: a short form for Compress to a Size.
+    fn window(&self) -> ((f64, f64), (f64, f64)) {
+        match self {
+            View::Size { .. } => ((480.0, 340.0), (420.0, 300.0)),
+            _ => ((780.0, 620.0), (560.0, 460.0)),
         }
     }
 
@@ -59,6 +71,7 @@ impl View {
         match self {
             View::Crop { .. } => format!("Crop: {name}"),
             View::Trim { .. } => format!("Trim: {name}"),
+            View::Size { .. } => format!("Compress to a size: {name}"),
         }
     }
 }
@@ -71,12 +84,14 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop and Trim open one file: drag just one onto them.");
+        notify(app, "One file at a time", "Crop, Trim and Compress to a Size open one file: drag just one.");
         return;
     };
-    let (app, path, crop) = (app.clone(), PathBuf::from(path), tool == "tool:crop");
+    let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
     thread::spawn(move || {
-        let view = if crop {
+        let view = if tool == "tool:target" {
+            size_view(&path)
+        } else if tool == "tool:crop" {
             convert::preview(&path)
                 .map(|(width, height, jpeg)| View::Crop { width, height, preview: data_url("image/jpeg", &jpeg) })
         } else {
@@ -90,10 +105,10 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
         match view {
             Ok(view) => {
                 let name = file_name(&path);
-                let (page, title) = (view.page(), view.title(&name));
+                let (page, title, size) = (view.page(), view.title(&name), view.window());
                 *app.state::<Editing>().lock() = Some(Session { path, name, view });
                 let handle = app.clone();
-                let _ = app.run_on_main_thread(move || show_window(&handle, page, &title));
+                let _ = app.run_on_main_thread(move || show_window(&handle, page, &title, size));
             }
             Err(e) => {
                 log::line(&format!("couldn't open {} in the editor: {e}", file_name(&path)));
@@ -104,16 +119,18 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
 }
 
 /// Shows the editor window on `page`, or moves the open one there for the new file.
-fn show_window(app: &AppHandle, page: &str, title: &str) {
+fn show_window(app: &AppHandle, page: &str, title: &str, ((width, height), (min_width, min_height)): ((f64, f64), (f64, f64))) {
     let window = match app.get_webview_window(LABEL) {
         Some(window) => {
             let _ = window.eval(format!("location.replace('{page}')"));
+            let _ = window.set_min_size(Some(tauri::LogicalSize::new(min_width, min_height)));
+            let _ = window.set_size(tauri::LogicalSize::new(width, height));
             window
         }
         None => match WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(page.into()))
             .title(title)
-            .inner_size(780.0, 620.0)
-            .min_inner_size(560.0, 460.0)
+            .inner_size(width, height)
+            .min_inner_size(min_width, min_height)
             .center()
             .build()
         {
@@ -134,6 +151,18 @@ fn show_window(app: &AppHandle, page: &str, title: &str) {
         objc2_app_kit::NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
     }
     let _ = window.set_focus();
+}
+
+/// What Compress to a Size shows: the file's size and kind, and how small it can go.
+fn size_view(path: &Path) -> Result<View, String> {
+    let bytes = std::fs::metadata(path).map_err(|e| format!("can't read the file: {e}"))?.len();
+    let ext = crate::formats::extension(path).unwrap_or_default();
+    let what = match crate::formats::kind_of(&ext) {
+        Some(crate::formats::Kind::Video) => "video",
+        Some(crate::formats::Kind::Audio) => "sound",
+        _ => "picture",
+    };
+    Ok(View::Size { bytes, what, least: convert::smallest_size(path) })
 }
 
 fn close_window(app: &AppHandle) {
@@ -172,7 +201,7 @@ pub fn editor_session(editing: State<Editing>) -> Option<Session> {
 pub fn editor_apply(app: AppHandle, editing: State<Editing>, crop: Crop) -> Result<(), String> {
     finish(&app, &editing, "tool:crop", |view| match view {
         View::Crop { width, height, .. } => crop.check(*width, *height).map(|()| Edit::Crop(crop)),
-        View::Trim { .. } => Err("this window trims, it doesn't crop".into()),
+        _ => Err("this window doesn't crop".into()),
     })
 }
 
@@ -181,7 +210,17 @@ pub fn editor_apply(app: AppHandle, editing: State<Editing>, crop: Crop) -> Resu
 pub fn editor_trim(app: AppHandle, editing: State<Editing>, trim: Trim) -> Result<(), String> {
     finish(&app, &editing, "tool:trim", |view| match view {
         View::Trim { length_ms, .. } => trim.check(*length_ms).map(|()| Edit::Trim(trim)),
-        View::Crop { .. } => Err("this window crops, it doesn't trim".into()),
+        _ => Err("this window doesn't trim".into()),
+    })
+}
+
+/// Compress to a Size: a size under the file's own, of at least a kilobyte.
+#[tauri::command]
+pub fn editor_size(app: AppHandle, editing: State<Editing>, bytes: u64) -> Result<(), String> {
+    finish(&app, &editing, "tool:target", |view| match view {
+        View::Size { bytes: own, .. } if bytes >= 1_000 && bytes < *own => Ok(Edit::Size(bytes)),
+        View::Size { .. } => Err("pick a size under the file's own, of at least 1 KB".into()),
+        _ => Err("this window doesn't compress".into()),
     })
 }
 

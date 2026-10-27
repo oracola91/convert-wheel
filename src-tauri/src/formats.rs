@@ -110,13 +110,27 @@ const TOOLS: &[(&str, &[&str])] = &[
     ("tool:split", &["pdf"]),
     ("tool:smaller", &["pdf"]),
     ("tool:still", &["mp4", "mov", "m4v", "mkv", "webm", "avi"]),
+    (
+        "tool:target",
+        &[
+            "jpg", "jpeg", "heic", "heif", "webp", "avif", "mp4", "mov", "m4v", "mkv", "webm", "mp3", "m4a", "aac", "ogg",
+            "opus", "wma",
+        ],
+    ),
+    (
+        "tool:join",
+        &[
+            "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg",
+            "opus", "wma",
+        ],
+    ),
     ("tool:loudness", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
     ("tool:mono", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
 ];
 
 /// A tool that turns the whole drop into one file, instead of working on each file.
 pub fn combines(id: &str) -> bool {
-    matches!(id, "tool:merge" | "tool:onepdf" | "act:zip" | "act:tgz" | "act:tar")
+    matches!(id, "tool:merge" | "tool:onepdf" | "tool:join" | "act:zip" | "act:tgz" | "act:tar")
 }
 
 /// A Tools wheel id ("tool:half") rather than a format.
@@ -141,6 +155,8 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
             exts.iter().all(|e| ins.contains(&e.as_str()))
                 && (!combines(id) || paths.len() > 1)
                 && (!opens_editor(id) || paths.len() == 1)
+                // Join takes sound files or video files, not the two together.
+                && (*id != "tool:join" || exts.iter().all(|e| kind_of(e) == kind_of(&exts[0])))
         })
         .map(|(id, _)| *id)
         .take(MAX_SEGMENTS)
@@ -149,7 +165,7 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 
 /// A tool that first opens the editing window (one file at a time) instead of running.
 pub fn opens_editor(id: &str) -> bool {
-    matches!(id, "tool:crop" | "tool:trim")
+    matches!(id, "tool:crop" | "tool:trim" | "tool:target")
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
@@ -304,7 +320,7 @@ mod tests {
 
     #[test]
     fn tools_are_offered_when_every_file_takes_them() {
-        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:crop"];
+        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:crop", "tool:target"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG"])), one);
         let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:onepdf"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), two);
@@ -316,13 +332,15 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.gif"])), ["tool:qr"]);
         assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:qr", "tool:onepdf"]);
         // Trim opens a window for one file.
-        assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:trim", "tool:still"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:trim", "tool:still", "tool:target"]);
         assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:trim", "tool:still"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.mp3"])), ["tool:compress", "tool:clean", "tool:trim", "tool:loudness", "tool:mono"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:compress", "tool:clean", "tool:loudness", "tool:mono"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3"])), ["tool:compress", "tool:clean", "tool:trim", "tool:target", "tool:loudness", "tool:mono"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:compress", "tool:clean", "tool:join", "tool:loudness", "tool:mono"]);
         // WAV and AIFF are uncompressed by design: nothing to compress them with.
         assert_eq!(tools_for(&v(&["/tmp/a.wav"])), ["tool:clean", "tool:trim", "tool:loudness", "tool:mono"]);
-        // Sound and video together: each is compressed or cleaned in its own way.
+        assert_eq!(tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])), ["tool:compress", "tool:clean", "tool:still", "tool:join"]);
+        // Sound and video together: each is compressed or cleaned in its own way, but
+        // Join takes one kind only.
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.

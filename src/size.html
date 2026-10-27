@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compress to a size</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="size.js" defer></script>
+</head>
+<body>
+  <main>
+    <section id="panel">
+      <p id="what"></p>
+      <label for="amount">Make it at most</label>
+      <div class="row">
+        <input id="amount" inputmode="decimal" autocomplete="off" spellcheck="false">
+        <select id="unit" aria-label="Unit">
+          <option value="1000000">MB</option>
+          <option value="1000">KB</option>
+        </select>
+      </div>
+      <div id="presets" class="group" role="group" aria-label="Sizes"></div>
+      <p id="hint"></p>
+      <p id="problem" role="alert" hidden></p>
+    </section>
+    <footer>
+      <div class="end">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="button" id="apply" class="primary">Compress</button>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>
