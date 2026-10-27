@@ -24,8 +24,8 @@ use crate::wheel::{self, WheelState};
 
 /// The hub icon's size, and how far its centre sits above the wheel's centre so the
 /// label fits underneath. Points.
-const ICON: f64 = 44.0;
-const ICON_LIFT: f64 = 10.0;
+const ICON: f64 = 52.0;
+const ICON_LIFT: f64 = 12.0;
 /// Fade times, matched by the scale animations in src/wheel.css.
 const OPEN_SECONDS: f64 = 0.12;
 const CLOSE_SECONDS: f64 = 0.14;
