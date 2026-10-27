@@ -24,6 +24,7 @@ mod wheel_window;
 #[cfg(windows)]
 mod win32;
 
+use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
@@ -120,6 +121,13 @@ impl Words {
                 "Stopped evening out the loudness",
             ),
             "tool:mono" => tool("Mixing {} down to mono", "Made mono", "Made {} files mono", "mix down", "Stopped mixing down"),
+            "tool:qr" => tool(
+                "Reading the QR code in {}",
+                "Read the QR code",
+                "Read the QR codes in {} files",
+                "read the QR code in",
+                "Stopped reading QR codes",
+            ),
             "act:zip" => tool("Making a ZIP of {}", "Made a ZIP", "Made a ZIP of {} files", "zip", "Stopped making the ZIP"),
             "act:tgz" => tool("Making a TAR.GZ of {}", "Made a TAR.GZ", "Made a TAR.GZ of {} files", "pack", "Stopped packing"),
             "act:tar" => tool("Making a TAR of {}", "Made a TAR", "Made a TAR of {} files", "pack", "Stopped packing"),
@@ -188,6 +196,9 @@ impl Running {
 /// Longer file names are cut in the progress line, so the percent after them still
 /// fits in the menu.
 const NAME_MAX_CHARS: usize = 32;
+
+/// How much of a QR code's text the notification shows; all of it is copied.
+const QR_SHOWN: usize = 120;
 
 /// The menu's progress line: "Converting holiday.mov to MP4… 42%", or for a batch
 /// "Converting 3 of 10 to PNG…". A tool that doesn't say how far it is gets the time
@@ -374,6 +385,16 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
     let (title, mut body) = summary(words, &done, &failed);
     if moved {
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
+    }
+    // A QR code's text is what was wanted: it goes on the clipboard, and the
+    // notification shows it (the start of it, if long) instead of a file name.
+    if job.format == "tool:qr" && failed.is_empty() && !done.is_empty() {
+        let text = done.iter().filter_map(|f| fs::read_to_string(f).ok()).collect::<String>();
+        let text = text.trim().to_string();
+        let shown: String = text.chars().take(QR_SHOWN).collect();
+        let more = if text.chars().count() > QR_SHOWN { "…" } else { "" };
+        body = format!("{shown}{more} (copied)");
+        actions::copy_text(app, text);
     }
     (title, body, done)
 }
