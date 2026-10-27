@@ -16,7 +16,8 @@ pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Which wheel opens: Shift while dragging gives the formats, Option+Shift (Alt+Shift
-/// on Windows and Linux) the tools, Control+Shift the actions.
+/// on Windows and Linux) the tools, Control+Shift the actions. While it is open the
+/// keys can change it; see KeyFollower.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Which {
@@ -37,12 +38,49 @@ impl Which {
     }
 }
 
+/// Follows the keys while a wheel is open, so one drag can move between the wheels:
+/// Option (Alt) gives the tools, Control the actions, Shift alone the formats again.
+/// With none of them held the wheel stays as it is, so the keys can be let go while
+/// the file travels to a segment. A change counts once it has held for `settle` polls,
+/// which also stops two keys let go a moment apart from passing through another wheel.
+#[derive(Default)]
+pub struct KeyFollower {
+    wanted: Option<Which>,
+    polls: u8,
+}
+
+impl KeyFollower {
+    /// One poll of the keys while wheel `current` is open: the wheel to switch to,
+    /// once, when the keys have asked for another for long enough.
+    pub fn poll(&mut self, current: Which, settle: u8, shift: bool, option: bool, control: bool) -> Option<Which> {
+        let asked = if option || control {
+            Some(Which::from_keys(option, control))
+        } else {
+            shift.then_some(Which::Formats)
+        };
+        match asked {
+            Some(which) if which != current => {
+                self.polls = if self.wanted == Some(which) { self.polls.saturating_add(1) } else { 1 };
+                self.wanted = Some(which);
+                if self.polls >= settle {
+                    *self = KeyFollower::default();
+                    return Some(which);
+                }
+            }
+            _ => *self = KeyFollower::default(),
+        }
+        None
+    }
+}
+
 #[derive(Default)]
 pub struct WheelState {
     /// Formats, or tools ("tool:half"), on the wheel right now, in drawing order.
     pub formats: Mutex<Vec<&'static str>>,
     /// The wheel that is open, or was last.
     pub which: Mutex<Which>,
+    /// The dragged files, once known: a switch to another wheel needs them again.
+    pub paths: Mutex<Vec<String>>,
     phase: Mutex<Phase>,
 }
 
@@ -81,6 +119,11 @@ impl WheelState {
 
     pub fn generation(&self) -> u64 {
         lock(&self.phase).generation
+    }
+
+    /// A wheel is open and not closing.
+    pub fn is_open(&self) -> bool {
+        lock(&self.phase).open
     }
 
     /// No newer wheel has opened since `generation`.
@@ -164,6 +207,44 @@ mod tests {
         assert_eq!(state.close(Some(second)), Some(second));
         // Closing twice does nothing.
         assert_eq!(state.close(None), None);
+    }
+
+    /// Polls `keys` (shift, option, control) one after another while `current` is open
+    /// and returns what each poll asked to switch to.
+    fn follow(current: Which, keys: &[(bool, bool, bool)]) -> Vec<Option<Which>> {
+        let mut f = KeyFollower::default();
+        keys.iter().map(|&(s, o, c)| f.poll(current, 2, s, o, c)).collect()
+    }
+
+    #[test]
+    fn the_keys_move_between_the_wheels() {
+        let (shift, option_shift, control) = ((true, false, false), (true, true, false), (false, false, true));
+        // Option joins Shift: the tools, once it has held for two polls.
+        assert_eq!(follow(Which::Formats, &[option_shift, option_shift]), [None, Some(Which::Tools)]);
+        // Control, with or without Shift: the actions.
+        assert_eq!(follow(Which::Tools, &[control, control]), [None, Some(Which::Actions)]);
+        // Shift alone again: the formats.
+        assert_eq!(follow(Which::Actions, &[shift, shift]), [None, Some(Which::Formats)]);
+        // The keys the open wheel already has ask for nothing.
+        assert_eq!(follow(Which::Tools, &[option_shift, option_shift, option_shift]), [None, None, None]);
+    }
+
+    #[test]
+    fn letting_go_of_the_keys_keeps_the_wheel() {
+        let none = (false, false, false);
+        assert_eq!(follow(Which::Tools, &[none, none, none]), [None, None, None]);
+        // Option let go a poll before Shift: Shift alone for one poll isn't enough.
+        assert_eq!(follow(Which::Tools, &[(true, false, false), none, none]), [None, None, None]);
+    }
+
+    #[test]
+    fn a_switch_happens_once() {
+        let mut f = KeyFollower::default();
+        let option_shift = |f: &mut KeyFollower, current| f.poll(current, 2, true, true, false);
+        assert_eq!(option_shift(&mut f, Which::Formats), None);
+        assert_eq!(option_shift(&mut f, Which::Formats), Some(Which::Tools));
+        // The wheel is the tools now: holding on asks for nothing more.
+        assert_eq!(option_shift(&mut f, Which::Tools), None);
     }
 
     #[test]
