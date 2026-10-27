@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trim</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="trim.js" defer></script>
+</head>
+<body>
+  <main>
+    <div id="stage" class="trim">
+      <div id="timeline">
+        <img id="strip" alt="" hidden>
+        <canvas id="wave" aria-hidden="true"></canvas>
+        <div id="keep" role="group" aria-label="The part to keep: drag it, or its ends">
+          <span class="grip" data-end="start" tabindex="0" role="slider" aria-label="Start"></span>
+          <span class="grip" data-end="end" tabindex="0" role="slider" aria-label="End"></span>
+        </div>
+        <div id="playhead" hidden></div>
+      </div>
+      <p id="message" hidden></p>
+    </div>
+    <footer>
+      <label>Start <input id="start" inputmode="decimal" spellcheck="false" autocomplete="off"></label>
+      <label>End <input id="end" inputmode="decimal" spellcheck="false" autocomplete="off"></label>
+      <output id="length" aria-live="polite"></output>
+      <button type="button" id="play" disabled>▶ Play</button>
+      <div class="end">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="button" id="apply" class="primary">Trim</button>
+      </div>
+    </footer>
+  </main>
+  <audio id="sound" preload="auto"></audio>
+</body>
+</html>
