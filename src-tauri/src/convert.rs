@@ -305,6 +305,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:loudness" => "even loudness",
         "tool:mono" => "mono",
         "tool:crop" => "cropped",
+        "tool:trim" => "trimmed",
         _ => "changed",
     }
 }
@@ -324,6 +325,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:loudness" => "evened out",
         "tool:mono" => "mixed down to mono",
         "tool:crop" => "cropped",
+        "tool:trim" => "trimmed",
         _ => "changed",
     }
 }
@@ -370,6 +372,24 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             ffmpeg(src, &args, out, VIDEO)
         }
         "tool:still" => ffmpeg(src, &["-map", "0:v:0", "-frames:v", "1", "-q:v", "2", "-update", "1"], out, QUICK),
+        // The part chosen in the editor, cut exactly where asked: read from the start and
+        // encoded again (in the file's own format, at the menu's quality), rather than
+        // copied, which could only cut at the nearest keyframe.
+        "tool:trim" => {
+            let Some(Edit::Trim(trim)) = control().and_then(|c| c.edit) else {
+                return Err("Trim opens its window from the wheel".into());
+            };
+            let seconds = |ms: u64| format!("{}.{:03}", ms / 1000, ms % 1000);
+            let (from, to) = (seconds(trim.start_ms), seconds(trim.end_ms));
+            let mut args = vec!["-ss", from.as_str(), "-to", to.as_str(), "-map_metadata", "0"];
+            if video {
+                args.extend(video_encode(own).ok_or_else(|| format!("{} files can't be trimmed", own.to_uppercase()))?);
+            } else {
+                args.extend(["-map", "0:a:0"]);
+                args.extend(audio_args(own));
+            }
+            ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
+        }
         "tool:loudness" | "tool:mono" => {
             let mut args = vec!["-map", "0:a:0", "-map_metadata", "0"];
             let rate;
@@ -426,7 +446,9 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
         "tool:clean" => cmd.args(["+profile", "!icc,*", "+set", "comment"]),
         "tool:rotate" => cmd.args(["-rotate", "90"]),
         "tool:crop" => {
-            let crop = control().and_then(|c| c.crop).ok_or("Crop opens its window from the wheel")?;
+            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit) else {
+                return Err("Crop opens its window from the wheel".into());
+            };
             if crop.turns > 0 {
                 cmd.args(["-rotate", &(90 * u32::from(crop.turns)).to_string()]);
             }
@@ -573,62 +595,45 @@ fn copy_streams(src: &Path, extra: &[&str], out: &Path) -> bool {
     false
 }
 
-fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
-    // H.264 in yuv420p needs even width and height; phone and screen recordings often
-    // aren't, so round down by a pixel where needed.
+/// What ffmpeg encodes a video into, by format, at the menu's video quality: H.264 with
+/// AAC (MP4, MOV, M4V, and MKV without MP4's own "+faststart"), VP9 with Opus (WebM),
+/// and for older players MPEG-4 Part 2, what Xvid makes, with MP3 (AVI) or Windows
+/// Media 8 with WMA (WMV), at most 1920 wide. H.264 in yuv420p needs even width and
+/// height; phone and screen recordings often aren't, so round down by a pixel there.
+fn video_encode(target: &str) -> Option<Vec<&'static str>> {
     let level = quality().video;
-    let h264: Vec<&str> = vec![
-        "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264",
-        "-preset", "medium", "-crf", level.pick("26", "20", "17"), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart",
-    ];
     // MPEG-4 Part 2 and Windows Media 8 take a fixed quantiser: lower is better.
     let quantiser = level.pick("5", "3", "2");
+    let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND];
     match target {
-        "mp4" | "mov" => {
-            // MP4, MOV and M4V usually hold the same streams: try a fast copy first.
-            if matches!(ext, "mp4" | "mov" | "m4v") && copy_streams(src, &["-movflags", "+faststart"], out) {
-                return Ok(());
+        "mp4" | "mov" | "m4v" | "mkv" => {
+            args.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264", "-preset", "medium"]);
+            args.extend(["-crf", level.pick("26", "20", "17"), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
+            if target != "mkv" {
+                args.extend(["-movflags", "+faststart"]);
             }
-            ffmpeg(src, &h264, out, VIDEO)
         }
-        "webm" => ffmpeg(
-            src,
-            &[
-                "-map", "0:v:0", "-map", FIRST_SOUND, "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0",
-                "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
-            ],
-            out,
-            VIDEO,
-        ),
-        "mkv" => {
-            // Matroska holds nearly any streams: a fast copy first, as for MP4.
-            if copy_streams(src, &[], out) {
-                return Ok(());
-            }
-            // H.264 without MP4's own "+faststart".
-            ffmpeg(src, &h264[..h264.len() - 2], out, VIDEO)
+        "webm" => {
+            args.extend(["-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0", "-deadline", "good"]);
+            args.extend(["-cpu-used", "4", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k"]);
         }
-        // For older players: MPEG-4 Part 2 (what Xvid makes) with MP3, and Windows
-        // Media 8 with WMA.
-        "avi" => ffmpeg(
-            src,
-            &[
-                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT_HD, "-c:v", "mpeg4", "-vtag", "xvid",
-                "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4",
-            ],
-            out,
-            VIDEO,
-        ),
-        "wmv" => ffmpeg(
-            src,
-            &[
-                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT_HD, "-c:v", "wmv2", "-q:v", quantiser,
-                "-c:a", "wmav2", "-b:a", "192k",
-            ],
-            out,
-            VIDEO,
-        ),
+        "avi" => args.extend(["-vf", FIT_HD, "-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4"]),
+        "wmv" => args.extend(["-vf", FIT_HD, "-c:v", "wmv2", "-q:v", quantiser, "-c:a", "wmav2", "-b:a", "192k"]),
+        _ => return None,
+    }
+    Some(args)
+}
+
+fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
+    match target {
+        // MP4, MOV and M4V usually hold the same streams, and Matroska nearly any: a fast
+        // copy first.
+        "mp4" | "mov" if matches!(ext, "mp4" | "mov" | "m4v") && copy_streams(src, &["-movflags", "+faststart"], out) => Ok(()),
+        "mkv" if copy_streams(src, &[], out) => Ok(()),
+        "mp4" | "mov" | "mkv" | "webm" | "avi" | "wmv" => {
+            let args = video_encode(target).ok_or_else(|| format!("video can't become .{target}"))?;
+            ffmpeg(src, &args, out, VIDEO)
+        }
         "gif" => ffmpeg(
             src,
             &[
@@ -1118,8 +1123,35 @@ pub struct Control {
     percent: AtomicU8,
     /// The quality levels chosen in the menu when the drop started.
     quality: Quality,
-    /// The box chosen in the editor, for Crop.
-    crop: Option<Crop>,
+    /// What was chosen in the editor, for Crop and Trim.
+    edit: Option<Edit>,
+}
+
+/// What a tool that opens the editor was given there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edit {
+    Crop(Crop),
+    Trim(Trim),
+}
+
+/// A trim chosen in the editor: the part of the file from `start_ms` to `end_ms`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Trim {
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+impl Trim {
+    /// At least a tenth of a second, inside a file `length_ms` long (with a little slack
+    /// at the end, where lengths are rounded).
+    pub fn check(&self, length_ms: u64) -> Result<(), String> {
+        let long_enough = self.end_ms.checked_sub(self.start_ms).is_some_and(|ms| ms >= 100);
+        if long_enough && self.end_ms <= length_ms.saturating_add(50) {
+            Ok(())
+        } else {
+            Err("the part to keep is outside the file".into())
+        }
+    }
 }
 
 /// A crop chosen in the editor: the picture, upright, is turned `turns` quarter turns
@@ -1158,9 +1190,9 @@ impl Control {
         Self::with_edit(Quality::default(), None)
     }
 
-    /// A drop's control: the menu's quality, and for Crop the box from the editor.
-    pub fn with_edit(quality: Quality, crop: Option<Crop>) -> Arc<Self> {
-        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT), quality, crop })
+    /// A drop's control: the menu's quality, and for Crop and Trim what the editor chose.
+    pub fn with_edit(quality: Quality, edit: Option<Edit>) -> Arc<Self> {
+        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT), quality, edit })
     }
 
     /// Ends the tool running now, with everything it started, and keeps the drop from
@@ -1484,6 +1516,66 @@ fn extra_tool_dirs() -> Vec<PathBuf> {
 
 /// ImageMagick 7 is `magick`. Linux distributions that still ship ImageMagick 6 call
 /// it `convert`, with the same options. (On Windows `convert` is a disk tool, so no.)
+/// How many loudness values the editor draws a sound along.
+pub const PEAKS: usize = 600;
+
+/// What the editor shows of a sound or video file.
+pub struct MediaPreview {
+    pub length_ms: u64,
+    /// The loudest moment in each of `PEAKS` equal parts, 0 to 255.
+    pub peaks: Vec<u8>,
+    /// For a video: eight frames along it, side by side, as one JPEG.
+    pub strip: Option<Vec<u8>>,
+    /// The sound as a small MP3, to play in the editor (files up to 20 minutes).
+    pub sound: Option<Vec<u8>>,
+}
+
+/// For the editor: a sound or video file's length, loudness along it, frames and sound.
+pub fn media_preview(src: &Path) -> Result<MediaPreview, String> {
+    let ext = formats::extension(src).unwrap_or_default();
+    let video = formats::kind_of(&ext) == Some(Kind::Video);
+    let work = tempfile::tempdir().map_err(|e| format!("work folder: {e}"))?;
+    let at = |name: &str| work.path().join(name);
+    let length = media_length(src, &at("probe")).ok_or("ffprobe couldn't tell how long this file is")?;
+    // Mono at 2000 samples a second is plenty to draw loudness by.
+    let raw = at("sound.raw");
+    let sound_track = ffmpeg(src, &["-map", "0:a:0", "-ac", "1", "-ar", "2000", "-f", "s16le"], &raw, AUDIO).is_ok();
+    let peaks = if sound_track { peaks_of(&fs::read(&raw).unwrap_or_default(), PEAKS) } else { vec![0; PEAKS] };
+    let strip = video
+        .then(|| {
+            let frames = format!(
+                "fps=8/{:.3},scale=160:90:force_original_aspect_ratio=increase,crop=160:90,tile=8x1",
+                length.as_secs_f64().max(0.1)
+            );
+            let jpeg = at("strip.jpg");
+            ffmpeg(src, &["-map", "0:v:0", "-vf", &frames, "-frames:v", "1", "-q:v", "4"], &jpeg, QUICK).ok()?;
+            fs::read(&jpeg).ok()
+        })
+        .flatten();
+    let sound = (sound_track && length <= Duration::from_secs(20 * 60))
+        .then(|| {
+            let mp3 = at("sound.mp3");
+            ffmpeg(src, &["-map", "0:a:0", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "48k"], &mp3, AUDIO).ok()?;
+            fs::read(&mp3).ok()
+        })
+        .flatten();
+    Ok(MediaPreview { length_ms: u64::try_from(length.as_millis()).unwrap_or(u64::MAX), peaks, strip, sound })
+}
+
+/// The loudest sample in each of `n` equal parts of 16-bit mono sound, 0 to 255.
+fn peaks_of(raw: &[u8], n: usize) -> Vec<u8> {
+    let samples: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b).unsigned_abs()).collect();
+    if samples.is_empty() || n == 0 {
+        return vec![0; n];
+    }
+    let mut peaks: Vec<u8> = samples
+        .chunks(samples.len().div_ceil(n))
+        .map(|part| (u32::from(part.iter().copied().max().unwrap_or(0)) * 255 / 32768) as u8)
+        .collect();
+    peaks.resize(n, 0);
+    peaks
+}
+
 /// For the editor: the picture's size upright, in pixels, and a JPEG of it, upright
 /// too, at most 1400 pixels across and on white where it is see-through.
 pub fn preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
@@ -2084,6 +2176,25 @@ mod tests {
     }
 
     #[test]
+    fn a_trim_must_lie_inside_the_file_and_last_a_tenth_of_a_second() {
+        let trim = |start_ms, end_ms| Trim { start_ms, end_ms };
+        assert!(trim(0, 10_000).check(10_000).is_ok());
+        assert!(trim(0, 10_040).check(10_000).is_ok(), "lengths are rounded");
+        assert!(trim(0, 10_100).check(10_000).is_err());
+        assert!(trim(5_000, 5_050).check(10_000).is_err(), "too short");
+        assert!(trim(6_000, 5_000).check(10_000).is_err(), "backwards");
+    }
+
+    #[test]
+    fn peaks_are_the_loudest_sample_of_each_part() {
+        let raw: Vec<u8> = [0i16, 100, -32768, 50, 16384, 0].iter().flat_map(|s| s.to_le_bytes()).collect();
+        assert_eq!(peaks_of(&raw, 3), [0, 255, 127]);
+        assert_eq!(peaks_of(&[], 4), [0, 0, 0, 0]);
+        // Fewer samples than parts: the rest stay silent.
+        assert_eq!(peaks_of(&raw[..4], 4), [0, 0, 0, 0]);
+    }
+
+    #[test]
     fn a_crop_box_must_lie_inside_the_turned_picture() {
         let crop = |x, y, width, height, turns| Crop { x, y, width, height, turns };
         assert!(crop(0, 0, 300, 200, 0).check(300, 200).is_ok());
@@ -2111,7 +2222,7 @@ mod tests {
         assert_eq!(preview(&wide).map(|(w, h, jpeg)| (w, h, jpeg.starts_with(&[0xFF, 0xD8]))), Ok((300, 200, true)));
 
         let crop = Crop { x: 10, y: 20, width: 150, height: 120, turns: 1 };
-        let control = Control::with_edit(Quality::default(), Some(crop));
+        let control = Control::with_edit(Quality::default(), Some(Edit::Crop(crop)));
         let out = under(&control, || convert(&wide, "tool:crop", None, work.path())).unwrap();
         assert_eq!(out, work.path().join("wide (cropped).png"));
         let mut size = Command::new(&magick);
@@ -2337,6 +2448,20 @@ mod tests {
         let still = convert(&clip, "tool:still", None, work.path()).unwrap();
         assert_eq!(still, work.path().join("clip (first frame).jpg"));
         assert!(fs::read(&still).unwrap().starts_with(&[0xFF, 0xD8]));
+
+        // The editor's view of it, and a trim from 0.5 s to 1.5 s, cut exactly.
+        let preview = media_preview(&clip).unwrap();
+        assert!((1900..=2100).contains(&preview.length_ms), "{}", preview.length_ms);
+        assert_eq!(preview.peaks.len(), PEAKS);
+        assert!(preview.peaks.iter().any(|&p| p > 0), "the tone shows");
+        assert!(preview.strip.as_deref().is_some_and(|jpeg| jpeg.starts_with(&[0xFF, 0xD8])));
+        assert!(preview.sound.as_deref().is_some_and(|mp3| !mp3.is_empty()));
+        let trim = Control::with_edit(Quality::default(), Some(Edit::Trim(Trim { start_ms: 500, end_ms: 1500 })));
+        let cut = under(&trim, || convert(&clip, "tool:trim", None, work.path())).unwrap();
+        assert_eq!(cut, work.path().join("clip (trimmed).mp4"));
+        let length = media_length(&cut, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((0.9..1.1).contains(&length), "{length}");
+        assert_eq!(convert(&clip, "tool:trim", None, work.path()).unwrap_err(), "Trim opens its window from the wheel");
 
         let small = convert(&clip, "tool:compress", None, work.path()).unwrap();
         assert_eq!(small, work.path().join("clip (compressed).mp4"));
