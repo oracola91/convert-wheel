@@ -48,6 +48,7 @@ Hold Option as well as Shift while dragging (Alt+Shift on Windows and on Linux w
 - **Half size**: half the width and height.
 - **Remove metadata**: takes out EXIF (camera, date, location), XMP, IPTC and comments, and keeps the colour profile. The picture is turned upright first, so it looks the same without the EXIF turn.
 - **Rotate**: a quarter turn clockwise.
+- **Crop** (one picture at a time): opens a window with the picture and a box to drag by its middle, corners and sides. Free, the picture's own shape, square, 4:3, 3:2 or 16:9; turn it left or right; Enter crops, Esc cancels. The result is "photo (cropped).jpg". The window only sends the box back: which file it applies to stays in the app.
 
 The other tools keep the metadata. Every tool saves the picture again: JPEG at its own quality, HEIC, WebP and AVIF at 80.
 
