@@ -1,6 +1,7 @@
 //! The wheel window's native parts on macOS: glass behind the ring (Liquid Glass on
-//! macOS 26 and later, frosted before), the dragged file's icon in the hub, placement
-//! at the cursor, and the fade in and out.
+//! macOS 26 and later, frosted before), the dragged file's picture in the hub (its
+//! icon at once, then Quick Look's thumbnail when it comes), placement at the cursor,
+//! and the fade in and out.
 //! Everything here runs on the main thread.
 
 use std::cell::RefCell;
@@ -9,7 +10,7 @@ use std::ptr::NonNull;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, Bool};
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSAutoresizingMaskOptions, NSBezierPath, NSColor,
     NSEvent, NSGlassEffectView, NSGlassEffectViewStyle, NSImage, NSImageScaling, NSImageView, NSScreen,
@@ -17,7 +18,11 @@ use objc2_app_kit::{
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode,
     NSWorkspace,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSError, NSPoint, NSRect, NSSize, NSString, NSURL};
+use objc2_quick_look_thumbnailing::{
+    QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes, QLThumbnailGenerator,
+    QLThumbnailRepresentation,
+};
 use tauri::{AppHandle, Manager};
 
 use crate::wheel::{self, WheelState};
@@ -104,11 +109,59 @@ pub fn open(app: &AppHandle, first_path: Option<&str>) {
             view.setImage(image.as_deref());
         }
     });
+    if let Some(path) = first_path {
+        show_thumbnail(app, path);
+    }
     place_at_cursor(&window, mtm);
     window.setAlphaValue(0.0);
     window.orderFrontRegardless();
     window.invalidateShadow();
     fade(window, 1.0, OPEN_SECONDS, || {});
+}
+
+/// An image handed from Quick Look's queue to the main thread, which alone touches it.
+struct Thumbnail(Retained<NSImage>);
+// SAFETY: the image is made on Quick Look's queue and only used on the main thread
+// after that; nothing uses it on two threads at once.
+unsafe impl Send for Thumbnail {}
+
+/// Asks Quick Look for a picture of the file (a photo, a video's frame, a document's
+/// first page) and puts it in the hub in place of the icon when it comes, unless the
+/// wheel closed or another opened in the meantime. No picture: the icon stays.
+fn show_thumbnail(app: &AppHandle, path: &str) {
+    let generation = app.state::<WheelState>().generation();
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    let request = unsafe {
+        QLThumbnailGenerationRequest::initWithFileAtURL_size_scale_representationTypes(
+            QLThumbnailGenerationRequest::alloc(),
+            &url,
+            NSSize::new(ICON, ICON),
+            2.0,
+            QLThumbnailGenerationRequestRepresentationTypes::Thumbnail,
+        )
+    };
+    let app = app.clone();
+    let done = RcBlock::new(move |representation: *mut QLThumbnailRepresentation, _error: *mut NSError| {
+        // SAFETY: Quick Look passes a valid representation or nil.
+        let Some(representation) = (unsafe { representation.as_ref() }) else {
+            return;
+        };
+        let image = Thumbnail(unsafe { representation.NSImage() });
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let image = image;
+            let state = handle.state::<WheelState>();
+            if !state.is_open() || !state.is_current(generation) {
+                return;
+            }
+            HUB_ICON.with(|h| {
+                if let Some(view) = &*h.borrow() {
+                    view.setImage(Some(&image.0));
+                }
+            });
+        });
+    });
+    unsafe { QLThumbnailGenerator::sharedGenerator().generateBestRepresentationForRequest_completionHandler(&request, &done) };
 }
 
 /// Fades the wheel out, then hides it unless a newer wheel opened in the meantime.
