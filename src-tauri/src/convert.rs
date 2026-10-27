@@ -353,6 +353,21 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             args.extend(["-map_metadata", "-1", "-map_chapters", "-1", "-c", "copy", "-fflags", "+bitexact"]);
             ffmpeg(src, &args, out, AUDIO)
         }
+        // Sound in its own format at a lower bit rate than even the menu's Smaller
+        // Files; FLAC, being lossless, only at its strongest packing.
+        "tool:compress" if !video => {
+            let codec: &[&str] = match own {
+                "mp3" => &["-c:a", "libmp3lame", "-b:a", "96k"],
+                "m4a" | "aac" => &["-c:a", "aac", "-b:a", "96k"],
+                "ogg" | "opus" => &["-c:a", "libopus", "-b:a", "64k"],
+                "wma" => &["-c:a", "wmav2", "-b:a", "96k"],
+                "flac" => &["-c:a", "flac", "-compression_level", "12"],
+                other => return Err(format!("{} files can't be compressed", other.to_uppercase())),
+            };
+            let mut args = vec!["-map", "0:a:0", "-map_metadata", "0"];
+            args.extend(codec);
+            ffmpeg(src, &args, out, AUDIO)
+        }
         "tool:compress" => {
             let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT_HD];
             if own == "webm" {
@@ -2251,6 +2266,10 @@ mod tests {
         assert!(probe(&even).contains("Tune"), "loudness keeps the tags");
         let mono = convert(&song, "tool:mono", None, work.path()).unwrap();
         assert!(probe(&mono).contains("channels=1"), "{}", probe(&mono));
+        let small = convert(&song, "tool:compress", None, work.path()).unwrap();
+        assert_eq!(small, work.path().join("song (compressed).mp3"));
+        assert!(fs::metadata(&small).unwrap().len() < fs::metadata(&song).unwrap().len());
+        assert!(probe(&small).contains("Tune"), "compress keeps the tags");
         assert_eq!(convert(&song, "tool:still", None, work.path()).unwrap_err(), ".mp3 files can't be turned into a picture");
     }
 
