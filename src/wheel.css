@@ -176,6 +176,19 @@ svg.closing {
   fill: var(--accent-text);
 }
 
+.icon {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.seg.active .icon {
+  stroke: var(--accent-text);
+}
+
 .hub {
   fill: var(--hub);
   stroke: var(--seg-edge);
