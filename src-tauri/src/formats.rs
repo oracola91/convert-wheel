@@ -107,6 +107,13 @@ const TOOLS: &[(&str, &[&str])] = &[
     ("tool:smaller", &["pdf"]),
     ("tool:still", &["mp4", "mov", "m4v", "mkv", "webm", "avi"]),
     (
+        "tool:target",
+        &[
+            "jpg", "jpeg", "heic", "heif", "webp", "avif", "mp4", "mov", "m4v", "mkv", "webm", "mp3", "m4a", "aac", "ogg",
+            "opus", "wma",
+        ],
+    ),
+    (
         "tool:join",
         &[
             "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg",
@@ -154,7 +161,7 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 
 /// A tool that first opens the editing window (one file at a time) instead of running.
 pub fn opens_editor(id: &str) -> bool {
-    matches!(id, "tool:crop" | "tool:trim")
+    matches!(id, "tool:crop" | "tool:trim" | "tool:target")
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
@@ -309,7 +316,7 @@ mod tests {
 
     #[test]
     fn tools_are_offered_when_every_file_takes_them() {
-        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:crop"];
+        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:crop", "tool:target"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG"])), one);
         let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:onepdf"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), two);
@@ -320,9 +327,9 @@ mod tests {
         assert!(tools_for(&v(&["/tmp/a.gif"])).is_empty());
         assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:onepdf"]);
         // Trim opens a window for one file.
-        assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:trim", "tool:still"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:trim", "tool:still", "tool:target"]);
         assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:trim", "tool:still"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.mp3"])), ["tool:clean", "tool:trim", "tool:loudness", "tool:mono"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3"])), ["tool:clean", "tool:trim", "tool:target", "tool:loudness", "tool:mono"]);
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:clean", "tool:join", "tool:loudness", "tool:mono"]);
         assert_eq!(tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])), ["tool:compress", "tool:clean", "tool:still", "tool:join"]);
         // Join takes sound files or video files, not the two together.
