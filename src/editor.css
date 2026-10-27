@@ -309,3 +309,67 @@ footer input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* Compress to a size: a short form instead of a stage. */
+#panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 22px 22px 6px;
+}
+
+#panel p {
+  margin: 0;
+}
+
+#what {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+#panel label {
+  color: var(--muted);
+}
+
+#panel .row {
+  display: flex;
+  gap: 8px;
+}
+
+#panel input,
+#panel select {
+  font: inherit;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--field-edge);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+#panel input {
+  width: 110px;
+  font-variant-numeric: tabular-nums;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+#panel input:focus-visible,
+#panel select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+#presets {
+  flex-wrap: wrap;
+}
+
+#hint {
+  color: var(--muted);
+}
+
+#problem {
+  color: var(--accent);
+  font-weight: 600;
+}
