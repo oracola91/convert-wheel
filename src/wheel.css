@@ -2,13 +2,18 @@
    later. These fills are kept light so it shows through; colour sits only on the
    chosen segment. The shine makes each segment read as a bubble lit from above. */
 :root {
-  --seg: rgba(255, 255, 255, 0.34);
-  --sheen: 0.55;
-  --rim: 0.85;
-  --halo: rgba(255, 255, 255, 0.45);
+  /* Milky cushions that take on the colour behind them. */
+  --seg: rgba(255, 255, 255, 0.58);
+  --sheen: 0.35;
+  --rim: 0.9;
+  --bezel: rgba(255, 255, 255, 0.30);
+  --pill: rgba(255, 255, 255, 0.75);
+  /* The chosen segment: bright orange-red, lighter at the top. */
+  --accent-top: #f26a2c;
+  --accent-end: #cc400e;
   --seg-edge: rgba(0, 0, 0, 0.07);
   --text: #1d1d1f;
-  --hub: rgba(255, 255, 255, 0.55);
+  --hub: rgba(255, 255, 255, 0.40);
   --hub-text: #3a3a3c;
   --cancel: rgba(0, 0, 0, 0.10);
   /* Dark enough for white 12px text (4.7:1). */
@@ -19,11 +24,12 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --seg: rgba(255, 255, 255, 0.10);
+    --seg: rgba(255, 255, 255, 0.16);
     --seg-edge: rgba(255, 255, 255, 0.10);
-    --sheen: 0.22;
-    --rim: 0.45;
-    --halo: rgba(0, 0, 0, 0.35);
+    --sheen: 0.18;
+    --rim: 0.5;
+    --bezel: rgba(255, 255, 255, 0.10);
+    --pill: rgba(0, 0, 0, 0.35);
     --text: #f5f5f7;
     --hub: rgba(0, 0, 0, 0.22);
     --hub-text: #d1d1d6;
@@ -119,8 +125,32 @@ svg.switching .seg {
 }
 
 .seg.active .body {
-  fill: var(--accent);
+  fill: url(#accent);
   stroke: transparent;
+}
+
+.accent-top { stop-color: var(--accent-top); }
+.accent-end { stop-color: var(--accent-end); }
+
+/* The glass rim around the segments and the ring around the hub. */
+.bezel {
+  fill: none;
+  stroke: var(--bezel);
+  pointer-events: none;
+}
+
+.edge {
+  fill: none;
+  stroke: url(#rim);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.pill {
+  fill: var(--pill);
+  stroke: var(--seg-edge);
+  stroke-width: 0.5;
+  pointer-events: none;
 }
 
 .shine {
@@ -145,21 +175,15 @@ svg.switching .seg {
 
 .seg text {
   fill: var(--text);
-  /* A soft halo keeps the label readable over clear glass and a busy desktop. */
-  paint-order: stroke;
-  stroke: var(--halo);
-  stroke-width: 2.5px;
-  stroke-linejoin: round;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
   text-anchor: middle;
   dominant-baseline: central;
 }
 
 .seg.active text {
   fill: var(--accent-text);
-  stroke: transparent;
 }
 
 .hub {
@@ -183,8 +207,8 @@ svg.switching .seg {
 }
 
 /* No file icon above the label where there is no system glass (Windows), so it
-   moves up to the middle. */
-.solid .hub-label {
+   moves up to the middle, with its pill. */
+.solid .hub-tag {
   transform: translateY(-28px);
 }
 
@@ -198,14 +222,20 @@ svg.switching .seg {
   svg.opening { animation: none; }
   svg.closing { transform: none; transition: none; }
   .seg, .seg.active { transform: none; transition: none; }
+  svg.switching .seg { animation: none; }
 }
 
 /* Reduce Transparency: macOS already makes the glass solid; make the fills solid too. */
 @media (prefers-reduced-transparency: reduce) {
-  :root { --seg: #f2f2f7; --hub: #ffffff; }
-  .shine { display: none; }
+  :root { --seg: #f2f2f7; --hub: #ffffff; --bezel: #e5e5ea; --pill: #ffffff; }
+  .shine, .edge { display: none; }
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
-  :root { --seg: #2c2c2e; --hub: #1c1c1e; }
+  :root { --seg: #2c2c2e; --hub: #1c1c1e; --bezel: #3a3a3c; --pill: #1c1c1e; }
+}
+
+/* Increased contrast: the chosen segment in the darker orange white text reads on. */
+@media (prefers-contrast: more) {
+  .seg.active .body { fill: var(--accent); }
 }
