@@ -35,6 +35,10 @@ const VIDEO: Duration = Duration::from_secs(3600);
 /// being followed to other files or the network.
 const FFMPEG_FORMATS: &str = "mov,mp4,m4a,matroska,webm,avi,mp3,wav,flac,aiff,ogg,aac,asf,srt,webvtt";
 
+/// The sound a conversion encodes: the first track. Phones add more that ffmpeg can't
+/// decode or other containers can't hold (an iPhone's spatial audio, for one).
+const FIRST_SOUND: &str = "0:a:0?";
+
 /// The error of a conversion ended with Stop.
 pub const STOPPED: &str = "stopped";
 
@@ -348,7 +352,7 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             // At most 1920 on the long side, and even sizes, which H.264 needs.
             const FIT: &str = "scale=w='if(gte(iw,ih),min(1920,iw),-2)':h='if(gte(iw,ih),-2,min(1920,ih))',\
                                scale=trunc(iw/2)*2:trunc(ih/2)*2";
-            let mut args = vec!["-map", "0:v:0", "-map", "0:a?", "-vf", FIT];
+            let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT];
             if own == "webm" {
                 args.extend(["-c:v", "libvpx-vp9", "-crf", "38", "-b:v", "0", "-deadline", "good", "-cpu-used", "4"]);
                 args.extend(["-row-mt", "1", "-c:a", "libopus", "-b:a", "96k"]);
@@ -539,12 +543,28 @@ fn audio(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     ffmpeg(src, &args, out, AUDIO)
 }
 
+/// A fast copy of the picture and sound into another container: with every sound
+/// track, or else with the first only, as a phone's extra tracks may not fit. False
+/// when neither works and the video has to be encoded.
+fn copy_streams(src: &Path, extra: &[&str], out: &Path) -> bool {
+    for sound in ["0:a?", FIRST_SOUND] {
+        let mut args = vec!["-map", "0:v", "-map", sound, "-c", "copy"];
+        args.extend(extra);
+        // A copy is quick or fails quickly; it never needs the video limit.
+        if ffmpeg(src, &args, out, QUICK).is_ok() {
+            return true;
+        }
+        let _ = fs::remove_file(out);
+    }
+    false
+}
+
 fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
     // H.264 in yuv420p needs even width and height; phone and screen recordings often
     // aren't, so round down by a pixel where needed.
     let level = quality().video;
     let h264: Vec<&str> = vec![
-        "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264",
+        "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264",
         "-preset", "medium", "-crf", level.pick("26", "20", "17"), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
     ];
@@ -553,20 +573,15 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
     match target {
         "mp4" | "mov" => {
             // MP4, MOV and M4V usually hold the same streams: try a fast copy first.
-            if matches!(ext, "mp4" | "mov" | "m4v") {
-                let copy = ["-map", "0:v", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart"];
-                // A copy is quick or fails quickly; it never needs the video limit.
-                if ffmpeg(src, &copy, out, QUICK).is_ok() {
-                    return Ok(());
-                }
-                let _ = fs::remove_file(out);
+            if matches!(ext, "mp4" | "mov" | "m4v") && copy_streams(src, &["-movflags", "+faststart"], out) {
+                return Ok(());
             }
             ffmpeg(src, &h264, out, VIDEO)
         }
         "webm" => ffmpeg(
             src,
             &[
-                "-map", "0:v:0", "-map", "0:a?", "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0",
+                "-map", "0:v:0", "-map", FIRST_SOUND, "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0",
                 "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
             ],
             out,
@@ -574,11 +589,9 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
         ),
         "mkv" => {
             // Matroska holds nearly any streams: a fast copy first, as for MP4.
-            let copy = ["-map", "0:v", "-map", "0:a?", "-c", "copy"];
-            if ffmpeg(src, &copy, out, QUICK).is_ok() {
+            if copy_streams(src, &[], out) {
                 return Ok(());
             }
-            let _ = fs::remove_file(out);
             // H.264 without MP4's own "+faststart".
             ffmpeg(src, &h264[..h264.len() - 2], out, VIDEO)
         }
@@ -587,7 +600,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
         "avi" => ffmpeg(
             src,
             &[
-                "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "mpeg4", "-vtag", "xvid",
+                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "mpeg4", "-vtag", "xvid",
                 "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4",
             ],
             out,
@@ -596,7 +609,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
         "wmv" => ffmpeg(
             src,
             &[
-                "-map", "0:v:0", "-map", "0:a?", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "wmv2", "-q:v", quantiser,
+                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "wmv2", "-q:v", quantiser,
                 "-c:a", "wmav2", "-b:a", "192k",
             ],
             out,
@@ -2127,6 +2140,44 @@ mod tests {
             .output()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Codec names of a file's streams, one per line, in order.
+    fn streams(path: &Path) -> String {
+        let out = Command::new(tool("ffprobe").unwrap())
+            .args(["-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
+            .arg(path)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A second sound track that MP4 and Matroska can't hold, like an iPhone's spatial
+    /// audio, must not stop a copy or an encode: they keep the first track.
+    #[test]
+    fn extra_sound_tracks_dont_stop_a_video() {
+        if tool("ffmpeg").is_err() || tool("ffprobe").is_err() {
+            eprintln!("ffmpeg isn't installed: sound tracks not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let clip = work.path().join("phone.mov");
+        let mut make = Command::new(tool("ffmpeg").unwrap());
+        make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=2"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-f", "lavfi", "-i", "sine=frequency=660:duration=2"])
+            .args(["-map", "0", "-map", "1", "-map", "2", "-shortest"])
+            .args(["-c:v", "mpeg4", "-c:a:0", "aac", "-c:a:1", "adpcm_ima_qt"])
+            .arg(&clip);
+        assert!(make.status().unwrap().success());
+        assert_eq!(streams(&clip), "mpeg4\naac\nadpcm_ima_qt\n");
+
+        // Still a copy: the picture isn't encoded again.
+        let mp4 = convert(&clip, "mp4", None, work.path()).unwrap();
+        assert_eq!(streams(&mp4), "mpeg4\naac\n");
+        let mkv = convert(&clip, "mkv", None, work.path()).unwrap();
+        assert_eq!(streams(&mkv), "mpeg4\naac\n");
+        let small = convert(&clip, "tool:compress", None, work.path()).unwrap();
+        assert_eq!(streams(&small), "h264\naac\n");
     }
 
     #[test]
