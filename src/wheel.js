@@ -187,7 +187,7 @@ function show(raw) {
 }
 
 function restart(className) {
-  svg.classList.remove('opening', 'closing');
+  svg.classList.remove('opening', 'closing', 'switching');
   void svg.getBoundingClientRect();
   if (className) svg.classList.add(className);
 }
@@ -204,10 +204,14 @@ function readWheel(payload) {
   };
 }
 
-listen('wheel-show', (event) => {
-  ({ paths, formats, pending, wheel } = readWheel(event.payload));
+function nameWheel() {
   const names = { tools: 'Tools for the file', actions: 'Actions for the file' };
   svg.setAttribute('aria-label', names[wheel] ?? 'Formats to convert to');
+}
+
+listen('wheel-show', (event) => {
+  ({ paths, formats, pending, wheel } = readWheel(event.payload));
+  nameWheel();
   pinned = event.payload?.pinned === true;
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   build();
@@ -215,14 +219,19 @@ listen('wheel-show', (event) => {
   restart('opening');
 });
 
-// The files arrived (Windows, Linux): draw their formats without replaying the open,
-// and keep lit whatever the cursor is already over.
+// The files arrived (Windows, Linux), or the keys switched to another wheel: draw it
+// without replaying the open, and keep lit whatever the cursor is already over, if
+// the new wheel has that segment. The native side reports the new one as soon as the
+// cursor moves or a key changes.
 listen('wheel-formats', (event) => {
   if (!open) return;
   const keep = lastHover;
+  const before = wheel;
   ({ paths, formats, pending, wheel } = readWheel(event.payload));
+  nameWheel();
   build();
   show(keep);
+  if (wheel !== before) restart('switching');
 });
 
 listen('wheel-hover', (event) => {
