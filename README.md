@@ -125,6 +125,21 @@ The ring icon in the menu bar opens:
 - **Open at Login**: adds or removes Convert Wheel in System Settings > General > Login Items. Only works for the installed app.
 - **Save Converted Files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
 - **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
+- **Quality**: Smaller Files, Balanced (the default, what the app always did) or Best Quality, for Pictures, Video and Audio separately. It holds for a whole drop, from when it starts.
+
+  | | Smaller Files | Balanced | Best Quality |
+  |---|---|---|---|
+  | JPEG, WebP | 75 | 90 | 97 |
+  | HEIC, AVIF | 40 | ImageMagick's own (50) | 85 |
+  | H.264 (MP4, MOV, MKV) | CRF 26 | CRF 20 | CRF 17 |
+  | VP9 (WebM) | CRF 38 | CRF 32 | CRF 26 |
+  | AVI, WMV | quantiser 5 | 3 | 2 |
+  | MP3 (VBR) | about 130 kbit/s | 190 | 245 |
+  | AAC (M4A) | 160 kbit/s | 256 | 320 |
+  | Opus, OGG | 96 kbit/s | 160 | 256 |
+  | WMA | 128 kbit/s | 192 | 256 |
+
+  Lossless formats (PNG, TIFF, WAV, FLAC, AIFF) and documents have no quality to choose. The Tools wheel's Compress keeps its own, lower settings.
 - **Last: …**: how the last drop went, for when notifications are off. A click on it opens the folder with the new files selected, like a click on the notification. While a drop converts, the line shows how far it is: "Converting 3 of 10 to PNG…", with a percent for audio and video, or the time so far for a tool that doesn't report one.
 - **Stop Converting**: ends the drop being converted now. Files already done stay; the one in progress leaves nothing behind. Drops queued after it still run.
 - **Install ffmpeg…** (macOS and Windows): appears when a drop needed a converter that isn't installed, and the notification points to it. It runs `brew install` on macOS or `winget install` on Windows for that converter (several in a row: "Install ffmpeg and MuPDF…"), checks the app can now find it, and says so; then drop the files again. Without Homebrew it opens brew.sh; without winget it says to get App Installer from the Microsoft Store. On Windows, choosing it accepts the package's terms as typing the command would, and packages that install for all users, such as LibreOffice, still ask for admin rights. The package manager's last lines go to the log. On Linux the notification still names the `apt` command (it needs an admin password); the setup script installs everything at once.
