@@ -114,6 +114,8 @@ From version 0.1.1 the app updates itself from this repo's [Releases page](https
 
 **Where the key is.** Two copies: a secret in this repo's `release` environment on GitHub, which only `v*` tags can use and only the release job's signing step sees (the builds never do); and `~/.tauri/convert-wheel-updater.key` on the release Mac, with its password in the Keychain, used only by the last command of `scripts/release-macos.sh`. Keep an offline backup of the key file and its password in a password manager.
 
+**The Mac code-signing certificate.** macOS remembers which folders an app may open (Downloads, Documents) by the app's signature. An app signed ad hoc gets a new signature with every build, so after every update macOS would ask again. Releases and `scripts/install-macos.sh` builds are therefore signed with the project's own certificate, "Convert Wheel Signing", made once with `scripts/macos-signing-cert.sh` and kept in the release Mac's login keychain, with a backup (.p12 and its password) in a password manager. It is self-signed, not an Apple Developer ID: it keeps the permissions across updates, but macOS still asks for "Open Anyway" on the first launch of a downloaded copy.
+
 **If the key is lost,** installed copies can no longer be updated: publish a build with a new key and ask everyone to install it once by hand. **If the key may have leaked,** do the same at once: generate a new key, put its public half in `tauri.conf.json`, replace both copies of the private key, release, and tell users to reinstall from the Releases page; copies with the old key can be offered files signed with the leaked one until they do.
 
 On Windows the update runs the installer in passive mode (a progress bar, no questions). On macOS the app is replaced in place. On Linux the AppImage is replaced, or the `.deb` is installed as root: the system asks for the admin password (pkexec), or if that isn't available, a plain password box appears and the password goes to `sudo`.
@@ -259,6 +261,7 @@ SECURITY.md                how to report a security problem
 scripts/install-macos.sh   build and install in /Applications on this Mac
 scripts/install-linux.sh   one-command setup on Ubuntu and Debian
 scripts/release-macos.sh   add the macOS .dmg to a release
+scripts/macos-signing-cert.sh  make the Mac code-signing certificate, once
 INSTALL.md                 installing, updating, uninstalling, making a release
 ROADMAP.md                 what comes next, in order
 ```
