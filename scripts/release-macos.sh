@@ -8,7 +8,8 @@
 #
 # Needs the update signing key: ~/.tauri/convert-wheel-updater.key, with its password
 # in the macOS Keychain (service "convert-wheel-updater-key"). Only the final signing
-# command sees them, never the build.
+# command sees them, never the build. And the code-signing certificate "Convert Wheel
+# Signing" in the login keychain (scripts/macos-signing-cert.sh).
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -24,6 +25,12 @@ remote=$(git ls-remote origin "refs/tags/$tag^{}" | cut -f1)
 
 key="$HOME/.tauri/convert-wheel-updater.key"
 [ -f "$key" ] || { echo "Update signing key missing: $key"; exit 1; }
+
+# Every release is signed with the same certificate, so macOS keeps the permissions it
+# gave the app across updates.
+security find-certificate -c "Convert Wheel Signing" >/dev/null 2>&1 ||
+  { echo "Code-signing certificate missing: run scripts/macos-signing-cert.sh, or import its backup."; exit 1; }
+export APPLE_SIGNING_IDENTITY="Convert Wheel Signing"
 
 # The exact tool versions from the lock files, and no install scripts.
 npm ci --ignore-scripts
