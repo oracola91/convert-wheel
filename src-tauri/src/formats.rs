@@ -82,7 +82,10 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
 const TOOLS: &[(&str, &[&str])] = &[
     (
         "tool:compress",
-        &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "mp4", "mov", "m4v", "mkv", "webm"],
+        &[
+            "jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "mp4", "mov", "m4v", "mkv", "webm", "mp3",
+            "m4a", "aac", "ogg", "opus", "wma", "flac",
+        ],
     ),
     ("tool:half", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     (
@@ -293,8 +296,11 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:onepdf"]);
         assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:still"]);
         assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:still"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:clean", "tool:loudness", "tool:mono"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:clean"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:compress", "tool:clean", "tool:loudness", "tool:mono"]);
+        // WAV and AIFF are uncompressed by design: nothing to compress them with.
+        assert_eq!(tools_for(&v(&["/tmp/a.wav"])), ["tool:clean", "tool:loudness", "tool:mono"]);
+        // Sound and video together: each is compressed or cleaned in its own way.
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
         assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:smaller"]);
