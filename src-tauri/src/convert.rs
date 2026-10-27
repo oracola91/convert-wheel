@@ -1004,11 +1004,16 @@ impl Mutool<'_> {
         run_tool(cmd, limit)
     }
 
-    /// The number of pages, as MuPDF reads the PDF.
+    /// The number of pages, as MuPDF reads the PDF. On a PDF that needs a password
+    /// `mutool show` only warns and prints "null"; `mutool info` fails and says why.
     fn page_count(&self, work: &Path) -> Result<usize, String> {
         self.run(work, &["show", "-o", "count.txt"], "trailer/Root/Pages/Count")?;
         let text = fs::read_to_string(work.join("count.txt")).unwrap_or_default();
-        parse_count(&text).ok_or_else(|| "MuPDF couldn't tell how many pages this PDF has".to_string())
+        if let Some(count) = parse_count(&text) {
+            return Ok(count);
+        }
+        self.run_args(work, &["info"], &[])?;
+        Err("MuPDF couldn't tell how many pages this PDF has".to_string())
     }
 }
 
@@ -1957,12 +1962,18 @@ mod tests {
         let text = fs::read_to_string(convert(&many, "txt", None, work.path()).unwrap()).unwrap();
         assert!(text.starts_with("Page 1\n\nPage 2\n") && text.ends_with("Page 101\n"), "{text}");
 
-        // A PDF that needs a password says so.
+        // A PDF that needs a password says so. With its objects in object streams (-Z,
+        // where MuPDF has it) even the page count can't be read without the password.
         let locked = work.path().join("locked.pdf");
-        let mut clean = Command::new(tool("mutool").unwrap());
-        clean.args(["clean", "-E", "aes-256", "-U", "secret", "-O", "owner"]).arg(&src).arg(&locked);
-        run(clean, QUICK).unwrap();
+        let lock = |extra: &[&str]| {
+            let mut clean = Command::new(tool("mutool").unwrap());
+            clean.arg("clean").args(extra).args(["-E", "aes-256", "-U", "secret", "-O", "owner"]).arg(&src).arg(&locked);
+            run(clean, QUICK)
+        };
+        lock(&["-Z"]).or_else(|_| lock(&[])).unwrap();
         let err = convert(&locked, "txt", None, work.path()).unwrap_err();
+        assert!(err.contains("password-protected"), "{err}");
+        let err = convert(&locked, "png", None, work.path()).unwrap_err();
         assert!(err.contains("password-protected"), "{err}");
     }
 
