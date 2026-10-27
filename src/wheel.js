@@ -176,7 +176,14 @@ function build() {
     const d = sectorPath(i, n);
     g.append(el('path', { d, 'fill-rule': 'evenodd', class: 'body' }), el('path', { d, 'fill-rule': 'evenodd', class: 'shine' }));
     const [x, y] = polar((SEG_OUT + R_IN) / 2, mid);
-    const label = el('text', { x, y });
+    // Tools and actions get an icon (icons.js) above their name, drawn at 18 points.
+    const icon = typeof ICONS === 'object' && Object.hasOwn(ICONS, f) ? ICONS[f] : null;
+    if (icon) {
+      const art = el('g', { class: 'icon', transform: `translate(${(x - 9).toFixed(2)} ${(y - 21).toFixed(2)}) scale(0.75)` });
+      art.innerHTML = icon;
+      g.append(art);
+    }
+    const label = el('text', { x, y: icon ? y + 9 : y });
     label.textContent = (Object.hasOwn(TOOLS, f) ? TOOLS[f][0] : f).toUpperCase();
     g.append(label);
     svg.append(g);
