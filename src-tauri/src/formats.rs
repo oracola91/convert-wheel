@@ -97,6 +97,7 @@ const TOOLS: &[(&str, &[&str])] = &[
     ),
     ("tool:rotate", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     ("tool:qr", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
+    ("tool:crop", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     ("tool:onepdf", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:merge", &["pdf"]),
     ("tool:split", &["pdf"]),
@@ -129,10 +130,19 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
     }
     TOOLS
         .iter()
-        .filter(|(id, ins)| exts.iter().all(|e| ins.contains(&e.as_str())) && (!combines(id) || paths.len() > 1))
+        .filter(|(id, ins)| {
+            exts.iter().all(|e| ins.contains(&e.as_str()))
+                && (!combines(id) || paths.len() > 1)
+                && (!opens_editor(id) || paths.len() == 1)
+        })
         .map(|(id, _)| *id)
         .take(MAX_SEGMENTS)
         .collect()
+}
+
+/// A tool that first opens the editing window (one file at a time) instead of running.
+pub fn opens_editor(id: &str) -> bool {
+    id == "tool:crop"
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
@@ -287,12 +297,14 @@ mod tests {
 
     #[test]
     fn tools_are_offered_when_every_file_takes_them() {
-        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr"];
+        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:crop"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG"])), one);
         let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:onepdf"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), two);
         // BMP has no metadata to remove and nothing to compress it with.
+        // Crop opens a window for one picture: not offered for two.
         assert_eq!(tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])), ["tool:half", "tool:rotate", "tool:qr", "tool:onepdf"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.bmp"])), ["tool:half", "tool:rotate", "tool:qr", "tool:crop"]);
         // An animated GIF's first frame can still hold a QR code.
         assert_eq!(tools_for(&v(&["/tmp/a.gif"])), ["tool:qr"]);
         assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:qr", "tool:onepdf"]);

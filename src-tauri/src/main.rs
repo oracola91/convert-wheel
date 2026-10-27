@@ -6,6 +6,7 @@ mod convert;
 mod converters;
 #[cfg(target_os = "macos")]
 mod drop_view;
+mod editor;
 mod formats;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -46,6 +47,8 @@ pub(crate) fn busy_jobs() -> usize {
 struct Job {
     paths: Vec<String>,
     format: String,
+    /// The box chosen in the editor, for Crop.
+    crop: Option<convert::Crop>,
 }
 
 /// How the menu and the notifications speak of a drop: converting it to a format, or
@@ -128,6 +131,7 @@ impl Words {
                 "read the QR code in",
                 "Stopped reading QR codes",
             ),
+            "tool:crop" => tool("Cropping {}", "Cropped", "Cropped {} files", "crop", "Stopped cropping"),
             "act:zip" => tool("Making a ZIP of {}", "Made a ZIP", "Made a ZIP of {} files", "zip", "Stopped making the ZIP"),
             "act:tgz" => tool("Making a TAR.GZ of {}", "Made a TAR.GZ", "Made a TAR.GZ of {} files", "pack", "Stopped packing"),
             "act:tar" => tool("Making a TAR of {}", "Made a TAR", "Made a TAR of {} files", "pack", "Stopped packing"),
@@ -160,10 +164,10 @@ struct Running {
 impl Running {
     #[cfg(test)]
     fn new(target: &str, paths: &[String]) -> Self {
-        Self::with_quality(target, paths, settings::Quality::default())
+        Self::with_quality(target, paths, settings::Quality::default(), None)
     }
 
-    fn with_quality(target: &str, paths: &[String], quality: settings::Quality) -> Self {
+    fn with_quality(target: &str, paths: &[String], quality: settings::Quality, crop: Option<convert::Crop>) -> Self {
         // A tool that makes one file of the whole drop works on it as one thing.
         let (count, first) = if formats::combines(target) {
             let what = match paths {
@@ -175,7 +179,7 @@ impl Running {
             (paths.len(), paths.first().map(|p| file_name(Path::new(p))).unwrap_or_default())
         };
         Running {
-            control: convert::Control::with_quality(quality),
+            control: convert::Control::with_edit(quality, crop),
             target: target.to_string(),
             words: Words::new(target),
             count,
@@ -248,8 +252,17 @@ fn wheel_cancel(app: AppHandle) {
 
 /// Queues a drop on the wheel for conversion.
 pub(crate) fn enqueue(app: &AppHandle, paths: Vec<String>, format: String) {
+    send_job(app, Job { paths, format, crop: None });
+}
+
+/// Queues a picture cropped in the editor.
+pub(crate) fn enqueue_crop(app: &AppHandle, path: String, crop: convert::Crop) {
+    send_job(app, Job { paths: vec![path], format: "tool:crop".into(), crop: Some(crop) });
+}
+
+fn send_job(app: &AppHandle, job: Job) {
     JOBS.fetch_add(1, Ordering::SeqCst);
-    if app.state::<Sender<Job>>().send(Job { paths, format }).is_err() {
+    if app.state::<Sender<Job>>().send(job).is_err() {
         JOBS.fetch_sub(1, Ordering::SeqCst);
         log::line("conversion worker is gone; drop not converted");
         notify(app, "Convert Wheel stopped converting", "Quit Convert Wheel and open it again.");
@@ -263,7 +276,7 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
         for job in rx {
             // The quality chosen in the menu when the drop starts holds for all of it.
             let quality = app.state::<settings::Store>().get().quality;
-            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality));
+            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality, job.crop));
             app.state::<NowConverting>().set(Some(Arc::clone(&running)));
             menu::show_progress(&app, &running.line());
             let (finished, done_signal) = mpsc::channel::<()>();
@@ -570,7 +583,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, editor::editor_session, editor::editor_apply, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
@@ -599,6 +612,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(reveal::Results::default());
     app.manage(NowConverting::default());
     app.manage(converters::Missing::default());
+    app.manage(editor::Editing::default());
     // Before any notification: the ones shown earlier never report a click.
     #[cfg(target_os = "macos")]
     mac_notification::install(app.handle());
