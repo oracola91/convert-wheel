@@ -77,6 +77,15 @@ fn copy_paths(app: &AppHandle, files: &[PathBuf]) {
     set_clipboard(app, text, done);
 }
 
+/// Puts `text` on the clipboard for a tool that says itself what it did (Read QR Code).
+pub(crate) fn copy_text(app: &AppHandle, text: String) {
+    set_clipboard(app, text, |result| {
+        if let Err(e) = result {
+            log::line(&format!("couldn't copy the text: {e}"));
+        }
+    });
+}
+
 /// The clipboard belongs to the main thread on macOS and Linux.
 #[cfg(target_os = "macos")]
 fn set_clipboard(app: &AppHandle, text: String, done: impl FnOnce(Result<(), String>) + Send + 'static) {

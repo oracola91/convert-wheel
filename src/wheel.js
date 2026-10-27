@@ -35,6 +35,7 @@ const TOOLS = {
   'tool:still': ['First frame', 'First frame as JPEG'],
   'tool:loudness': ['Loudness', 'Even out loudness'],
   'tool:mono': ['Mono', 'Mix down to mono'],
+  'tool:qr': ['QR code', 'Read the QR code'],
   'act:path': ['Copy path', 'Copy path'],
   'act:show': ['Show', 'Show in folder'],
   'act:terminal': ['Terminal', 'Open Terminal here'],
