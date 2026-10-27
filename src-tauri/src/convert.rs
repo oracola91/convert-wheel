@@ -35,6 +35,11 @@ const VIDEO: Duration = Duration::from_secs(3600);
 /// being followed to other files or the network.
 const FFMPEG_FORMATS: &str = "mov,mp4,m4a,matroska,webm,avi,mp3,wav,flac,aiff,ogg,aac,asf,srt,webvtt";
 
+/// At most 1920 on the long side, and even sizes, which the video encoders need. For
+/// Compress, and for the old formats (AVI, WMV), whose players can't take 4K.
+const FIT_HD: &str = "scale=w='if(gte(iw,ih),min(1920,iw),-2)':h='if(gte(iw,ih),-2,min(1920,ih))',\
+                      scale=trunc(iw/2)*2:trunc(ih/2)*2";
+
 /// The sound a conversion encodes: the first track. Phones add more that ffmpeg can't
 /// decode or other containers can't hold (an iPhone's spatial audio, for one).
 const FIRST_SOUND: &str = "0:a:0?";
@@ -349,10 +354,7 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             ffmpeg(src, &args, out, AUDIO)
         }
         "tool:compress" => {
-            // At most 1920 on the long side, and even sizes, which H.264 needs.
-            const FIT: &str = "scale=w='if(gte(iw,ih),min(1920,iw),-2)':h='if(gte(iw,ih),-2,min(1920,ih))',\
-                               scale=trunc(iw/2)*2:trunc(ih/2)*2";
-            let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT];
+            let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT_HD];
             if own == "webm" {
                 args.extend(["-c:v", "libvpx-vp9", "-crf", "38", "-b:v", "0", "-deadline", "good", "-cpu-used", "4"]);
                 args.extend(["-row-mt", "1", "-c:a", "libopus", "-b:a", "96k"]);
@@ -412,7 +414,9 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
         "tool:compress" if coder == "png" => cmd.args(["-colors", "256"]),
         "tool:compress" if coder == "tiff" => cmd.args(["-compress", "zip"]),
         "tool:compress" if coder == "jpeg" => cmd.args(["-quality", "70"]),
-        // The newer formats look as good as JPEG at a lower number.
+        // The newer formats look as good as JPEG at a lower number. HEIC's numbers run
+        // higher than the others': at the same one its files are about twice the size.
+        "tool:compress" if coder == "heic" => cmd.args(["-quality", "45"]),
         "tool:compress" => cmd.args(["-quality", "55"]),
         "tool:half" => cmd.args(["-resize", "50%"]),
         // Every profile but the colour one (EXIF with the camera and location, XMP,
@@ -423,10 +427,11 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
     };
     // Written again, a lossy picture should look and weigh about the same. JPEG keeps
     // the original's own quality when none is given; for the newer formats ImageMagick
-    // can't tell, and 80 is close to what phones and browsers use (90 made files
-    // three times bigger).
+    // can't tell. For WebP and AVIF 80 is close to what browsers use (90 made files three
+    // times bigger); HEIC needs 60 for about the size an iPhone writes (80 made them two
+    // and a half times bigger).
     if tool != "tool:compress" && matches!(coder, "webp" | "heic" | "avif") {
-        cmd.args(["-quality", "80"]);
+        cmd.args(["-quality", if coder == "heic" { "60" } else { "80" }]);
     }
     if coder == "png" {
         // ImageMagick would otherwise add its own dates to a PNG.
@@ -600,7 +605,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
         "avi" => ffmpeg(
             src,
             &[
-                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "mpeg4", "-vtag", "xvid",
+                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT_HD, "-c:v", "mpeg4", "-vtag", "xvid",
                 "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4",
             ],
             out,
@@ -609,7 +614,7 @@ fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> 
         "wmv" => ffmpeg(
             src,
             &[
-                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "wmv2", "-q:v", quantiser,
+                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT_HD, "-c:v", "wmv2", "-q:v", quantiser,
                 "-c:a", "wmav2", "-b:a", "192k",
             ],
             out,
@@ -2178,6 +2183,32 @@ mod tests {
         assert_eq!(streams(&mkv), "mpeg4\naac\n");
         let small = convert(&clip, "tool:compress", None, work.path()).unwrap();
         assert_eq!(streams(&small), "h264\naac\n");
+    }
+
+    /// AVI and WMV are for old players, which can't take 4K: the picture is made to fit
+    /// 1920, keeping its shape.
+    #[test]
+    fn old_video_formats_fit_1920() {
+        if tool("ffmpeg").is_err() || tool("ffprobe").is_err() {
+            eprintln!("ffmpeg isn't installed: old video formats not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let clip = work.path().join("big.mp4");
+        let mut make = Command::new(tool("ffmpeg").unwrap());
+        make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=2560x1440:rate=10:duration=1"])
+            .args(["-c:v", "libx264", "-preset", "ultrafast"])
+            .arg(&clip);
+        assert!(make.status().unwrap().success());
+        for target in ["avi", "wmv"] {
+            let out = convert(&clip, target, None, work.path()).unwrap();
+            let size = Command::new(tool("ffprobe").unwrap())
+                .args(["-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
+                .arg(&out)
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8_lossy(&size.stdout).trim(), "1920,1080", "{target}");
+        }
     }
 
     #[test]
