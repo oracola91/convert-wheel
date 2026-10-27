@@ -3,7 +3,7 @@
    chosen segment. The shine makes each segment read as a bubble lit from above. */
 :root {
   /* Milky cushions that take on the colour behind them. */
-  --seg: rgba(255, 255, 255, 0.58);
+  --seg: rgba(255, 255, 255, 0.46);
   --sheen: 0.35;
   --rim: 0.9;
   --bezel: rgba(255, 255, 255, 0.30);
@@ -24,7 +24,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --seg: rgba(255, 255, 255, 0.16);
+    --seg: rgba(255, 255, 255, 0.09);
     --seg-edge: rgba(255, 255, 255, 0.10);
     --sheen: 0.18;
     --rim: 0.5;
@@ -80,16 +80,6 @@ svg.closing {
 @keyframes open {
   from { transform: scale(0.92); }
   to { transform: scale(1); }
-}
-
-/* Another wheel for the same drag: its segments fade in where the old ones were. */
-svg.switching .seg {
-  animation: switch 140ms cubic-bezier(0.2, 0, 0, 1);
-}
-
-@keyframes switch {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 
 /* The disc only shows where the system draws no glass (Windows). */
@@ -222,7 +212,6 @@ svg.switching .seg {
   svg.opening { animation: none; }
   svg.closing { transform: none; transition: none; }
   .seg, .seg.active { transform: none; transition: none; }
-  svg.switching .seg { animation: none; }
 }
 
 /* Reduce Transparency: macOS already makes the glass solid; make the fills solid too. */
