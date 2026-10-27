@@ -22,7 +22,7 @@ use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, KeyButMask, Window};
 use x11rb::rust_connection::RustConnection;
 
 use crate::trigger;
-use crate::wheel::{self, Hover, WheelState, Which};
+use crate::wheel::{self, Hover, KeyFollower, WheelState, Which};
 
 const POLL: Duration = Duration::from_millis(30);
 /// Matches the close animation in src/wheel.css.
@@ -71,6 +71,7 @@ fn start_x11(app: AppHandle) {
         let (mut was_down, mut start, mut from_files, mut shown) = (false, (0, 0), false, false);
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
+        let mut keys = KeyFollower::default();
         loop {
             thread::sleep(POLL);
             let pointer = match conn.query_pointer(root).map(|c| c.reply()) {
@@ -87,6 +88,7 @@ fn start_x11(app: AppHandle) {
                     trigger::released(&app);
                 }
                 (was_down, from_files, shown, held) = (false, false, false, 0);
+                keys = KeyFollower::default();
                 continue;
             }
             let (px, py) = (i32::from(pointer.root_x), i32::from(pointer.root_y));
@@ -102,6 +104,9 @@ fn start_x11(app: AppHandle) {
                 let which = Which::from_keys(pointer.mask.contains(KeyButMask::MOD1), pointer.mask.contains(KeyButMask::CONTROL));
                 trigger::show_wheel(&app, Vec::new(), which);
                 shown = true;
+            } else if shown {
+                let held = |key| pointer.mask.contains(key);
+                trigger::follow_keys(&app, &mut keys, held(KeyButMask::SHIFT), held(KeyButMask::MOD1), held(KeyButMask::CONTROL));
             }
         }
     });
