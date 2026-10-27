@@ -1,5 +1,6 @@
-//! The wheel window's native parts on macOS: frosted glass behind the ring, the
-//! dragged file's icon in the hub, placement at the cursor, and the fade in and out.
+//! The wheel window's native parts on macOS: glass behind the ring (Liquid Glass on
+//! macOS 26 and later, frosted before), the dragged file's icon in the hub, placement
+//! at the cursor, and the fade in and out.
 //! Everything here runs on the main thread.
 
 use std::cell::RefCell;
@@ -7,11 +8,12 @@ use std::ptr::NonNull;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::Bool;
+use objc2::runtime::{AnyClass, Bool};
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSAutoresizingMaskOptions, NSBezierPath, NSColor,
-    NSEvent, NSImage, NSImageScaling, NSImageView, NSScreen, NSVisualEffectBlendingMode,
+    NSEvent, NSGlassEffectView, NSGlassEffectViewStyle, NSImage, NSImageScaling, NSImageView, NSScreen,
+    NSVisualEffectBlendingMode,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode,
     NSWorkspace,
 };
@@ -44,16 +46,26 @@ pub fn install(app: &AppHandle, mtm: MainThreadMarker) -> Result<(), String> {
     let content = window.contentView().ok_or("the wheel window has no content")?;
     let bounds = content.bounds();
 
-    // Glass: the system material, cut to a disc. With Reduce Transparency on, macOS
-    // draws it solid by itself.
-    let glass = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), bounds);
-    glass.setMaterial(NSVisualEffectMaterial::Popover);
-    glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-    // The app is never the active one, so the glass must not follow the active state.
-    glass.setState(NSVisualEffectState::Active);
-    glass.setMaskImage(Some(&disc(wheel::R_OUT)));
-    glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
-    content.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, None);
+    // Glass, as a disc. Liquid Glass where macOS has it (26 and later): the clear kind,
+    // so the desktop shows through, bent at the edge. Before that the frosted material.
+    // With Reduce Transparency on, macOS draws either one solid by itself.
+    if AnyClass::get(c"NSGlassEffectView").is_some() {
+        let (c, r) = (wheel::SIZE / 2.0, wheel::R_OUT);
+        let frame = NSRect::new(NSPoint::new(c - r, c - r), NSSize::new(2.0 * r, 2.0 * r));
+        let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
+        glass.setStyle(NSGlassEffectViewStyle::Clear);
+        glass.setCornerRadius(r);
+        content.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, None);
+    } else {
+        let glass = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), bounds);
+        glass.setMaterial(NSVisualEffectMaterial::Popover);
+        glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        // The app is never the active one, so the glass must not follow the active state.
+        glass.setState(NSVisualEffectState::Active);
+        glass.setMaskImage(Some(&disc(wheel::R_OUT)));
+        glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+        content.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, None);
+    }
 
     let c = wheel::SIZE / 2.0;
     let frame = NSRect::new(NSPoint::new(c - ICON / 2.0, c - ICON / 2.0 + ICON_LIFT), NSSize::new(ICON, ICON));
