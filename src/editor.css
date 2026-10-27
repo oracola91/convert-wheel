@@ -14,6 +14,10 @@
   --accent-text: #ffffff;
   --dim: rgba(0, 0, 0, 0.55);
   --edge: rgba(255, 255, 255, 0.95);
+  --wave: rgba(255, 255, 255, 0.78);
+  --play: #ff8a3d;
+  --field: #ffffff;
+  --field-edge: rgba(0, 0, 0, 0.16);
   color-scheme: light dark;
 }
 
@@ -27,6 +31,8 @@
     --button-hover: rgba(255, 255, 255, 0.14);
     --pressed: #f5f5f7;
     --pressed-text: #1d1d1f;
+    --field: #1c1c1e;
+    --field-edge: rgba(255, 255, 255, 0.16);
   }
 }
 
@@ -187,7 +193,119 @@ button:disabled {
   cursor: default;
 }
 
-#size {
+#size,
+#length {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* Trim: the timeline across the stage, a video's frames above the loudness. The part
+   kept is framed; the rest is darkened by the frame's wide shadow, cut off at the
+   timeline's edge. */
+#stage.trim {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#timeline {
+  position: relative;
+  width: calc(100% - 48px);
+  overflow: hidden;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  touch-action: none;
+}
+
+#strip {
+  display: block;
+  width: 100%;
+  height: 90px;
+  object-fit: fill;
+}
+
+#wave {
+  display: block;
+  width: 100%;
+  height: 160px;
+}
+
+.video #wave {
+  height: 120px;
+}
+
+#keep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  border-top: 2px solid var(--edge);
+  border-bottom: 2px solid var(--edge);
+  box-shadow: 0 0 0 9999px var(--dim);
+  cursor: grab;
+}
+
+.grip {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 12px;
+  background: var(--edge);
+  cursor: ew-resize;
+  outline: none;
+}
+
+.grip[data-end="start"] { left: 0; border-radius: 6px 0 0 6px; }
+.grip[data-end="end"] { right: 0; border-radius: 0 6px 6px 0; }
+
+/* A notch to grab by. */
+.grip::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: calc(50% - 10px);
+  width: 2px;
+  height: 20px;
+  border-radius: 1px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.grip:focus-visible {
+  background: #ffb27a;
+}
+
+#playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--play);
+  pointer-events: none;
+}
+
+footer label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+footer input {
+  width: 84px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--field-edge);
+  border-radius: 8px;
+  padding: 5px 8px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+footer input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
