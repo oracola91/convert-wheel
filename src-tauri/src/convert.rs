@@ -2225,9 +2225,8 @@ mod tests {
         let control = Control::with_edit(Quality::default(), Some(Edit::Crop(crop)));
         let out = under(&control, || convert(&wide, "tool:crop", None, work.path())).unwrap();
         assert_eq!(out, work.path().join("wide (cropped).png"));
-        let mut size = Command::new(&magick);
-        let size = size.arg("identify").args(["-format", "%w %h"]).arg(&out).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&size.stdout), "150 120");
+        // ImageMagick 6 (Ubuntu) has no "magick identify": ask the way the other tests do.
+        assert_eq!(picture_size(&out), "150x120");
         // Without the editor there is no box to cut.
         assert_eq!(convert(&wide, "tool:crop", None, work.path()).unwrap_err(), "Crop opens its window from the wheel");
     }
