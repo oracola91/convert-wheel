@@ -205,6 +205,31 @@ function build() {
   show({ segment: null, hub: false });
 }
 
+// Each segment's word, with its icon if it has one: its box where the segment rests.
+function wordBoxes() {
+  return segments.map((g) => {
+    const parts = [...g.querySelectorAll('text, .icon')].map((node) => {
+      const b = node.getBBox();
+      // An icon is drawn moved and scaled; a word isn't.
+      const m = node.transform.baseVal.consolidate()?.matrix;
+      return m
+        ? { x: m.e + b.x * m.a, y: m.f + b.y * m.d, right: m.e + (b.x + b.width) * m.a, bottom: m.f + (b.y + b.height) * m.d }
+        : { x: b.x, y: b.y, right: b.x + b.width, bottom: b.y + b.height };
+    });
+    const x = Math.min(...parts.map((p) => p.x));
+    const y = Math.min(...parts.map((p) => p.y));
+    return { x, y, width: Math.max(...parts.map((p) => p.right)) - x, height: Math.max(...parts.map((p) => p.bottom)) - y };
+  });
+}
+
+// On macOS glass, the app frosts the glass behind each word, so the words read over
+// anything while the rest of the wheel stays as clear as the slider says.
+function frostWords() {
+  const root = document.documentElement;
+  if (root.classList.contains('solid') || root.classList.contains('plain')) return;
+  invoke('wheel_words', { words: wordBoxes() }).catch((e) => console.error('wheel_words failed', e));
+}
+
 // Hover messages come from native code; anything unexpected counts as no hover.
 function clean(hover) {
   const seg = Number.isInteger(hover?.segment) && hover.segment < formats.length ? hover.segment : null;
@@ -280,8 +305,8 @@ listen('wheel-show', (event) => {
   const share = (v, fallback) => (Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback);
   document.documentElement.classList.toggle('plain', look?.plain === true);
   document.documentElement.style.setProperty('--seg-a', share(look?.seg, 0.23));
-  document.documentElement.style.setProperty('--halo-a', share(look?.halo, 0.75));
   build();
+  frostWords();
   open = true;
   restart('opening');
 });
@@ -298,6 +323,7 @@ listen('wheel-formats', (event) => {
   // No fade-in: in the wheel's window macOS can hold an animation at its first
   // frame, which left a switched-to wheel with invisible segments.
   build();
+  frostWords();
   show(keep);
 });
 

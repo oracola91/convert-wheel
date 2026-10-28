@@ -20,25 +20,23 @@
   --accent: #b85a00;
   --accent-text: #ffffff;
   --disc: rgba(246, 246, 248, 0.97);
-  --halo: transparent;
 }
 
 /* macOS: clear glass drawn here, the same from the first frame. Next to no paint, so
-   what is behind shows through; thin bright edges and a rim catch the light, and a
-   soft halo keeps the words readable on any background. Windows draws its own solid
-   disc and keeps the fills above. */
+   what is behind shows through; thin bright edges and a rim catch the light. The
+   words stay readable on any background because the glass is frosted right behind
+   each one (wheel_window.rs, from the boxes wheel.js sends). Windows draws its own
+   solid disc and keeps the fills above. */
 :root:not(.solid):not(.plain) {
-  /* How much white the segments carry and how strong the halo is: from the menu's
-     Transparency slider (wheel.js sets them on each wheel). */
+  /* How much white the segments carry: from the menu's Transparency slider (wheel.js
+     sets it on each wheel). */
   --seg-a: 0.22;
-  --halo-a: 0.75;
   --seg: rgba(255, 255, 255, var(--seg-a));
   --seg-edge: rgba(255, 255, 255, 0.3);
   --sheen: 0.22;
   --rim: 1;
   --bezel: rgba(255, 255, 255, 0.10);
   --hub: rgba(255, 255, 255, calc(var(--seg-a) + 0.04));
-  --halo: rgba(255, 255, 255, var(--halo-a));
 }
 
 /* The other highlight colours from the menu: light at the top, and a darker shade
@@ -73,7 +71,6 @@
     --rim: 0.6;
     --bezel: rgba(255, 255, 255, 0.06);
     --hub: rgba(0, 0, 0, calc(var(--seg-a) * 0.5));
-    --halo: rgba(0, 0, 0, var(--halo-a));
   }
 }
 
@@ -211,10 +208,6 @@ svg.closing {
 
 .seg text {
   fill: var(--text);
-  stroke: var(--halo);
-  stroke-width: 3px;
-  stroke-linejoin: round;
-  paint-order: stroke fill;
   font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 0.03em;
@@ -224,7 +217,6 @@ svg.closing {
 
 .seg.active text {
   fill: var(--accent-text);
-  stroke: none;
 }
 
 .icon {
@@ -240,10 +232,6 @@ svg.closing {
   stroke: var(--accent-text);
 }
 
-:root:not(.solid):not(.plain) .seg text {
-  stroke-width: 4px;
-}
-
 .hub {
   fill: var(--hub);
   stroke: var(--seg-edge);
@@ -257,10 +245,6 @@ svg.closing {
 
 .hub-label {
   fill: var(--hub-text);
-  stroke: var(--halo);
-  stroke-width: 3px;
-  stroke-linejoin: round;
-  paint-order: stroke fill;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.02em;
@@ -288,7 +272,7 @@ svg.closing {
 
 /* Reduce Transparency: macOS already makes the glass solid; make the fills solid too. */
 @media (prefers-reduced-transparency: reduce) {
-  :root, :root:not(.solid) { --seg: #f2f2f7; --hub: #ffffff; --bezel: #e5e5ea; --pill: #ffffff; --seg-edge: rgba(0, 0, 0, 0.12); --halo: transparent; }
+  :root, :root:not(.solid) { --seg: #f2f2f7; --hub: #ffffff; --bezel: #e5e5ea; --pill: #ffffff; --seg-edge: rgba(0, 0, 0, 0.12); }
   .shine, .edge { display: none; }
 }
 
