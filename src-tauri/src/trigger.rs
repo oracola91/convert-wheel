@@ -18,6 +18,9 @@ use crate::wheel::{self, Hover, KeyFollower, WheelState, Which};
 
 #[cfg(target_os = "macos")]
 const POLL: Duration = Duration::from_millis(30);
+/// Polls between checks that a showing shelf still sits right, after screens changed.
+#[cfg(target_os = "macos")]
+const SHELF_REFRESH: u32 = 66;
 /// Polls Shift must be held before the wheel opens, so Option (Alt) or Control pressed
 /// a moment after it still picks the Tools or Actions wheel.
 pub(crate) const KEYS_SETTLE: u8 = 2;
@@ -70,6 +73,11 @@ pub fn start(app: AppHandle) {
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
+        // This drag carries files, so the shelf follows it (until the wheel opens), and
+        // whether that was checked yet.
+        let mut shelf_drag = false;
+        let mut checked = false;
+        let mut idle: u32 = 0;
         loop {
             thread::sleep(POLL);
             // AppKit hands back autoreleased objects; without a pool on this thread
@@ -80,16 +88,29 @@ pub fn start(app: AppHandle) {
                 if count != last_count {
                     last_count = count;
                     dragging = button_down;
+                    checked = false;
                 }
                 if !button_down {
                     if shown {
                         released(&app);
                     }
+                    if shelf_drag {
+                        crate::shelf_window::drag_ended_soon(&app);
+                    }
                     dragging = false;
                     shown = false;
                     held = 0;
                     keys = KeyFollower::default();
+                    shelf_drag = false;
+                    idle = (idle + 1) % SHELF_REFRESH;
+                    if idle == 0 {
+                        crate::shelf_window::refresh_soon(&app);
+                    }
                     return;
+                }
+                if dragging && !checked {
+                    checked = true;
+                    shelf_drag = !macos::dragged_files().is_empty();
                 }
                 held = if macos::shift_down() { held.saturating_add(1) } else { 0 };
                 if dragging && !shown && held >= KEYS_SETTLE {
@@ -101,8 +122,16 @@ pub fn start(app: AppHandle) {
                     }
                     show_wheel(&app, paths, Which::from_keys(macos::option_down(), macos::control_down()));
                     shown = true;
+                    // The wheel has this drag now: the shelf steps aside.
+                    if shelf_drag {
+                        shelf_drag = false;
+                        crate::shelf_window::drag_ended_soon(&app);
+                    }
                 } else if shown {
                     follow_keys(&app, &mut keys, macos::shift_down(), macos::option_down(), macos::control_down());
+                }
+                if shelf_drag && dragging {
+                    crate::shelf_window::dragging_soon(&app);
                 }
             });
         }

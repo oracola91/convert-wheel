@@ -1,6 +1,6 @@
 //! The menu bar icon and its menu: how the last conversion went, converters to
-//! install, updates, Open at Login, where converted files go, which formats the wheel
-//! offers, and the quality per kind of file.
+//! install, updates, Open at Login, the shelf (macOS), where converted files go, which
+//! formats the wheel offers, and the quality per kind of file.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -16,6 +16,8 @@ use crate::{converters, formats, login, reveal, update};
 const SAVE_NEXT: &str = "save:next";
 const SAVE_DOWNLOADS: &str = "save:downloads";
 const LOGIN: &str = "login";
+#[cfg(target_os = "macos")]
+const SHELF: &str = "shelf";
 const LAST: &str = "last";
 const STOP: &str = "stop";
 const INSTALL: &str = "install";
@@ -92,10 +94,16 @@ pub fn build(app: &App) -> tauri::Result<()> {
 
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
-    let menu = Menu::with_items(
-        app,
-        &[&title, &hint, &last, &stop, &sep()?, &update, &login, &save, &shown, &quality, &sep()?, &show_log, &quit],
-    )?;
+    let (separator, separator2) = (sep()?, sep()?);
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&title, &hint, &last, &stop, &separator, &update, &login];
+    // Only macOS has the shelf so far.
+    #[cfg(target_os = "macos")]
+    let shelf = CheckMenuItem::with_id(app, SHELF, "Shelf at the Top of the Screen", true, !current.shelf_off, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    items.push(&shelf);
+    let rest: [&dyn tauri::menu::IsMenuItem<Wry>; 6] = [&save, &shown, &quality, &separator2, &show_log, &quit];
+    items.extend(rest);
+    let menu = Menu::with_items(app, &items)?;
 
     // macOS: a template icon it tints to match the menu bar, light or dark. Windows'
     // tray can be light or dark too, so it gets the coloured app icon instead.
@@ -275,6 +283,14 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
                 crate::notify(app, "Couldn't change Open at Login", &e);
             }
             set_check(app, LOGIN, login::is_enabled());
+        }
+        #[cfg(target_os = "macos")]
+        SHELF => {
+            if let Err(e) = store.update(|s| s.shelf_off = !s.shelf_off) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            set_check(app, SHELF, !store.get().shelf_off);
+            crate::shelf_window::setting_changed(app);
         }
         SAVE_NEXT | SAVE_DOWNLOADS => {
             let wanted = if id == SAVE_NEXT { SaveTo::NextToOriginal } else { SaveTo::Downloads };
