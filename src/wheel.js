@@ -267,8 +267,6 @@ function nameWheel() {
 
 // Colours the menu offers for the segment under the cursor (wheel.css has each).
 const HIGHLIGHTS = ['orange', 'red', 'pink', 'purple', 'blue', 'teal', 'green', 'graphite'];
-// The menu's Wheel Glass steps (wheel.css has each).
-const CLARITIES = ['clear', 'light', 'medium', 'strong', 'frosted'];
 
 listen('wheel-show', (event) => {
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
@@ -277,8 +275,12 @@ listen('wheel-show', (event) => {
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   const highlight = event.payload?.highlight;
   document.documentElement.dataset.highlight = HIGHLIGHTS.includes(highlight) ? highlight : 'orange';
-  const clarity = event.payload?.clarity;
-  document.documentElement.dataset.glass = CLARITIES.includes(clarity) ? clarity : 'medium';
+  // Wheel Glass: a plain solid disc, or Liquid Glass at the slider's transparency.
+  const look = event.payload?.look;
+  const share = (v, fallback) => (Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback);
+  document.documentElement.classList.toggle('plain', look?.plain === true);
+  document.documentElement.style.setProperty('--seg-a', share(look?.seg, 0.23));
+  document.documentElement.style.setProperty('--halo-a', share(look?.halo, 0.75));
   build();
   open = true;
   restart('opening');

@@ -102,61 +102,10 @@ pub struct Settings {
     /// The shelf at the top of the screen is switched off (it is on unless chosen so).
     pub shelf_off: bool,
     pub highlight: Highlight,
-    /// The glass behind the wheel (macOS).
-    pub glass: Glass,
-}
-
-/// How see-through the wheel is on macOS, from Clear to Frosted. Each step puts more
-/// of the frosted material behind the wheel (it blurs what is behind, so the words
-/// read) and a little more white on the segments. Chosen in the menu.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Glass {
-    Clear,
-    Light,
-    #[default]
-    Medium,
-    Strong,
-    /// The frosted look the wheel had before. ("liquid" was a choice for a day; it
-    /// reads as this one, so a saved setting never resets the file.)
-    #[serde(alias = "liquid")]
-    Frosted,
-}
-
-impl Glass {
-    pub const ALL: [Glass; 5] = [Glass::Clear, Glass::Light, Glass::Medium, Glass::Strong, Glass::Frosted];
-
-    /// The name the page and the settings file use.
-    pub fn key(self) -> &'static str {
-        match self {
-            Glass::Clear => "clear",
-            Glass::Light => "light",
-            Glass::Medium => "medium",
-            Glass::Strong => "strong",
-            Glass::Frosted => "frosted",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Glass::Clear => "Clear",
-            Glass::Light => "Light",
-            Glass::Medium => "Medium",
-            Glass::Strong => "Strong",
-            Glass::Frosted => "Frosted (as before)",
-        }
-    }
-
-    /// How much of the frosted material shows behind the wheel, from 0 to 1.
-    pub fn blur(self) -> f64 {
-        match self {
-            Glass::Clear => 0.0,
-            Glass::Light => 0.35,
-            Glass::Medium => 0.6,
-            Glass::Strong => 0.85,
-            Glass::Frosted => 1.0,
-        }
-    }
+    /// The wheel is a plain solid disc instead of Liquid Glass (macOS).
+    pub no_liquid_glass: bool,
+    /// How see-through the Liquid Glass wheel is (macOS), from the menu's slider.
+    pub transparency: Transparency,
 }
 
 /// The colour the segment under the cursor lights up in. src/wheel.css has each one.
@@ -211,6 +160,40 @@ impl Highlight {
             Highlight::Green => "Green",
             Highlight::Graphite => "Graphite",
         }
+    }
+}
+
+/// How see-through the Liquid Glass wheel is: 0 is frosted (the frosted material at
+/// full strength behind it and the most white on the segments), 100 is clear (no
+/// blur, next to no white, and the strongest halo behind the words).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Transparency(pub u8);
+
+impl Default for Transparency {
+    fn default() -> Self {
+        Transparency(50)
+    }
+}
+
+impl Transparency {
+    fn share(self) -> f64 {
+        f64::from(self.0.min(100)) / 100.0
+    }
+
+    /// How strongly the frosted material shows behind the wheel, 0 to 1.
+    pub fn blur(self) -> f64 {
+        1.0 - self.share()
+    }
+
+    /// How much white the segments carry.
+    pub fn paint(self) -> f64 {
+        0.40 - 0.34 * self.share()
+    }
+
+    /// How strong the halo behind the words is.
+    pub fn halo(self) -> f64 {
+        0.55 + 0.40 * self.share()
     }
 }
 
@@ -346,28 +329,23 @@ mod tests {
     }
 
     #[test]
-    fn the_glass_is_medium_unless_chosen_and_the_page_knows_every_step() {
-        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
-        assert_eq!(old.glass, Glass::Medium);
-        let clear = Settings { glass: Glass::Clear, ..Settings::default() };
-        let text = serde_json::to_string(&clear).unwrap();
-        assert!(text.contains(r#""glass":"clear""#), "{text}");
-        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().glass, Glass::Clear);
-        // Saved by earlier test builds: still read, never a damaged file.
-        for (saved, glass) in [("frosted", Glass::Frosted), ("liquid", Glass::Frosted), ("clear", Glass::Clear)] {
-            let s: Settings = serde_json::from_str(&format!(r#"{{"glass":"{saved}"}}"#)).unwrap();
-            assert_eq!(s.glass, glass);
+    fn liquid_glass_is_on_at_half_transparency_unless_chosen() {
+        // Older settings, also ones with the "glass" choice of earlier test builds.
+        for old in [r#"{"save_to":"downloads","hidden":[]}"#, r#"{"glass":"medium"}"#] {
+            let s: Settings = serde_json::from_str(old).unwrap();
+            assert!(!s.no_liquid_glass);
+            assert_eq!(s.transparency, Transparency(50));
         }
-        // More blur at each step, and the page draws each step but the default.
-        assert!(Glass::ALL.windows(2).all(|w| w[0].blur() < w[1].blur()));
-        let js = include_str!("../../src/wheel.js");
-        let css = include_str!("../../src/wheel.css");
-        for g in Glass::ALL {
-            assert!(js.contains(&format!("'{}'", g.key())), "wheel.js lacks {}", g.key());
-            if g != Glass::default() {
-                assert!(css.contains(&format!("[data-glass=\"{}\"]", g.key())), "wheel.css lacks {}", g.key());
-            }
-        }
+        let set = Settings { no_liquid_glass: true, transparency: Transparency(80), ..Settings::default() };
+        let text = serde_json::to_string(&set).unwrap();
+        assert!(text.contains(r#""transparency":80"#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), set);
+        // From frosted to clear: less blur and paint, a stronger halo; never past 100.
+        let (frosted, clear) = (Transparency(0), Transparency(100));
+        assert_eq!((frosted.blur(), clear.blur()), (1.0, 0.0));
+        assert!(frosted.paint() > Transparency(50).paint() && Transparency(50).paint() > clear.paint());
+        assert!(frosted.halo() < clear.halo());
+        assert_eq!(Transparency(250).blur(), 0.0);
     }
 
     #[test]
