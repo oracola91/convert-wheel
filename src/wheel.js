@@ -265,11 +265,16 @@ function nameWheel() {
   svg.setAttribute('aria-label', names[wheel] ?? 'Formats to convert to');
 }
 
+// Colours the menu offers for the segment under the cursor (wheel.css has each).
+const HIGHLIGHTS = ['orange', 'red', 'pink', 'purple', 'blue', 'teal', 'green', 'graphite'];
+
 listen('wheel-show', (event) => {
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   nameWheel();
   pinned = event.payload?.pinned === true;
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
+  const highlight = event.payload?.highlight;
+  document.documentElement.dataset.highlight = HIGHLIGHTS.includes(highlight) ? highlight : 'orange';
   build();
   open = true;
   restart('opening');
