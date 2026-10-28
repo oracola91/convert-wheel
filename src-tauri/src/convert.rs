@@ -1851,7 +1851,9 @@ fn extra_tool_dirs() -> Vec<PathBuf> {
 }
 
 /// winget puts ffmpeg behind a link folder, pandoc in the user's AppData and
-/// ImageMagick in a versioned Program Files folder.
+/// ImageMagick in a versioned Program Files folder. The PATH saved in the registry
+/// counts too: what an installer adds to it reaches the app's own PATH only after the
+/// next sign-in, so ffmpeg just installed with winget was not found until then.
 #[cfg(windows)]
 fn extra_tool_dirs() -> Vec<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default();
@@ -1865,7 +1867,32 @@ fn extra_tool_dirs() -> Vec<PathBuf> {
                 .map(|e| e.path()),
         );
     }
+    dirs.extend(saved_path());
     dirs
+}
+
+/// The PATH folders saved for this user and for the computer, as a newly started
+/// program gets them, with %VARIABLES% filled in.
+#[cfg(windows)]
+fn saved_path() -> Vec<PathBuf> {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    // A variable holds at most 32767 characters. Asking for REG_SZ also takes the usual
+    // REG_EXPAND_SZ and fills in its variables.
+    let read = |key: HKEY, sub: PCWSTR| {
+        let mut buf = vec![0u16; 32768];
+        let mut size = (buf.len() * 2) as u32;
+        let found = unsafe { RegGetValueW(key, sub, w!("Path"), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut size)) };
+        found.is_ok().then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).saturating_sub(1).min(buf.len())]))
+    };
+    let user = read(HKEY_CURRENT_USER, w!("Environment"));
+    let machine = read(HKEY_LOCAL_MACHINE, w!("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"));
+    [user, machine]
+        .into_iter()
+        .flatten()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .filter(|dir| dir.is_absolute())
+        .collect()
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -2276,6 +2303,15 @@ fn file_url(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn the_saved_path_is_read_from_the_registry() {
+        // Every Windows account has a saved PATH (at least the system folders).
+        let dirs = saved_path();
+        assert!(!dirs.is_empty());
+        assert!(dirs.iter().all(|d| d.is_absolute() && !d.to_string_lossy().contains('%')), "{dirs:?}");
+    }
 
     #[test]
     fn place_never_overwrites() {
