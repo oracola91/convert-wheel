@@ -20,7 +20,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use tauri::{AppHandle, Manager};
 
-use crate::settings::{Glass, Store};
+use crate::settings::Store;
 use crate::wheel::{self, WheelState};
 
 /// The hub icon's size, and how far its centre sits above the wheel's centre so the
@@ -72,32 +72,32 @@ fn install_glass(content: &NSView, mtm: MainThreadMarker) {
     frosted.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
     // The app is never the active one, so the glass must not follow the active state.
     frosted.setState(NSVisualEffectState::Active);
-    frosted.setMaskImage(Some(&disc(wheel::R_OUT)));
     frosted.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
     content.addSubview_positioned_relativeTo(&frosted, NSWindowOrderingMode::Below, None);
     FROSTED.with(|f| *f.borrow_mut() = Some(frosted));
 }
 
-/// Wheel Glass in the menu: Clear has no system glass at all, so the page's own clear
-/// segments, bright edges and rim are the glass, the same from the first frame on.
-/// (Apple's Liquid Glass came up frosted and turned clear a second or two later, at
-/// every open.) Frosted shows the material the wheel had before.
+/// Wheel Glass in the menu: how much of the frosted material shows behind the wheel,
+/// none for Clear, all of it for Frosted. It is drawn at once, the same every open.
+/// (Apple's Liquid Glass came up frosted and turned clear a second or two later.)
 fn apply_glass(app: &AppHandle) {
-    let frosted = app.state::<Store>().get().glass == Glass::Frosted;
+    let blur = app.state::<Store>().get().glass.blur();
     FROSTED.with(|f| {
         if let Some(view) = &*f.borrow() {
-            view.setHidden(!frosted);
+            // The mask's alpha is how strongly the material shows.
+            view.setMaskImage(Some(&disc(wheel::R_OUT, blur)));
+            view.setHidden(blur == 0.0);
         }
     });
 }
 
-/// A black disc of radius `r` centred in the window, used as the glass mask.
-fn disc(r: f64) -> Retained<NSImage> {
+/// A disc of radius `r` centred in the window, black at `alpha`: the glass mask.
+fn disc(r: f64, alpha: f64) -> Retained<NSImage> {
     let size = NSSize::new(wheel::SIZE, wheel::SIZE);
     let draw = RcBlock::new(move |_rect: NSRect| -> Bool {
         let c = wheel::SIZE / 2.0;
         let rect = NSRect::new(NSPoint::new(c - r, c - r), NSSize::new(2.0 * r, 2.0 * r));
-        NSColor::blackColor().set();
+        NSColor::colorWithWhite_alpha(0.0, alpha).set();
         NSBezierPath::bezierPathWithOvalInRect(rect).fill();
         Bool::YES
     });
