@@ -51,14 +51,16 @@ pub fn install(app: &AppHandle, mtm: MainThreadMarker) -> Result<(), String> {
     let content = window.contentView().ok_or("the wheel window has no content")?;
     let bounds = content.bounds();
 
-    // Glass, as a disc. Liquid Glass where macOS has it (26 and later): the clear kind,
-    // so the desktop shows through, bent at the edge. Before that the frosted material.
-    // With Reduce Transparency on, macOS draws either one solid by itself.
+    // Glass, as a disc. Liquid Glass where macOS has it (26 and later), the regular
+    // kind: it always blurs what is behind, so the milky segments read the same on any
+    // background. (The clear kind adapts to what is behind it: over a light window it
+    // went almost invisible on one open and frosted on the next.) Before 26 the frosted
+    // material. With Reduce Transparency on, macOS draws either one solid by itself.
     if AnyClass::get(c"NSGlassEffectView").is_some() {
         let (c, r) = (wheel::SIZE / 2.0, wheel::R_OUT);
         let frame = NSRect::new(NSPoint::new(c - r, c - r), NSSize::new(2.0 * r, 2.0 * r));
         let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
-        glass.setStyle(NSGlassEffectViewStyle::Clear);
+        glass.setStyle(NSGlassEffectViewStyle::Regular);
         glass.setCornerRadius(r);
         content.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, None);
     } else {
