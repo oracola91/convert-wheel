@@ -1,5 +1,6 @@
-//! The wheel window's native parts on macOS: the frosted material behind the ring when
-//! the menu asks for it, the dragged file's icon in the hub, placement at the cursor,
+//! The wheel window's native parts on macOS: the frosted material behind the ring, as
+//! strong as the menu's Transparency asks and frosted behind each word, the dragged
+//! file's icon in the hub, placement at the cursor,
 //! and the fade in and out.
 //! Everything here runs on the main thread.
 
@@ -8,11 +9,10 @@ use std::ptr::NonNull;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::Bool;
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAnimationContext, NSAutoresizingMaskOptions, NSBezierPath, NSColor,
-    NSEvent, NSImage, NSImageScaling, NSImageView, NSScreen,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSAutoresizingMaskOptions, NSBitmapImageRep,
+    NSDeviceRGBColorSpace, NSEvent, NSImage, NSImageScaling, NSImageView, NSScreen,
     NSVisualEffectBlendingMode,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSView, NSWindow, NSWindowOrderingMode,
     NSWorkspace,
@@ -21,7 +21,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use tauri::{AppHandle, Manager};
 
 use crate::settings::Store;
-use crate::wheel::{self, WheelState};
+use crate::wheel::{self, WheelState, WordBox};
 
 /// The hub icon's size, and how far its centre sits above the wheel's centre so the
 /// label fits underneath. Points.
@@ -30,11 +30,15 @@ const ICON_LIFT: f64 = 12.0;
 /// Fade times, matched by the scale animations in src/wheel.css.
 const OPEN_SECONDS: f64 = 0.12;
 const CLOSE_SECONDS: f64 = 0.14;
+/// The glass mask has two pixels to a point, so its edges stay smooth on Retina screens.
+const MASK_SCALE: f64 = 2.0;
 
 thread_local! {
     static HUB_ICON: RefCell<Option<Retained<NSImageView>>> = const { RefCell::new(None) };
     /// The frosted material behind the ring, made once, shown when the menu says Frosted.
     static FROSTED: RefCell<Option<Retained<NSVisualEffectView>>> = const { RefCell::new(None) };
+    /// The words on the wheel now, as its page measured them; empty while it is hidden.
+    static WORDS: RefCell<Vec<WordBox>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn ns_window(app: &AppHandle) -> Option<Retained<NSWindow>> {
@@ -78,31 +82,66 @@ fn install_glass(content: &NSView, mtm: MainThreadMarker) {
 }
 
 /// Wheel Glass in the menu: with Liquid Glass, the slider says how much of the frosted
-/// material shows behind the wheel (all of it at frosted, none at clear); it is drawn at
+/// material shows behind the wheel (all of it at frosted, none at clear), and behind
+/// each word it shows almost fully, so the word reads over anything. It is drawn at
 /// once, the same every open. No Liquid Glass: none, the page draws a solid disc.
 fn apply_glass(app: &AppHandle) {
     let settings = app.state::<Store>().get();
     let blur = if settings.no_liquid_glass { 0.0 } else { settings.transparency.blur() };
+    let words = if settings.no_liquid_glass { Vec::new() } else { WORDS.with(|w| w.borrow().clone()) };
     FROSTED.with(|f| {
         if let Some(view) = &*f.borrow() {
-            // The mask's alpha is how strongly the material shows.
-            view.setMaskImage(Some(&disc(wheel::R_OUT, blur)));
-            view.setHidden(blur == 0.0);
+            if let Some(image) = mask(blur, &words) {
+                view.setMaskImage(Some(&image));
+            }
+            view.setHidden(blur == 0.0 && words.is_empty());
         }
     });
 }
 
-/// A disc of radius `r` centred in the window, black at `alpha`: the glass mask.
-fn disc(r: f64, alpha: f64) -> Retained<NSImage> {
+/// The page drew a wheel and measured its words: frost the glass behind them.
+pub fn set_words(app: &AppHandle, words: Vec<WordBox>) {
+    WORDS.with(|w| *w.borrow_mut() = words);
+    apply_glass(app);
+}
+
+/// The glass mask: its alpha is how strongly the frosted material shows at each point.
+fn mask(blur: f64, words: &[WordBox]) -> Option<Retained<NSImage>> {
+    let side = (wheel::SIZE * MASK_SCALE) as usize;
+    // SAFETY: no planes are passed, so the rep makes its own buffer for the sizes given.
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            side as isize,
+            side as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            (side * 4) as isize,
+            32,
+        )
+    }?;
+    let data = rep.bitmapData();
+    if data.is_null() {
+        return None;
+    }
+    // SAFETY: the rep's own buffer, side rows of side * 4 bytes, used by nothing else yet.
+    let pixels = unsafe { std::slice::from_raw_parts_mut(data, side * side * 4) };
+    // Rows run from the top, like the page's coordinates. Black at the alpha: the
+    // buffer is premultiplied, so the colour stays 0.
+    for (i, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (x, y) = (((i % side) as f64 + 0.5) / MASK_SCALE, ((i / side) as f64 + 0.5) / MASK_SCALE);
+        let alpha = wheel::glass_alpha(x, y, blur, words);
+        *pixel = [0, 0, 0, (alpha * 255.0).round() as u8];
+    }
     let size = NSSize::new(wheel::SIZE, wheel::SIZE);
-    let draw = RcBlock::new(move |_rect: NSRect| -> Bool {
-        let c = wheel::SIZE / 2.0;
-        let rect = NSRect::new(NSPoint::new(c - r, c - r), NSSize::new(2.0 * r, 2.0 * r));
-        NSColor::colorWithWhite_alpha(0.0, alpha).set();
-        NSBezierPath::bezierPathWithOvalInRect(rect).fill();
-        Bool::YES
-    });
-    NSImage::imageWithSize_flipped_drawingHandler(size, false, &draw)
+    rep.setSize(size);
+    let image = NSImage::initWithSize(NSImage::alloc(), size);
+    image.addRepresentation(&rep);
+    Some(image)
 }
 
 /// Shows the wheel at the cursor with the first dragged file's icon in the hub.
@@ -137,6 +176,8 @@ pub fn close(app: &AppHandle, generation: u64) {
     fade(window, 0.0, CLOSE_SECONDS, move || {
         if app.state::<WheelState>().is_current(generation) {
             hide.orderOut(None);
+            // The next wheel's page sends its own words; none of these may show on it.
+            WORDS.with(|w| w.borrow_mut().clear());
         }
     });
 }
