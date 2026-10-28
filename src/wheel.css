@@ -20,6 +20,21 @@
   --accent: #b85a00;
   --accent-text: #ffffff;
   --disc: rgba(246, 246, 248, 0.97);
+  --halo: transparent;
+}
+
+/* Over the system's glass (macOS) the wheel is Liquid Glass: next to no paint, so what
+   is behind shows through, bent at the edge; thin bright edges and a rim catch the
+   light, and a soft halo keeps the words readable on any background. Windows draws
+   its own solid disc and keeps the fills above. */
+:root:not(.solid) {
+  --seg: rgba(255, 255, 255, 0.08);
+  --seg-edge: rgba(255, 255, 255, 0.65);
+  --sheen: 0.22;
+  --rim: 1;
+  --bezel: rgba(255, 255, 255, 0.10);
+  --hub: rgba(255, 255, 255, 0.12);
+  --halo: rgba(255, 255, 255, 0.7);
 }
 
 /* The other highlight colours from the menu: light at the top, and a darker shade
@@ -46,14 +61,24 @@
     --cancel: rgba(255, 255, 255, 0.14);
     --disc: rgba(36, 36, 38, 0.97);
   }
+
+  :root:not(.solid) {
+    --seg: rgba(255, 255, 255, 0.05);
+    --seg-edge: rgba(255, 255, 255, 0.35);
+    --sheen: 0.14;
+    --rim: 0.6;
+    --bezel: rgba(255, 255, 255, 0.06);
+    --hub: rgba(0, 0, 0, 0.10);
+    --halo: rgba(0, 0, 0, 0.55);
+  }
 }
 
 @media (prefers-contrast: more) {
-  :root { --seg-edge: rgba(0, 0, 0, 0.55); --hub-text: #1d1d1f; }
+  :root, :root:not(.solid) { --seg-edge: rgba(0, 0, 0, 0.55); --hub-text: #1d1d1f; }
 }
 
 @media (prefers-contrast: more) and (prefers-color-scheme: dark) {
-  :root { --seg-edge: rgba(255, 255, 255, 0.6); --hub-text: #f5f5f7; }
+  :root, :root:not(.solid) { --seg-edge: rgba(255, 255, 255, 0.6); --hub-text: #f5f5f7; }
 }
 
 html,
@@ -175,6 +200,10 @@ svg.closing {
 
 .seg text {
   fill: var(--text);
+  stroke: var(--halo);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
   font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 0.03em;
@@ -184,6 +213,7 @@ svg.closing {
 
 .seg.active text {
   fill: var(--accent-text);
+  stroke: none;
 }
 
 .icon {
@@ -212,6 +242,10 @@ svg.closing {
 
 .hub-label {
   fill: var(--hub-text);
+  stroke: var(--halo);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.02em;
@@ -239,12 +273,12 @@ svg.closing {
 
 /* Reduce Transparency: macOS already makes the glass solid; make the fills solid too. */
 @media (prefers-reduced-transparency: reduce) {
-  :root { --seg: #f2f2f7; --hub: #ffffff; --bezel: #e5e5ea; --pill: #ffffff; }
+  :root, :root:not(.solid) { --seg: #f2f2f7; --hub: #ffffff; --bezel: #e5e5ea; --pill: #ffffff; --seg-edge: rgba(0, 0, 0, 0.12); --halo: transparent; }
   .shine, .edge { display: none; }
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
-  :root { --seg: #2c2c2e; --hub: #1c1c1e; --bezel: #3a3a3c; --pill: #1c1c1e; }
+  :root, :root:not(.solid) { --seg: #2c2c2e; --hub: #1c1c1e; --bezel: #3a3a3c; --pill: #1c1c1e; --seg-edge: rgba(255, 255, 255, 0.15); }
 }
 
 /* Increased contrast: the chosen segment in the darker shade white text reads on. */
