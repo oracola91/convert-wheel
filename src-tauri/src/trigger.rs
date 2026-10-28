@@ -63,17 +63,16 @@ struct WheelShow {
 }
 
 /// Wheel Glass for the page: a plain solid disc, or Liquid Glass with this much white
-/// on the segments and this strong a halo behind the words.
+/// on the segments. The frosted patches behind the words are native (wheel_window.rs).
 #[derive(Clone, Copy, Serialize)]
 struct Look {
     plain: bool,
     seg: f64,
-    halo: f64,
 }
 
 fn look(app: &AppHandle) -> Look {
     let settings = app.state::<crate::settings::Store>().get();
-    Look { plain: settings.no_liquid_glass, seg: settings.transparency.paint(), halo: settings.transparency.halo() }
+    Look { plain: settings.no_liquid_glass, seg: settings.transparency.paint() }
 }
 
 /// The total size of `paths`, or None with a folder among them.
