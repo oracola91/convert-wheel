@@ -1006,6 +1006,13 @@ fn place_combined(out: &Path, first: &Path, target: &str, ext: &str, save_in: Op
     placed.map_err(|e| format!("can't save the result: {e}"))
 }
 
+/// Adds a few words to the notification of the drop being converted.
+fn note(text: String) {
+    if let Some(c) = control() {
+        *c.note.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+    }
+}
+
 /// The size Compress to a Size aims under, from the editor.
 fn size_limit() -> Result<u64, String> {
     match control().and_then(|c| c.edit) {
@@ -1017,7 +1024,8 @@ fn size_limit() -> Result<u64, String> {
 /// Compress to a Size for a picture: the highest quality (25 to 92) that comes in at
 /// `limit` bytes or under, found by halving the range. If even the lowest is too big,
 /// the picture is made smaller by about as much as that needs, and the search runs
-/// again. Metadata stays, as with Compress.
+/// again, and the notification says how big it came out. Metadata stays, as with
+/// Compress.
 fn image_to_size(src: &Path, out: &Path, limit: u64) -> Result<(), String> {
     let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
     if !matches!(coder, "jpeg" | "heic" | "webp" | "avif") {
@@ -1049,6 +1057,11 @@ fn image_to_size(src: &Path, out: &Path, limit: u64) -> Result<(), String> {
                 }
             }
             write(percent, best)?;
+            if percent < 100 {
+                if let Some((w, h)) = pixel_size(out, coder) {
+                    note(format!("made smaller to fit: {w} × {h} pixels"));
+                }
+            }
             return Ok(());
         }
         let next = (f64::from(percent) * (limit as f64 / lowest as f64).sqrt() * 0.9) as u32;
@@ -1057,6 +1070,56 @@ fn image_to_size(src: &Path, out: &Path, limit: u64) -> Result<(), String> {
         }
         percent = next;
     }
+}
+
+/// For the Compress to a Size window: under the first size a picture will probably have
+/// to get smaller to fit, under the second it comes out small and blurry. Rough guides
+/// from its pixels, for a warning, not a limit. None for anything but the pictures it
+/// takes, or when ImageMagick can't say how big the picture is.
+pub fn picture_warnings(src: &Path) -> Option<(u64, u64)> {
+    let coder = sniff_image(&read_head(src).ok()?)?;
+    if !matches!(coder, "jpeg" | "heic" | "webp" | "avif") {
+        return None;
+    }
+    let (w, h) = pixel_size(src, coder)?;
+    Some(warning_sizes(f64::from(w) * f64::from(h), coder))
+}
+
+/// Roughly the bytes a pixel of an everyday photo takes at quality 25, the lowest
+/// Compress to a Size tries.
+fn least_bytes_per_pixel(coder: &str) -> f64 {
+    match coder {
+        "jpeg" => 0.04,
+        "webp" => 0.03,
+        _ => 0.02,
+    }
+}
+
+/// Fewer pixels than this (800 × 600) and a photo looks small and blurry on screen.
+const BLURRY_PIXELS: f64 = 480_000.0;
+
+fn warning_sizes(pixels: f64, coder: &str) -> (u64, u64) {
+    let per_pixel = least_bytes_per_pixel(coder);
+    ((pixels * per_pixel) as u64, (BLURRY_PIXELS.min(pixels / 4.0) * per_pixel) as u64)
+}
+
+/// A picture's size upright, in pixels, read without decoding all of it.
+fn pixel_size(src: &Path, coder: &str) -> Option<(u32, u32)> {
+    let work = tempfile::tempdir().ok()?;
+    let info = work.path().join("size.txt");
+    let mut cmd = Command::new(magick().ok()?);
+    cmd.args(IMAGE_LIMITS)
+        .arg("-ping")
+        .arg(format!("{coder}:{}[0]", src.display()))
+        .args(["-format", "%w %h %[orientation]"])
+        .arg(format!("info:{}", info.display()));
+    run(cmd, QUICK).ok()?;
+    let text = fs::read_to_string(&info).ok()?;
+    let mut words = text.split_whitespace();
+    let (w, h) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
+    // A quarter turn in its EXIF orientation: it shows the other way round.
+    let turned = matches!(words.next(), Some("LeftTop" | "RightTop" | "RightBottom" | "LeftBottom"));
+    Some(if turned { (h, w) } else { (w, h) })
 }
 
 /// The least a sound or video file can be compressed to, from its length: what the
@@ -1450,6 +1513,9 @@ pub struct Control {
     quality: Quality,
     /// What was chosen in the editor, for Crop and Trim.
     edit: Option<Edit>,
+    /// A few words for the notification from the tool that ran, such as how small a
+    /// picture had to get to fit.
+    note: Mutex<Option<String>>,
 }
 
 /// What a tool that opens the editor was given there.
@@ -1531,7 +1597,12 @@ impl Control {
 
     /// A drop's control: the menu's quality, and for Crop and Trim what the editor chose.
     pub fn with_edit(quality: Quality, edit: Option<Edit>) -> Arc<Self> {
-        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT), quality, edit })
+        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT), quality, edit, note: Mutex::new(None) })
+    }
+
+    /// What the tool that ran wants added to the notification, once.
+    pub fn take_note(&self) -> Option<String> {
+        self.note.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     /// Ends the tool running now, with everything it started, and keeps the drop from
@@ -2541,10 +2612,29 @@ mod tests {
         let out = under(&control, || convert(&photo, "tool:target", None, work.path())).unwrap();
         assert_eq!(out, work.path().join(format!("noise (under {}).jpg", size_text(limit))));
         assert!(fs::metadata(&out).unwrap().len() <= limit);
-        // Far too small for any quality: smaller pictures until it fits.
+        assert_eq!(control.take_note(), None, "the quality alone was enough");
+        assert_eq!(pixel_size(&photo, "jpeg"), Some((800, 600)));
+        assert!(picture_warnings(&photo).is_some());
+        // Far too small for any quality: smaller pictures until it fits, and the
+        // notification says how small.
         let control = Control::with_edit(Quality::default(), Some(Edit::Size(3_000)));
         let tiny = under(&control, || convert(&photo, "tool:target", None, work.path())).unwrap();
         assert!(fs::metadata(&tiny).unwrap().len() <= 3_000);
+        let (w, h) = pixel_size(&tiny, "jpeg").unwrap();
+        assert!(w < 800 && h < 600, "{w} × {h}");
+        assert_eq!(control.take_note(), Some(format!("made smaller to fit: {w} × {h} pixels")));
+        assert_eq!(control.take_note(), None, "once");
+    }
+
+    #[test]
+    fn pictures_warn_long_before_they_turn_to_mush() {
+        // A 12 megapixel phone photo: smaller under about 480 KB, blurry under about 19 KB.
+        assert_eq!(warning_sizes(12_000_000.0, "jpeg"), (480_000, 19_200));
+        // HEIC packs more into each byte.
+        let (smaller, blurry) = warning_sizes(12_000_000.0, "heic");
+        assert!(smaller < 480_000 && blurry < 19_200);
+        // A small picture already: blurry once it loses half its width.
+        assert_eq!(warning_sizes(640.0 * 480.0, "jpeg"), (12_288, 3_072));
     }
 
     #[test]

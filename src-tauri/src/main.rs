@@ -398,6 +398,10 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
     if moved {
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
     }
+    // A few words from the tool for one file, such as how small a picture had to get.
+    if let (Some(note), [_], []) = (running.control.take_note(), done.as_slice(), failed.as_slice()) {
+        body.push_str(&format!(" ({note})"));
+    }
     (title, body, done)
 }
 

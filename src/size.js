@@ -10,6 +10,7 @@ const unit = $('unit');
 const presets = $('presets');
 const apply = $('apply');
 const problem = $('problem');
+const warning = $('warning');
 
 // Sizes people aim for (mail attachments, upload forms), largest first.
 const COMMON = [25e6, 10e6, 5e6, 2e6, 1e6, 500e3, 200e3, 100e3];
@@ -19,7 +20,7 @@ const HINTS = {
   sound: 'The bit rate the size allows over the sound’s length.',
 };
 
-// { name, bytes, what, least } from the app, once loaded.
+// { name, bytes, what, least, smaller_below, blurry_below } from the app, once loaded.
 let session = null;
 
 // "2.8 MB", the way Finder counts (1000 bytes to a kilobyte).
@@ -60,8 +61,23 @@ function check() {
   else if (bytes < 1000) text = 'At least 1 KB.';
   else if (session.least && bytes < session.least) text = `Too small for its length: at least about ${sizeText(session.least)}.`;
   say(text);
+  warn(text === '' ? bytes : null);
   apply.disabled = text !== '';
   return text === '';
+}
+
+// Not a problem, only worth knowing: squeezed far enough, a picture gets smaller, and
+// then small and blurry. It still compresses.
+function warn(bytes) {
+  let text = '';
+  const blurry = bytes !== null && session.blurry_below !== null && bytes < session.blurry_below;
+  if (blurry) text = 'That is very little for this picture: it will come out small and blurry.';
+  else if (bytes !== null && session.smaller_below !== null && bytes < session.smaller_below) {
+    text = 'To fit, the picture will probably be made smaller too.';
+  }
+  warning.textContent = text;
+  warning.hidden = !text;
+  warning.classList.toggle('strong', blurry);
 }
 
 function addPreset(label, bytes) {
@@ -113,7 +129,7 @@ async function load() {
     && session.kind === 'size'
     && Number.isSafeInteger(session.bytes) && session.bytes > 1000
     && Object.hasOwn(HINTS, session.what)
-    && (session.least === null || Number.isSafeInteger(session.least));
+    && [session.least, session.smaller_below, session.blurry_below].every((v) => v === null || Number.isSafeInteger(v));
   if (!valid) {
     session = null;
     apply.disabled = true;

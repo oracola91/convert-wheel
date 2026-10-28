@@ -45,9 +45,10 @@ enum View {
     /// The length (the times come back in milliseconds), the loudness along it, and for
     /// a video eight frames; the sound as a small MP3 to play, when not too long.
     Trim { length_ms: u64, peaks: Vec<u8>, strip: Option<String>, sound: Option<String> },
-    /// The file's size, what it is ("picture", "video", "sound"), and for sound and
-    /// video the least it can be compressed to.
-    Size { bytes: u64, what: &'static str, least: Option<u64> },
+    /// The file's size, what it is ("picture", "video", "sound"), for sound and video
+    /// the least it can be compressed to, and for a picture the sizes under which it
+    /// will probably get smaller, and small and blurry, to warn about.
+    Size { bytes: u64, what: &'static str, least: Option<u64>, smaller_below: Option<u64>, blurry_below: Option<u64> },
 }
 
 impl View {
@@ -62,7 +63,7 @@ impl View {
     /// The window's size and smallest size: a short form for Compress to a Size.
     fn window(&self) -> ((f64, f64), (f64, f64)) {
         match self {
-            View::Size { .. } => ((480.0, 340.0), (420.0, 300.0)),
+            View::Size { .. } => ((480.0, 370.0), (420.0, 330.0)),
             _ => ((780.0, 620.0), (560.0, 460.0)),
         }
     }
@@ -162,7 +163,14 @@ fn size_view(path: &Path) -> Result<View, String> {
         Some(crate::formats::Kind::Audio) => "sound",
         _ => "picture",
     };
-    Ok(View::Size { bytes, what, least: convert::smallest_size(path) })
+    let warnings = if what == "picture" { convert::picture_warnings(path) } else { None };
+    Ok(View::Size {
+        bytes,
+        what,
+        least: convert::smallest_size(path),
+        smaller_below: warnings.map(|w| w.0),
+        blurry_below: warnings.map(|w| w.1),
+    })
 }
 
 fn close_window(app: &AppHandle) {
