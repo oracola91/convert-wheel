@@ -27,7 +27,7 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSURL", "NSGeometry", "block2"] }
 objc2-service-management = { version = "0.3", features = ["SMAppService"] }
 objc2-user-notifications = { version = "0.3", features = ["UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter", "block2"] }
-objc2-app-kit = { version = "0.3", features = ["NSAnimation", "NSAnimationContext", "NSApplication", "NSBezierPath", "NSCell", "NSColor", "NSControl", "NSDragging", "NSDraggingItem", "NSEvent", "NSGraphics", "NSHapticFeedback", "NSImage", "NSImageCell", "NSImageView", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSScreen", "NSSharingService", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSAccessibility", "NSAnimation", "NSAnimationContext", "NSApplication", "NSBezierPath", "NSButton", "NSCell", "NSColor", "NSControl", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFont", "NSGraphics", "NSHapticFeedback", "NSImage", "NSImageCell", "NSImageView", "NSPanel", "NSParagraphStyle", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSScreen", "NSSharingService", "NSStatusBarButton", "NSStatusItem", "NSText", "NSTextField", "NSTrackingArea", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "block2"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-core = "0.62"
