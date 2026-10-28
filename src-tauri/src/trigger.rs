@@ -56,6 +56,9 @@ struct WheelShow {
     /// The menu's highlight colour ("blue"). Only on wheel-show: a switch keeps it.
     #[serde(skip_serializing_if = "Option::is_none")]
     highlight: Option<&'static str>,
+    /// The menu's Wheel Glass step ("medium"). Only on wheel-show: a switch keeps it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clarity: Option<&'static str>,
 }
 
 /// The total size of `paths`, or None with a folder among them.
@@ -229,7 +232,7 @@ fn switch_wheel(app: &AppHandle, which: Which) {
     let (which, formats) = fill(app, &paths, Some(which));
     let pending = paths.is_empty();
     let bytes = total_bytes(&paths);
-    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None });
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None, clarity: None });
 }
 
 /// Opens the wheel and returns its generation.
@@ -242,7 +245,8 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
     let glass = cfg!(target_os = "macos");
     let bytes = total_bytes(&paths);
     let highlight = app.state::<crate::settings::Store>().get().highlight.key();
-    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which, bytes, highlight: Some(highlight) });
+    let clarity = app.state::<crate::settings::Store>().get().glass.key();
+    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which, bytes, highlight: Some(highlight), clarity: Some(clarity) });
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -263,7 +267,7 @@ pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
     let (which, formats) = fill(app, &paths, None);
     app.state::<WheelState>().files_known();
     let bytes = total_bytes(&paths);
-    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which, bytes, highlight: None });
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which, bytes, highlight: None, clarity: None });
 }
 
 /// A drop on the wheel. Converts (or runs the tool) when it landed on a segment and
