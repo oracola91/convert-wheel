@@ -102,6 +102,41 @@ pub struct Settings {
     /// The shelf at the top of the screen is switched off (it is on unless chosen so).
     pub shelf_off: bool,
     pub highlight: Highlight,
+    /// The glass behind the wheel (macOS).
+    pub glass: Glass,
+}
+
+/// What the glass behind the wheel looks like on macOS.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Glass {
+    /// The frosted system material the wheel always had.
+    #[default]
+    Frosted,
+    /// Liquid Glass (macOS 26 and later), standard.
+    Liquid,
+    /// Liquid Glass, the clear kind: the desktop shows through, bent at the edge.
+    Clear,
+}
+
+impl Glass {
+    pub const ALL: [Glass; 3] = [Glass::Frosted, Glass::Liquid, Glass::Clear];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Glass::Frosted => "frosted",
+            Glass::Liquid => "liquid",
+            Glass::Clear => "clear",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Glass::Frosted => "Frosted (as before)",
+            Glass::Liquid => "Liquid Glass",
+            Glass::Clear => "Clear Liquid Glass",
+        }
+    }
 }
 
 /// The colour the segment under the cursor lights up in. src/wheel.css has each one.
@@ -288,6 +323,16 @@ mod tests {
                 assert!(css.contains(&format!("[data-highlight=\"{}\"]", h.key())), "wheel.css lacks {}", h.key());
             }
         }
+    }
+
+    #[test]
+    fn the_glass_is_frosted_unless_chosen() {
+        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
+        assert_eq!(old.glass, Glass::Frosted);
+        let clear = Settings { glass: Glass::Clear, ..Settings::default() };
+        let text = serde_json::to_string(&clear).unwrap();
+        assert!(text.contains(r#""glass":"clear""#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().glass, Glass::Clear);
     }
 
     #[test]
