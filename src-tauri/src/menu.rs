@@ -32,6 +32,9 @@ const FORMAT: &str = "fmt:";
 /// Quality choices are "quality:" followed by the kind and the level, e.g.
 /// "quality:video:best".
 const QUALITY: &str = "quality:";
+/// Wheel glass choices are "glass:" followed by the kind, e.g. "glass:clear" (macOS).
+#[cfg(target_os = "macos")]
+const GLASS: &str = "glass:";
 
 pub struct TrayMenu(Menu<Wry>);
 
@@ -92,10 +95,23 @@ pub fn build(app: &App) -> tauri::Result<()> {
 
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
-    let menu = Menu::with_items(
-        app,
-        &[&title, &hint, &last, &stop, &sep()?, &update, &login, &save, &shown, &quality, &sep()?, &show_log, &quit],
-    )?;
+    let (separator, separator2) = (sep()?, sep()?);
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&title, &hint, &last, &stop, &separator, &update, &login, &save, &shown, &quality];
+    // Only macOS has a choice of glass.
+    #[cfg(target_os = "macos")]
+    let kinds = settings::Glass::ALL
+        .iter()
+        .map(|g| CheckMenuItem::with_id(app, format!("{GLASS}{}", g.key()), g.label(), true, current.glass == *g, None::<&str>))
+        .collect::<tauri::Result<Vec<_>>>()?;
+    #[cfg(target_os = "macos")]
+    let kind_items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = kinds.iter().map(|k| k as _).collect();
+    #[cfg(target_os = "macos")]
+    let glass = Submenu::with_items(app, "Wheel Glass", true, &kind_items)?;
+    #[cfg(target_os = "macos")]
+    items.push(&glass);
+    let rest: [&dyn tauri::menu::IsMenuItem<Wry>; 3] = [&separator2, &show_log, &quit];
+    items.extend(rest);
+    let menu = Menu::with_items(app, &items)?;
 
     // macOS: a template icon it tints to match the menu bar, light or dark. Windows'
     // tray can be light or dark too, so it gets the coloured app icon instead.
@@ -285,6 +301,21 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             let save_to = store.get().save_to;
             set_check(app, SAVE_NEXT, save_to == SaveTo::NextToOriginal);
             set_check(app, SAVE_DOWNLOADS, save_to == SaveTo::Downloads);
+        }
+        #[cfg(target_os = "macos")]
+        _ if id.starts_with(GLASS) => {
+            let wanted = &id[GLASS.len()..];
+            let Some(kind) = settings::Glass::ALL.into_iter().find(|g| g.key() == wanted) else {
+                return;
+            };
+            if let Err(e) = store.update(|s| s.glass = kind) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            // One kind ticked, the one saved; the next wheel opens with it.
+            let saved = store.get().glass;
+            for g in settings::Glass::ALL {
+                set_check(app, &format!("{GLASS}{}", g.key()), saved == g);
+            }
         }
         _ if id.starts_with(QUALITY) => {
             let Some((kind, wanted)) = id[QUALITY.len()..].split_once(':') else {
