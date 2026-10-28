@@ -104,11 +104,11 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let plain = CheckMenuItem::with_id(app, format!("{GLASS}off"), "No Liquid Glass", true, current.no_liquid_glass, None::<&str>)?;
     // glass_slider.rs puts the slider under this line when the menu opens.
     #[cfg(target_os = "macos")]
-    let slider_label = MenuItem::with_id(app, format!("{GLASS}label"), "Transparency (frosted to clear)", false, None::<&str>)?;
+    let slider_label = MenuItem::with_id(app, format!("{GLASS}label"), "Transparency", false, None::<&str>)?;
     #[cfg(target_os = "macos")]
     let glass_sep = sep()?;
     #[cfg(target_os = "macos")]
-    let kind_items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&liquid, &plain, &glass_sep, &slider_label];
+    let kind_items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&plain, &liquid, &glass_sep, &slider_label];
     #[cfg(target_os = "macos")]
     let glass = Submenu::with_items(app, "Wheel Glass", true, &kind_items)?;
     #[cfg(target_os = "macos")]
