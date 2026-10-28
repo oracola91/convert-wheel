@@ -82,11 +82,12 @@ fn install_glass(content: &NSView, mtm: MainThreadMarker) {
     FROSTED.with(|f| *f.borrow_mut() = Some(frosted));
 }
 
-/// Wheel Glass in the menu: how much of the frosted material shows behind the wheel,
-/// none for Clear, all of it for Frosted. It is drawn at once, the same every open.
-/// (Apple's Liquid Glass came up frosted and turned clear a second or two later.)
+/// Wheel Glass in the menu: with Liquid Glass, the slider says how much of the frosted
+/// material shows behind the wheel (all of it at frosted, none at clear); it is drawn at
+/// once, the same every open. No Liquid Glass: none, the page draws a solid disc.
 fn apply_glass(app: &AppHandle) {
-    let blur = app.state::<Store>().get().glass.blur();
+    let settings = app.state::<Store>().get();
+    let blur = if settings.no_liquid_glass { 0.0 } else { settings.transparency.blur() };
     FROSTED.with(|f| {
         if let Some(view) = &*f.borrow() {
             // The mask's alpha is how strongly the material shows.
