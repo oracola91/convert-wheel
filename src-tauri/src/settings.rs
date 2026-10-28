@@ -107,12 +107,12 @@ pub struct Settings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Glass {
-    /// The frosted system material the wheel always had.
-    #[default]
+    /// The frosted system material the wheel had before Liquid Glass.
     Frosted,
     /// Liquid Glass (macOS 26 and later), standard.
     Liquid,
     /// Liquid Glass, the clear kind: the desktop shows through, bent at the edge.
+    #[default]
     Clear,
 }
 
@@ -240,13 +240,13 @@ mod tests {
     }
 
     #[test]
-    fn the_glass_is_frosted_unless_chosen() {
+    fn the_glass_is_clear_unless_chosen() {
         let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
-        assert_eq!(old.glass, Glass::Frosted);
-        let clear = Settings { glass: Glass::Clear, ..Settings::default() };
-        let text = serde_json::to_string(&clear).unwrap();
-        assert!(text.contains(r#""glass":"clear""#), "{text}");
-        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().glass, Glass::Clear);
+        assert_eq!(old.glass, Glass::Clear);
+        let frosted = Settings { glass: Glass::Frosted, ..Settings::default() };
+        let text = serde_json::to_string(&frosted).unwrap();
+        assert!(text.contains(r#""glass":"frosted""#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().glass, Glass::Frosted);
     }
 
     #[test]
