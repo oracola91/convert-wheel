@@ -1,6 +1,6 @@
-/* The glass under the ring is native (wheel_window.rs): Liquid Glass on macOS 26 and
-   later. These fills are kept light so it shows through; colour sits only on the
-   chosen segment. The shine makes each segment read as a bubble lit from above. */
+/* On macOS the page is the glass (or sits on the frosted material, if chosen in the
+   menu, wheel_window.rs): colour sits only on the chosen segment. The shine makes
+   each segment read as a bubble lit from above. */
 :root {
   /* Milky cushions that take on the colour behind them. */
   --seg: rgba(255, 255, 255, 0.46);
@@ -23,10 +23,10 @@
   --halo: transparent;
 }
 
-/* Over the system's glass (macOS) the wheel is Liquid Glass: next to no paint, so what
-   is behind shows through, bent at the edge; thin bright edges and a rim catch the
-   light, and a soft halo keeps the words readable on any background. Windows draws
-   its own solid disc and keeps the fills above. */
+/* macOS: clear glass drawn here, the same from the first frame. Next to no paint, so
+   what is behind shows through; thin bright edges and a rim catch the light, and a
+   soft halo keeps the words readable on any background. Windows draws its own solid
+   disc and keeps the fills above. */
 :root:not(.solid) {
   --seg: rgba(255, 255, 255, 0.08);
   --seg-edge: rgba(255, 255, 255, 0.65);

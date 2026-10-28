@@ -106,35 +106,33 @@ pub struct Settings {
     pub glass: Glass,
 }
 
-/// What the glass behind the wheel looks like on macOS.
+/// What is behind the wheel on macOS.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Glass {
-    /// The frosted system material the wheel had before Liquid Glass.
-    Frosted,
-    /// Liquid Glass (macOS 26 and later), standard.
-    Liquid,
-    /// Liquid Glass, the clear kind: the desktop shows through, bent at the edge.
+    /// No system glass: the wheel's own clear segments and bright edges.
     #[default]
     Clear,
+    /// The frosted system material the wheel had before. ("liquid" was a third choice
+    /// for a day; it reads as this one, so a saved setting never resets the file.)
+    #[serde(alias = "liquid")]
+    Frosted,
 }
 
 impl Glass {
-    pub const ALL: [Glass; 3] = [Glass::Frosted, Glass::Liquid, Glass::Clear];
+    pub const ALL: [Glass; 2] = [Glass::Clear, Glass::Frosted];
 
     pub fn key(self) -> &'static str {
         match self {
-            Glass::Frosted => "frosted",
-            Glass::Liquid => "liquid",
             Glass::Clear => "clear",
+            Glass::Frosted => "frosted",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
+            Glass::Clear => "Clear",
             Glass::Frosted => "Frosted (as before)",
-            Glass::Liquid => "Liquid Glass",
-            Glass::Clear => "Clear Liquid Glass",
         }
     }
 }
@@ -333,6 +331,9 @@ mod tests {
         let text = serde_json::to_string(&frosted).unwrap();
         assert!(text.contains(r#""glass":"frosted""#), "{text}");
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().glass, Glass::Frosted);
+        // The Liquid Glass choice of one test day reads as Frosted, not as a damaged file.
+        let liquid: Settings = serde_json::from_str(r#"{"glass":"liquid"}"#).unwrap();
+        assert_eq!(liquid.glass, Glass::Frosted);
     }
 
     #[test]
