@@ -125,6 +125,13 @@ impl Words {
             "tool:mono" => tool("Mixing {} down to mono", "Made mono", "Made {} files mono", "mix down", "Stopped mixing down"),
             "tool:crop" => tool("Cropping {}", "Cropped", "Cropped {} files", "crop", "Stopped cropping"),
             "tool:trim" => tool("Trimming {}", "Trimmed", "Trimmed {} files", "trim", "Stopped trimming"),
+            "tool:target" => tool(
+                "Compressing {} to a size",
+                "Compressed to a size",
+                "Compressed {} files to a size",
+                "compress",
+                "Stopped compressing",
+            ),
             // Join makes one file of the whole drop: "{}" is "3 files".
             "tool:join" => tool("Joining {}", "Joined into one file", "Joined {} files", "join", "Stopped joining"),
             "act:zip" => tool("Making a ZIP of {}", "Made a ZIP", "Made a ZIP of {} files", "zip", "Stopped making the ZIP"),
@@ -316,7 +323,7 @@ fn keep_progress_shown(app: &AppHandle, running: &Running, finished: Receiver<()
 fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Vec<PathBuf>) {
     let words = &running.words;
     // Converting or compressing video is slow; the video tools that copy are quick.
-    let encodes = !formats::is_tool(&job.format) || matches!(job.format.as_str(), "tool:compress" | "tool:trim" | "tool:join");
+    let encodes = !formats::is_tool(&job.format) || matches!(job.format.as_str(), "tool:compress" | "tool:trim" | "tool:join" | "tool:target");
     let slow = encodes
         && job.paths.iter().any(|p| {
             formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
@@ -390,6 +397,10 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
     let (title, mut body) = summary(words, &done, &failed);
     if moved {
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
+    }
+    // A few words from the tool for one file, such as how small a picture had to get.
+    if let (Some(note), [_], []) = (running.control.take_note(), done.as_slice(), failed.as_slice()) {
+        body.push_str(&format!(" ({note})"));
     }
     (title, body, done)
 }
@@ -565,7 +576,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
