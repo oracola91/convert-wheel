@@ -253,11 +253,16 @@ function nameWheel() {
   svg.setAttribute('aria-label', names[wheel] ?? 'Formats to convert to');
 }
 
+// The menu's Wheel Glass steps (wheel.css has each).
+const CLARITIES = ['clear', 'light', 'medium', 'strong', 'frosted'];
+
 listen('wheel-show', (event) => {
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   nameWheel();
   pinned = event.payload?.pinned === true;
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
+  const clarity = event.payload?.clarity;
+  document.documentElement.dataset.glass = CLARITIES.includes(clarity) ? clarity : 'medium';
   build();
   open = true;
   restart('opening');
