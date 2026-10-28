@@ -1,6 +1,6 @@
-//! The wheel window's native parts on macOS: glass behind the ring (Liquid Glass on
-//! macOS 26 and later, frosted before), the dragged file's picture in the hub (its
-//! icon at once, then Quick Look's thumbnail when it comes), placement at the cursor,
+//! The wheel window's native parts on macOS: the frosted material behind the ring when
+//! the menu asks for it, the dragged file's picture in the hub (its icon at once, then
+//! Quick Look's thumbnail when it comes), placement at the cursor,
 //! and the fade in and out.
 //! Everything here runs on the main thread.
 
@@ -9,11 +9,11 @@ use std::ptr::NonNull;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, Bool};
+use objc2::runtime::Bool;
 use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSAutoresizingMaskOptions, NSBezierPath, NSColor,
-    NSEvent, NSGlassEffectView, NSGlassEffectViewStyle, NSImage, NSImageScaling, NSImageView, NSScreen,
+    NSEvent, NSImage, NSImageScaling, NSImageView, NSScreen,
     NSVisualEffectBlendingMode,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSView, NSWindow, NSWindowOrderingMode,
     NSWorkspace,
@@ -38,10 +38,8 @@ const CLOSE_SECONDS: f64 = 0.14;
 
 thread_local! {
     static HUB_ICON: RefCell<Option<Retained<NSImageView>>> = const { RefCell::new(None) };
-    /// The two glasses behind the ring, made once: the frosted material, and Liquid
-    /// Glass where macOS has it. Each open shows the one chosen in the menu.
+    /// The frosted material behind the ring, made once, shown when the menu says Frosted.
     static FROSTED: RefCell<Option<Retained<NSVisualEffectView>>> = const { RefCell::new(None) };
-    static LIQUID: RefCell<Option<Retained<NSGlassEffectView>>> = const { RefCell::new(None) };
 }
 
 pub fn ns_window(app: &AppHandle) -> Option<Retained<NSWindow>> {
@@ -71,8 +69,8 @@ pub fn install(app: &AppHandle, mtm: MainThreadMarker) -> Result<(), String> {
     Ok(())
 }
 
-/// Puts both glasses under the web page, once: glass added after the window first
-/// showed never appeared. With Reduce Transparency on, macOS draws each one solid.
+/// Puts the frosted material under the web page, once (glass added after the window
+/// first showed never appeared). With Reduce Transparency on, macOS draws it solid.
 fn install_glass(content: &NSView, mtm: MainThreadMarker) {
     let frosted = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), content.bounds());
     frosted.setMaterial(NSVisualEffectMaterial::Popover);
@@ -83,32 +81,17 @@ fn install_glass(content: &NSView, mtm: MainThreadMarker) {
     frosted.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
     content.addSubview_positioned_relativeTo(&frosted, NSWindowOrderingMode::Below, None);
     FROSTED.with(|f| *f.borrow_mut() = Some(frosted));
-    // Liquid Glass: macOS 26 and later.
-    if AnyClass::get(c"NSGlassEffectView").is_some() {
-        let (c, r) = (wheel::SIZE / 2.0, wheel::R_OUT);
-        let frame = NSRect::new(NSPoint::new(c - r, c - r), NSSize::new(2.0 * r, 2.0 * r));
-        let liquid = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
-        liquid.setCornerRadius(r);
-        content.addSubview_positioned_relativeTo(&liquid, NSWindowOrderingMode::Below, None);
-        LIQUID.with(|l| *l.borrow_mut() = Some(liquid));
-    }
 }
 
-/// Shows the glass the menu's Wheel Glass asks for and hides the other: the frosted
-/// material the wheel always had, or Liquid Glass, standard or clear. Without Liquid
-/// Glass every choice is frosted.
+/// Wheel Glass in the menu: Clear has no system glass at all, so the page's own clear
+/// segments, bright edges and rim are the glass, the same from the first frame on.
+/// (Apple's Liquid Glass came up frosted and turned clear a second or two later, at
+/// every open.) Frosted shows the material the wheel had before.
 fn apply_glass(app: &AppHandle) {
-    let kind = app.state::<Store>().get().glass;
-    let liquid = LIQUID.with(|l| l.borrow().clone());
-    let use_liquid = liquid.is_some() && kind != Glass::Frosted;
-    if let Some(liquid) = &liquid {
-        let style = if kind == Glass::Clear { NSGlassEffectViewStyle::Clear } else { NSGlassEffectViewStyle::Regular };
-        liquid.setStyle(style);
-        liquid.setHidden(!use_liquid);
-    }
+    let frosted = app.state::<Store>().get().glass == Glass::Frosted;
     FROSTED.with(|f| {
-        if let Some(frosted) = &*f.borrow() {
-            frosted.setHidden(use_liquid);
+        if let Some(view) = &*f.borrow() {
+            view.setHidden(!frosted);
         }
     });
 }
