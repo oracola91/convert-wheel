@@ -310,6 +310,18 @@ footer input:focus-visible {
   outline-offset: 1px;
 }
 
+#size {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* The crop box's width and height, to read or to type (the rest as footer input). */
+#size input {
+  width: 58px;
+  text-align: right;
+}
+
 /* Compress to a size: a short form instead of a stage. */
 #panel {
   flex: 1;
