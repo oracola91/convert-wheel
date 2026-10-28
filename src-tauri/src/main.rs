@@ -16,6 +16,9 @@ mod mac_notification;
 mod menu;
 mod reveal;
 mod settings;
+mod shelf;
+#[cfg(target_os = "macos")]
+mod shelf_window;
 mod trigger;
 mod update;
 mod wheel;
@@ -578,6 +581,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(reveal::Results::default());
     app.manage(NowConverting::default());
     app.manage(converters::Missing::default());
+    app.manage(shelf::Shelf::load(app.path().app_config_dir()?.join("shelf.json")));
     // Before any notification: the ones shown earlier never report a click.
     #[cfg(target_os = "macos")]
     mac_notification::install(app.handle());
@@ -597,6 +601,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let mtm = objc2::MainThreadMarker::new().ok_or("setup isn't on the main thread")?;
         wheel_window::install(app.handle(), mtm)?;
         drop_view::install(app.handle())?;
+        shelf_window::install(app.handle(), mtm);
     }
     #[cfg(windows)]
     win32::install(app.handle());
