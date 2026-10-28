@@ -22,6 +22,16 @@
   --disc: rgba(246, 246, 248, 0.97);
 }
 
+/* The other highlight colours from the menu: light at the top, and a darker shade
+   that white text reads on with Increase Contrast (4.5:1 or more). */
+:root[data-highlight="red"] { --accent-top: #f2554f; --accent-end: #c92f29; --accent: #b3261e; }
+:root[data-highlight="pink"] { --accent-top: #f5639c; --accent-end: #d1326c; --accent: #b0245a; }
+:root[data-highlight="purple"] { --accent-top: #ab73f2; --accent-end: #7c44d4; --accent: #6a35b8; }
+:root[data-highlight="blue"] { --accent-top: #3f8ff5; --accent-end: #1d66d4; --accent: #1559c0; }
+:root[data-highlight="teal"] { --accent-top: #32bdc2; --accent-end: #128c96; --accent: #0f7a82; }
+:root[data-highlight="green"] { --accent-top: #48c55c; --accent-end: #269a39; --accent: #1f7d2f; }
+:root[data-highlight="graphite"] { --accent-top: #8e8e93; --accent-end: #5c5c62; --accent: #48484a; }
+
 @media (prefers-color-scheme: dark) {
   :root {
     --seg: rgba(255, 255, 255, 0.09);
@@ -237,7 +247,7 @@ svg.closing {
   :root { --seg: #2c2c2e; --hub: #1c1c1e; --bezel: #3a3a3c; --pill: #1c1c1e; }
 }
 
-/* Increased contrast: the chosen segment in the darker orange white text reads on. */
+/* Increased contrast: the chosen segment in the darker shade white text reads on. */
 @media (prefers-contrast: more) {
   .seg.active .body { fill: var(--accent); }
 }

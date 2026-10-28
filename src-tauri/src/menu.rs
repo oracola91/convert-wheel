@@ -34,6 +34,8 @@ const FORMAT: &str = "fmt:";
 /// Quality choices are "quality:" followed by the kind and the level, e.g.
 /// "quality:video:best".
 const QUALITY: &str = "quality:";
+/// Highlight colours are "color:" followed by the colour, e.g. "color:blue".
+const COLOR: &str = "color:";
 
 pub struct TrayMenu(Menu<Wry>);
 
@@ -92,6 +94,13 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let level_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = levels.iter().map(|k| k as _).collect();
     let quality = Submenu::with_items(app, "Quality", true, &level_refs)?;
 
+    let colors = settings::Highlight::ALL
+        .iter()
+        .map(|h| CheckMenuItem::with_id(app, format!("{COLOR}{}", h.key()), h.label(), true, current.highlight == *h, None::<&str>))
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let color_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = colors.iter().map(|c| c as _).collect();
+    let highlight = Submenu::with_items(app, "Highlight Color", true, &color_refs)?;
+
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
     let (separator, separator2) = (sep()?, sep()?);
@@ -101,7 +110,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let shelf = CheckMenuItem::with_id(app, SHELF, "Shelf at the Top of the Screen", true, !current.shelf_off, None::<&str>)?;
     #[cfg(target_os = "macos")]
     items.push(&shelf);
-    let rest: [&dyn tauri::menu::IsMenuItem<Wry>; 6] = [&save, &shown, &quality, &separator2, &show_log, &quit];
+    let rest: [&dyn tauri::menu::IsMenuItem<Wry>; 7] = [&save, &shown, &quality, &highlight, &separator2, &show_log, &quit];
     items.extend(rest);
     let menu = Menu::with_items(app, &items)?;
 
@@ -301,6 +310,20 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             let save_to = store.get().save_to;
             set_check(app, SAVE_NEXT, save_to == SaveTo::NextToOriginal);
             set_check(app, SAVE_DOWNLOADS, save_to == SaveTo::Downloads);
+        }
+        _ if id.starts_with(COLOR) => {
+            let wanted = &id[COLOR.len()..];
+            let Some(color) = settings::Highlight::ALL.into_iter().find(|h| h.key() == wanted) else {
+                return;
+            };
+            if let Err(e) = store.update(|s| s.highlight = color) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            // One colour ticked, the one saved; the next wheel opens in it.
+            let saved = store.get().highlight;
+            for h in settings::Highlight::ALL {
+                set_check(app, &format!("{COLOR}{}", h.key()), saved == h);
+            }
         }
         _ if id.starts_with(QUALITY) => {
             let Some((kind, wanted)) = id[QUALITY.len()..].split_once(':') else {
