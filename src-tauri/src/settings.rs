@@ -106,25 +106,33 @@ pub struct Settings {
     pub glass: Glass,
 }
 
-/// What is behind the wheel on macOS.
+/// How see-through the wheel is on macOS, from Clear to Frosted. Each step puts more
+/// of the frosted material behind the wheel (it blurs what is behind, so the words
+/// read) and a little more white on the segments. Chosen in the menu.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Glass {
-    /// No system glass: the wheel's own clear segments and bright edges.
-    #[default]
     Clear,
-    /// The frosted system material the wheel had before. ("liquid" was a third choice
-    /// for a day; it reads as this one, so a saved setting never resets the file.)
+    Light,
+    #[default]
+    Medium,
+    Strong,
+    /// The frosted look the wheel had before. ("liquid" was a choice for a day; it
+    /// reads as this one, so a saved setting never resets the file.)
     #[serde(alias = "liquid")]
     Frosted,
 }
 
 impl Glass {
-    pub const ALL: [Glass; 2] = [Glass::Clear, Glass::Frosted];
+    pub const ALL: [Glass; 5] = [Glass::Clear, Glass::Light, Glass::Medium, Glass::Strong, Glass::Frosted];
 
+    /// The name the page and the settings file use.
     pub fn key(self) -> &'static str {
         match self {
             Glass::Clear => "clear",
+            Glass::Light => "light",
+            Glass::Medium => "medium",
+            Glass::Strong => "strong",
             Glass::Frosted => "frosted",
         }
     }
@@ -132,7 +140,21 @@ impl Glass {
     pub fn label(self) -> &'static str {
         match self {
             Glass::Clear => "Clear",
+            Glass::Light => "Light",
+            Glass::Medium => "Medium",
+            Glass::Strong => "Strong",
             Glass::Frosted => "Frosted (as before)",
+        }
+    }
+
+    /// How much of the frosted material shows behind the wheel, from 0 to 1.
+    pub fn blur(self) -> f64 {
+        match self {
+            Glass::Clear => 0.0,
+            Glass::Light => 0.35,
+            Glass::Medium => 0.6,
+            Glass::Strong => 0.85,
+            Glass::Frosted => 1.0,
         }
     }
 }
@@ -324,16 +346,28 @@ mod tests {
     }
 
     #[test]
-    fn the_glass_is_clear_unless_chosen() {
+    fn the_glass_is_medium_unless_chosen_and_the_page_knows_every_step() {
         let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
-        assert_eq!(old.glass, Glass::Clear);
-        let frosted = Settings { glass: Glass::Frosted, ..Settings::default() };
-        let text = serde_json::to_string(&frosted).unwrap();
-        assert!(text.contains(r#""glass":"frosted""#), "{text}");
-        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().glass, Glass::Frosted);
-        // The Liquid Glass choice of one test day reads as Frosted, not as a damaged file.
-        let liquid: Settings = serde_json::from_str(r#"{"glass":"liquid"}"#).unwrap();
-        assert_eq!(liquid.glass, Glass::Frosted);
+        assert_eq!(old.glass, Glass::Medium);
+        let clear = Settings { glass: Glass::Clear, ..Settings::default() };
+        let text = serde_json::to_string(&clear).unwrap();
+        assert!(text.contains(r#""glass":"clear""#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().glass, Glass::Clear);
+        // Saved by earlier test builds: still read, never a damaged file.
+        for (saved, glass) in [("frosted", Glass::Frosted), ("liquid", Glass::Frosted), ("clear", Glass::Clear)] {
+            let s: Settings = serde_json::from_str(&format!(r#"{{"glass":"{saved}"}}"#)).unwrap();
+            assert_eq!(s.glass, glass);
+        }
+        // More blur at each step, and the page draws each step but the default.
+        assert!(Glass::ALL.windows(2).all(|w| w[0].blur() < w[1].blur()));
+        let js = include_str!("../../src/wheel.js");
+        let css = include_str!("../../src/wheel.css");
+        for g in Glass::ALL {
+            assert!(js.contains(&format!("'{}'", g.key())), "wheel.js lacks {}", g.key());
+            if g != Glass::default() {
+                assert!(css.contains(&format!("[data-glass=\"{}\"]", g.key())), "wheel.css lacks {}", g.key());
+            }
+        }
     }
 
     #[test]
