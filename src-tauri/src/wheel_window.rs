@@ -38,8 +38,10 @@ const CLOSE_SECONDS: f64 = 0.14;
 
 thread_local! {
     static HUB_ICON: RefCell<Option<Retained<NSImageView>>> = const { RefCell::new(None) };
-    /// The glass behind the ring, of the kind chosen in the menu, made new at each open.
-    static GLASS: RefCell<Option<Retained<NSView>>> = const { RefCell::new(None) };
+    /// The two glasses behind the ring, made once: the frosted material, and Liquid
+    /// Glass where macOS has it. Each open shows the one chosen in the menu.
+    static FROSTED: RefCell<Option<Retained<NSVisualEffectView>>> = const { RefCell::new(None) };
+    static LIQUID: RefCell<Option<Retained<NSGlassEffectView>>> = const { RefCell::new(None) };
 }
 
 pub fn ns_window(app: &AppHandle) -> Option<Retained<NSWindow>> {
@@ -53,7 +55,8 @@ pub fn install(app: &AppHandle, mtm: MainThreadMarker) -> Result<(), String> {
     let window = ns_window(app).ok_or("the wheel window is missing")?;
     let content = window.contentView().ok_or("the wheel window has no content")?;
 
-    renew_glass(app, &window, mtm);
+    install_glass(&content, mtm);
+    apply_glass(app);
 
     let c = wheel::SIZE / 2.0;
     let frame = NSRect::new(NSPoint::new(c - ICON / 2.0, c - ICON / 2.0 + ICON_LIFT), NSSize::new(ICON, ICON));
@@ -68,51 +71,45 @@ pub fn install(app: &AppHandle, mtm: MainThreadMarker) -> Result<(), String> {
     Ok(())
 }
 
-/// The glass behind the ring, as the menu's Wheel Glass says: the frosted material
-/// the wheel always had, or Liquid Glass (macOS 26 and later), standard or clear. Where
-/// there is no Liquid Glass, every choice is frosted. With Reduce Transparency on, macOS
-/// draws each one solid by itself.
-fn make_glass(mtm: MainThreadMarker, kind: Glass, bounds: NSRect) -> Retained<NSView> {
-    let liquid = AnyClass::get(c"NSGlassEffectView").is_some();
-    match kind {
-        Glass::Liquid | Glass::Clear if liquid => {
-            let (c, r) = (wheel::SIZE / 2.0, wheel::R_OUT);
-            let frame = NSRect::new(NSPoint::new(c - r, c - r), NSSize::new(2.0 * r, 2.0 * r));
-            let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
-            let style = if kind == Glass::Clear { NSGlassEffectViewStyle::Clear } else { NSGlassEffectViewStyle::Regular };
-            glass.setStyle(style);
-            glass.setCornerRadius(r);
-            Retained::into_super(glass)
-        }
-        _ => {
-            let glass = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), bounds);
-            glass.setMaterial(NSVisualEffectMaterial::Popover);
-            glass.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-            // The app is never the active one, so the glass must not follow the active state.
-            glass.setState(NSVisualEffectState::Active);
-            glass.setMaskImage(Some(&disc(wheel::R_OUT)));
-            glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
-            Retained::into_super(glass)
-        }
+/// Puts both glasses under the web page, once: glass added after the window first
+/// showed never appeared. With Reduce Transparency on, macOS draws each one solid.
+fn install_glass(content: &NSView, mtm: MainThreadMarker) {
+    let frosted = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), content.bounds());
+    frosted.setMaterial(NSVisualEffectMaterial::Popover);
+    frosted.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+    // The app is never the active one, so the glass must not follow the active state.
+    frosted.setState(NSVisualEffectState::Active);
+    frosted.setMaskImage(Some(&disc(wheel::R_OUT)));
+    frosted.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+    content.addSubview_positioned_relativeTo(&frosted, NSWindowOrderingMode::Below, None);
+    FROSTED.with(|f| *f.borrow_mut() = Some(frosted));
+    // Liquid Glass: macOS 26 and later.
+    if AnyClass::get(c"NSGlassEffectView").is_some() {
+        let (c, r) = (wheel::SIZE / 2.0, wheel::R_OUT);
+        let frame = NSRect::new(NSPoint::new(c - r, c - r), NSSize::new(2.0 * r, 2.0 * r));
+        let liquid = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
+        liquid.setCornerRadius(r);
+        content.addSubview_positioned_relativeTo(&liquid, NSWindowOrderingMode::Below, None);
+        LIQUID.with(|l| *l.borrow_mut() = Some(liquid));
     }
 }
 
-/// Puts new glass of the chosen kind in place of the last, so a change in the menu
-/// shows on the next wheel, and Liquid Glass starts the same way every time (one disc
-/// used open after open came back frosted on some opens and clear on others).
-fn renew_glass(app: &AppHandle, window: &NSWindow, mtm: MainThreadMarker) {
-    let Some(content) = window.contentView() else {
-        return;
-    };
+/// Shows the glass the menu's Wheel Glass asks for and hides the other: the frosted
+/// material the wheel always had, or Liquid Glass, standard or clear. Without Liquid
+/// Glass every choice is frosted.
+fn apply_glass(app: &AppHandle) {
     let kind = app.state::<Store>().get().glass;
-    GLASS.with(|g| {
-        let mut g = g.borrow_mut();
-        if let Some(old) = g.take() {
-            old.removeFromSuperview();
+    let liquid = LIQUID.with(|l| l.borrow().clone());
+    let use_liquid = liquid.is_some() && kind != Glass::Frosted;
+    if let Some(liquid) = &liquid {
+        let style = if kind == Glass::Clear { NSGlassEffectViewStyle::Clear } else { NSGlassEffectViewStyle::Regular };
+        liquid.setStyle(style);
+        liquid.setHidden(!use_liquid);
+    }
+    FROSTED.with(|f| {
+        if let Some(frosted) = &*f.borrow() {
+            frosted.setHidden(use_liquid);
         }
-        let glass = make_glass(mtm, kind, content.bounds());
-        content.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, None);
-        *g = Some(glass);
     });
 }
 
@@ -143,7 +140,7 @@ pub fn open(app: &AppHandle, first_path: Option<&str>) {
     if let Some(path) = first_path {
         show_thumbnail(app, path);
     }
-    renew_glass(app, &window, mtm);
+    apply_glass(app);
     place_at_cursor(&window, mtm);
     window.setAlphaValue(0.0);
     window.orderFrontRegardless();
