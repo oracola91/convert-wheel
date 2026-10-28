@@ -27,8 +27,9 @@
    what is behind shows through; thin bright edges and a rim catch the light, and a
    soft halo keeps the words readable on any background. Windows draws its own solid
    disc and keeps the fills above. */
-:root:not(.solid) {
-  /* How much white the segments carry, per Wheel Glass step (Medium here). */
+:root:not(.solid):not(.plain) {
+  /* How much white the segments carry and how strong the halo is: from the menu's
+     Transparency slider (wheel.js sets them on each wheel). */
   --seg-a: 0.22;
   --halo-a: 0.75;
   --seg: rgba(255, 255, 255, var(--seg-a));
@@ -40,12 +41,6 @@
   --halo: rgba(255, 255, 255, var(--halo-a));
 }
 
-/* The other Wheel Glass steps. Clearer steps get a stronger halo, so the words still
-   read with no blur behind them. */
-:root:not(.solid)[data-glass="clear"] { --seg-a: 0.06; --halo-a: 0.95; }
-:root:not(.solid)[data-glass="light"] { --seg-a: 0.14; --halo-a: 0.85; }
-:root:not(.solid)[data-glass="strong"] { --seg-a: 0.30; --halo-a: 0.65; }
-:root:not(.solid)[data-glass="frosted"] { --seg-a: 0.40; --halo-a: 0.55; }
 
 @media (prefers-color-scheme: dark) {
   :root {
@@ -62,7 +57,7 @@
     --disc: rgba(36, 36, 38, 0.97);
   }
 
-  :root:not(.solid) {
+  :root:not(.solid):not(.plain) {
     --seg: rgba(255, 255, 255, calc(var(--seg-a) * 0.4));
     --seg-edge: rgba(255, 255, 255, 0.18);
     --sheen: 0.14;
@@ -122,7 +117,8 @@ svg.closing {
   fill: transparent;
 }
 
-.solid .disc {
+.solid .disc,
+.plain .disc {
   fill: var(--disc);
 }
 
@@ -187,7 +183,7 @@ svg.closing {
 
 /* Over glass the segments have no bright outline of their own: two of them side by
    side made every gap look like a white column. One soft line per side is enough. */
-:root:not(.solid) .shine {
+:root:not(.solid):not(.plain) .shine {
   stroke: none;
 }
 
@@ -222,7 +218,7 @@ svg.closing {
   stroke: none;
 }
 
-:root:not(.solid) .seg text {
+:root:not(.solid):not(.plain) .seg text {
   stroke-width: 4px;
 }
 

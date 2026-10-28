@@ -7,6 +7,8 @@ mod converters;
 #[cfg(target_os = "macos")]
 mod drop_view;
 mod formats;
+#[cfg(target_os = "macos")]
+mod glass_slider;
 #[cfg(target_os = "linux")]
 mod linux;
 mod log;
@@ -596,6 +598,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     {
         let mtm = objc2::MainThreadMarker::new().ok_or("setup isn't on the main thread")?;
         wheel_window::install(app.handle(), mtm)?;
+        glass_slider::install(app.handle(), mtm);
         drop_view::install(app.handle())?;
     }
     #[cfg(windows)]
