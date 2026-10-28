@@ -99,6 +99,8 @@ pub struct Settings {
     /// Formats left off the wheel, as "kind:format" (for example "image:avif").
     pub hidden: BTreeSet<String>,
     pub quality: Quality,
+    /// The shelf at the top of the screen is switched off (it is on unless chosen so).
+    pub shelf_off: bool,
 }
 
 pub fn key(kind: Kind, format: &str) -> String {
@@ -202,6 +204,15 @@ mod tests {
         let back: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(back.quality.get("audio"), Some(Level::Best));
         assert_eq!(Level::Smaller.pick(1, 2, 3), 1);
+    }
+
+    #[test]
+    fn the_shelf_is_on_unless_switched_off() {
+        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
+        assert!(!old.shelf_off);
+        let off = Settings { shelf_off: true, ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(back.shelf_off);
     }
 
     #[test]
