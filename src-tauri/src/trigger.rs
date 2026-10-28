@@ -56,9 +56,24 @@ struct WheelShow {
     /// The menu's highlight colour ("blue"). Only on wheel-show: a switch keeps it.
     #[serde(skip_serializing_if = "Option::is_none")]
     highlight: Option<&'static str>,
-    /// The menu's Wheel Glass step ("medium"). Only on wheel-show: a switch keeps it.
+    /// How the wheel looks, from the menu's Wheel Glass. Only on wheel-show: a switch
+    /// keeps it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    clarity: Option<&'static str>,
+    look: Option<Look>,
+}
+
+/// Wheel Glass for the page: a plain solid disc, or Liquid Glass with this much white
+/// on the segments and this strong a halo behind the words.
+#[derive(Clone, Copy, Serialize)]
+struct Look {
+    plain: bool,
+    seg: f64,
+    halo: f64,
+}
+
+fn look(app: &AppHandle) -> Look {
+    let settings = app.state::<crate::settings::Store>().get();
+    Look { plain: settings.no_liquid_glass, seg: settings.transparency.paint(), halo: settings.transparency.halo() }
 }
 
 /// The total size of `paths`, or None with a folder among them.
@@ -232,7 +247,7 @@ fn switch_wheel(app: &AppHandle, which: Which) {
     let (which, formats) = fill(app, &paths, Some(which));
     let pending = paths.is_empty();
     let bytes = total_bytes(&paths);
-    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None, clarity: None });
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
 }
 
 /// Opens the wheel and returns its generation.
@@ -245,8 +260,7 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
     let glass = cfg!(target_os = "macos");
     let bytes = total_bytes(&paths);
     let highlight = app.state::<crate::settings::Store>().get().highlight.key();
-    let clarity = app.state::<crate::settings::Store>().get().glass.key();
-    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which, bytes, highlight: Some(highlight), clarity: Some(clarity) });
+    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which, bytes, highlight: Some(highlight), look: Some(look(app)) });
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -267,7 +281,7 @@ pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
     let (which, formats) = fill(app, &paths, None);
     app.state::<WheelState>().files_known();
     let bytes = total_bytes(&paths);
-    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which, bytes, highlight: None, clarity: None });
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
 }
 
 /// A drop on the wheel. Converts (or runs the tool) when it landed on a segment and
