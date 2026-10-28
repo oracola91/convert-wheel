@@ -1,13 +1,15 @@
-// The editor window: the picture, a crop box to drag, shapes to pick, quarter turns,
-// then Crop or Cancel. The app hands over a preview of the picture and its size; this
-// page sends back only the box, in pixels of the full picture as turned.
+// The editor window: the picture, a crop box to drag (or its width and height to type),
+// shapes to pick, quarter turns, then Crop or Cancel. The app hands over a preview of
+// the picture and its size; this page sends back only the box, in pixels of the full
+// picture as turned.
 if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const stage = document.getElementById('stage');
 const canvas = document.getElementById('photo');
 const box = document.getElementById('box');
-const sizeOut = document.getElementById('size');
+const widthIn = document.getElementById('width');
+const heightIn = document.getElementById('height');
 const message = document.getElementById('message');
 const apply = document.getElementById('apply');
 
@@ -70,6 +72,28 @@ function fullBox() {
   return snap({ x: (t.w - w) / 2, y: (t.h - h) / 2, w, h });
 }
 
+// A width or height typed in the bar. The box keeps its middle where it can and stays
+// inside the picture; with a shape to keep, the other side follows.
+function typed(side, value) {
+  const t = turned();
+  const r = ratio();
+  let w = side === 'w' ? value : crop.w;
+  let h = side === 'h' ? value : crop.h;
+  if (r) {
+    if (side === 'w') h = w / r;
+    else w = h * r;
+    // Too big for the picture: smaller, the same shape.
+    const fit = Math.min(1, t.w / w, t.h / h);
+    w *= fit;
+    h *= fit;
+  }
+  w = clamp(Math.round(w), 1, t.w);
+  h = clamp(Math.round(h), 1, t.h);
+  const x = clamp(Math.round(crop.x + crop.w / 2 - w / 2), 0, t.w - w);
+  const y = clamp(Math.round(crop.y + crop.h / 2 - h / 2), 0, t.h - h);
+  return { x, y, w, h };
+}
+
 function moved(s, dx, dy) {
   const t = turned();
   return { x: clamp(Math.round(s.x + dx), 0, t.w - s.w), y: clamp(Math.round(s.y + dy), 0, t.h - s.h), w: s.w, h: s.h };
@@ -112,6 +136,8 @@ function resized(s, edge, dx, dy) {
 function layout() {
   if (!session || !picture.complete) return;
   const t = turned();
+  widthIn.title = `Width in pixels, up to ${t.w}`;
+  heightIn.title = `Height in pixels, up to ${t.h}`;
   const area = stage.getBoundingClientRect();
   const scale = Math.max(0.01, Math.min((area.width - 2 * MARGIN) / t.w, (area.height - 2 * MARGIN) / t.h));
   const w = t.w * scale;
@@ -140,7 +166,23 @@ function place() {
   box.style.top = `${view.top + crop.y * view.scale}px`;
   box.style.width = `${crop.w * view.scale}px`;
   box.style.height = `${crop.h * view.scale}px`;
-  sizeOut.textContent = `${crop.w} × ${crop.h}`;
+  // A field being typed in keeps what is typed.
+  if (document.activeElement !== widthIn) widthIn.value = String(crop.w);
+  if (document.activeElement !== heightIn) heightIn.value = String(crop.h);
+}
+
+// Takes the number typed in a size field, or puts the box's back if it isn't one.
+function commit(field) {
+  if (!session) return;
+  const text = field.value.trim();
+  const value = Number(text);
+  if (/^\d+$/.test(text) && value >= 1) crop = typed(field === widthIn ? 'w' : 'h', value);
+  field.value = String(field === widthIn ? crop.w : crop.h);
+  place();
+}
+
+for (const field of [widthIn, heightIn]) {
+  field.addEventListener('change', () => commit(field));
 }
 
 function say(text) {
@@ -150,6 +192,8 @@ function say(text) {
 
 box.addEventListener('pointerdown', (event) => {
   if (!session || event.button !== 0) return;
+  // Takes a number still being typed first, and the arrow keys come to the box.
+  box.focus();
   drag = { edge: event.target.dataset.edge ?? 'move', start: { ...crop }, x: event.clientX, y: event.clientY };
   box.setPointerCapture(event.pointerId);
   event.preventDefault();
@@ -210,9 +254,31 @@ function cancel() {
 apply.addEventListener('click', cropIt);
 document.getElementById('cancel').addEventListener('click', cancel);
 
-// Esc cancels, Enter crops (unless a button has the focus), the arrow keys move the
-// box a screen pixel at a time, ten with Shift.
+// In a size field, Enter takes the number (another Enter then crops), Esc puts the
+// box's back, and up and down count one pixel, ten with Shift. Elsewhere Esc cancels,
+// Enter crops (unless a button has the focus), the arrow keys move the box a screen
+// pixel at a time, ten with Shift.
 document.addEventListener('keydown', (event) => {
+  const field = [widthIn, heightIn].find((f) => f === document.activeElement);
+  if (field) {
+    const step = { ArrowUp: 1, ArrowDown: -1 }[event.key];
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commit(field);
+      box.focus();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      field.value = '';
+      box.focus();
+    } else if (step && session) {
+      event.preventDefault();
+      const now = Number(field.value) || (field === widthIn ? crop.w : crop.h);
+      field.value = String(Math.max(1, now + step * (event.shiftKey ? 10 : 1)));
+      commit(field);
+      field.select();
+    }
+    return;
+  }
   if (event.key === 'Escape') {
     cancel();
   } else if (event.key === 'Enter' && !(document.activeElement instanceof HTMLButtonElement)) {
