@@ -22,7 +22,7 @@ Today Shift+drag opens one wheel: the formats a file can become. Two more are pl
 - Video: compress, a still image from the first frame, remove metadata.
 - Audio: even out loudness, mono or stereo.
 
-**3. The Actions wheel.** Copy, Move, Copy Path, Show in Folder, open a terminal there, Share (AirDrop on macOS, the Share panel on Windows), and a small floating shelf that holds files for the next drag.
+**3. The Actions wheel.** Copy, Move, Copy Path, Show in Folder, open a terminal there, Share (AirDrop on macOS, the Share panel on Windows), and a shelf that holds files for the next drag. The shelf came first, on macOS (at the top of the screen, see README); Windows and Linux follow.
 
 **4. More formats.**
 - Archives: make ZIP, TAR and GZIP; unpack ZIP, TAR, GZIP and RAR.

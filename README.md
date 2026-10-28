@@ -89,7 +89,20 @@ Hold Control+Shift while dragging and a third wheel opens: what can be done with
 
 Archives go through bsdtar (libarchive): built into macOS and into Windows 10 and later (tar.exe), `libarchive-tools` on Linux (the setup script installs it). It refuses names with ".." and strips a leading "/", so nothing lands outside the new folder; an archive that does try is refused as a whole and leaves nothing behind. Unpacking may write at most 1 GB plus twenty times the archive's size, so a "zip bomb" is stopped. Unpacking first goes into a hidden folder next to the archive, so a half-done unpack is never mistaken for a finished one. A password-protected archive is refused. A plain .gz (one file, not a TAR) is unpacked by the app itself, within the same budget.
 
-On a Mac, start the drag first and then press Control+Shift: Control held before the click turns it into a right-click. Copying and moving files, sharing on Windows and a shelf for files come later ([ROADMAP](ROADMAP.md), stage 3).
+On a Mac, start the drag first and then press Control+Shift: Control held before the click turns it into a right-click. Copying and moving files and sharing on Windows come later ([ROADMAP](ROADMAP.md), stage 3). For moving files by hand there is the shelf.
+
+## The shelf (macOS)
+
+Drag files toward the top of the screen and the shelf opens to take them: out of the notch on a MacBook, under the ring icon on other screens (in the top right corner when the icon can't be seen). Drop them there, go to the folder where they belong, and drag them out of the shelf again.
+
+- Holding files only remembers where they are. Nothing is copied or moved until they are dragged out, and the drag's source is told it was a copy, so it never removes the originals.
+- Dragged out, Finder does what it does with its own drags: moves them on the same disk, copies them to another one, and Option makes a copy. Files that landed somewhere leave the shelf. The shelf itself never moves or deletes anything.
+- While it holds files a small sign stays: the newest file's icon and how many, beside the notch or in a pill under the ring icon. Point at it to see them, click to show them in Finder, and the × lets go of them all.
+- What it holds survives a restart (`shelf.json` next to the settings, the paths only). A file that was moved, renamed or deleted in the meantime is dropped from the shelf, never guessed at.
+- With Shift held the drag belongs to the wheel and the shelf steps aside.
+- To keep it away, untick **Shelf at the Top of the Screen** in the menu.
+
+Windows (above the clock) and Linux follow.
 
 ### Switching wheels in one drag
 
@@ -135,6 +148,7 @@ On Windows the update runs the installer in passive mode (a progress bar, no que
 The ring icon in the menu bar opens:
 
 - **Open at Login**: adds or removes Convert Wheel in System Settings > General > Login Items. Only works for the installed app.
+- **Shelf at the Top of the Screen** (macOS): on unless unticked.
 - **Save Converted Files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
 - **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
 - **Quality**: Smaller Files, Balanced (the default, what the app always did) or Best Quality, for Pictures, Video and Audio separately. It holds for a whole drop, from when it starts.
@@ -202,6 +216,9 @@ The same converter runs from the command line. It prints the path of each new fi
 4. Drop on a segment. The new file appears next to the original and a notification confirms it. Click the notification: Finder opens with the new file selected.
 5. Drop in the middle. The file slides back and nothing happens. Outside the wheel the drop works as usual in macOS: it slides back, or Finder moves the file if you let go over a folder.
 
+6. Drag a file without Shift toward the top of the screen. The shelf opens ("Drop to hold here"); drop it there. The file stays where it was, and a small sign stays at the top.
+7. Open another folder on the same disk, point at the sign and drag the shelf out into that folder. The file moves there and the shelf empties. With Option held it is copied instead.
+
 Also worth trying: several files at once, a file with no extension, text dragged from a browser (no wheel should appear), a second screen, and LibreOffice open at the same time.
 
 ## Safety
@@ -237,6 +254,7 @@ Word's default font since 2023, Aptos, ships inside Word only, and its licence l
 - **Queue** (`src-tauri/src/main.rs`): one worker converts drops in order, keeps the menu's progress line current, then posts the notification.
 - **Installing converters** (`src-tauri/src/converters.rs`): remembers the converters drops found missing, offers them in the menu, and runs `brew install` or `winget install` with fixed package names, never a shell line.
 - **Showing results** (`src-tauri/src/reveal.rs`): opens Finder, Explorer or the Linux file manager with the new files selected, through each system's own call rather than a command line.
+- **Shelf** (`src-tauri/src/shelf.rs`, `shelf_window.rs`): the held paths and where the shelf goes (the notch, under the menu bar icon, or the corner), and on macOS a native panel above the menu bar that takes drops and starts the drag out. The trigger tells it when a file drag comes near.
 - **Wheel** (`src/`): plain HTML, CSS and JavaScript in a transparent window. No frontend framework and no npm runtime packages. It opens and closes along the same path with no bounce, and follows Reduce Motion, Increase Contrast and dark mode.
 
 ## Layout
@@ -259,6 +277,8 @@ SECURITY.md                how to report a security problem
   src/settings.rs          saved choices (where files go, hidden formats)
   src/login.rs             Open at Login on each system
   src/drop_view.rs         macOS: the drop target over the wheel
+  src/shelf.rs             the shelf: held files, where it goes
+  src/shelf_window.rs      macOS: the shelf panel, drop in and drag out
   src/wheel_window.rs      macOS: glass, hub icon, placement, fades
   src/win32.rs             Windows: trigger, placement, drop target
   src/linux.rs             Linux: X11 trigger, Wayland shortcut, placement, drop target
