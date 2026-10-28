@@ -32,6 +32,9 @@ const FORMAT: &str = "fmt:";
 /// Quality choices are "quality:" followed by the kind and the level, e.g.
 /// "quality:video:best".
 const QUALITY: &str = "quality:";
+/// Wheel Glass: "glass:on" (Liquid Glass) and "glass:off" (No Liquid Glass), macOS.
+#[cfg(target_os = "macos")]
+const GLASS: &str = "glass:";
 
 pub struct TrayMenu(Menu<Wry>);
 
@@ -92,10 +95,27 @@ pub fn build(app: &App) -> tauri::Result<()> {
 
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
-    let menu = Menu::with_items(
-        app,
-        &[&title, &hint, &last, &stop, &sep()?, &update, &login, &save, &shown, &quality, &sep()?, &show_log, &quit],
-    )?;
+    let (separator, separator2) = (sep()?, sep()?);
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&title, &hint, &last, &stop, &separator, &update, &login, &save, &shown, &quality];
+    // Only macOS has a choice of glass.
+    #[cfg(target_os = "macos")]
+    let liquid = CheckMenuItem::with_id(app, format!("{GLASS}on"), "Liquid Glass", true, !current.no_liquid_glass, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    let plain = CheckMenuItem::with_id(app, format!("{GLASS}off"), "No Liquid Glass", true, current.no_liquid_glass, None::<&str>)?;
+    // glass_slider.rs puts the slider under this line when the menu opens.
+    #[cfg(target_os = "macos")]
+    let slider_label = MenuItem::with_id(app, format!("{GLASS}label"), "Transparency", false, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    let glass_sep = sep()?;
+    #[cfg(target_os = "macos")]
+    let kind_items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&plain, &liquid, &glass_sep, &slider_label];
+    #[cfg(target_os = "macos")]
+    let glass = Submenu::with_items(app, "Wheel Glass", true, &kind_items)?;
+    #[cfg(target_os = "macos")]
+    items.push(&glass);
+    let rest: [&dyn tauri::menu::IsMenuItem<Wry>; 3] = [&separator2, &show_log, &quit];
+    items.extend(rest);
+    let menu = Menu::with_items(app, &items)?;
 
     // macOS: a template icon it tints to match the menu bar, light or dark. Windows'
     // tray can be light or dark too, so it gets the coloured app icon instead.
@@ -285,6 +305,17 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             let save_to = store.get().save_to;
             set_check(app, SAVE_NEXT, save_to == SaveTo::NextToOriginal);
             set_check(app, SAVE_DOWNLOADS, save_to == SaveTo::Downloads);
+        }
+        #[cfg(target_os = "macos")]
+        _ if id.starts_with(GLASS) => {
+            let plain = &id[GLASS.len()..] == "off";
+            if let Err(e) = store.update(|s| s.no_liquid_glass = plain) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            // Two choices, one ticked, matching what is saved.
+            let saved = store.get().no_liquid_glass;
+            set_check(app, &format!("{GLASS}on"), !saved);
+            set_check(app, &format!("{GLASS}off"), saved);
         }
         _ if id.starts_with(QUALITY) => {
             let Some((kind, wanted)) = id[QUALITY.len()..].split_once(':') else {

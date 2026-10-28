@@ -99,6 +99,39 @@ pub struct Settings {
     /// Formats left off the wheel, as "kind:format" (for example "image:avif").
     pub hidden: BTreeSet<String>,
     pub quality: Quality,
+    /// The wheel is a plain solid disc instead of Liquid Glass (macOS).
+    pub no_liquid_glass: bool,
+    /// How see-through the Liquid Glass wheel is (macOS), from the menu's slider.
+    pub transparency: Transparency,
+}
+
+/// How see-through the Liquid Glass wheel is: 0 is frosted (the frosted material at
+/// full strength behind it and the most white on the segments), 100 is clear (no
+/// blur and next to no white; only the patches behind the words stay frosted).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Transparency(pub u8);
+
+impl Default for Transparency {
+    fn default() -> Self {
+        Transparency(50)
+    }
+}
+
+impl Transparency {
+    fn share(self) -> f64 {
+        f64::from(self.0.min(100)) / 100.0
+    }
+
+    /// How strongly the frosted material shows behind the wheel, 0 to 1.
+    pub fn blur(self) -> f64 {
+        1.0 - self.share()
+    }
+
+    /// How much white the segments carry.
+    pub fn paint(self) -> f64 {
+        0.40 - 0.34 * self.share()
+    }
 }
 
 pub fn key(kind: Kind, format: &str) -> String {
@@ -202,6 +235,25 @@ mod tests {
         let back: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(back.quality.get("audio"), Some(Level::Best));
         assert_eq!(Level::Smaller.pick(1, 2, 3), 1);
+    }
+
+    #[test]
+    fn liquid_glass_is_on_at_half_transparency_unless_chosen() {
+        // Older settings, also ones with the "glass" choice of earlier test builds.
+        for old in [r#"{"save_to":"downloads","hidden":[]}"#, r#"{"glass":"medium"}"#] {
+            let s: Settings = serde_json::from_str(old).unwrap();
+            assert!(!s.no_liquid_glass);
+            assert_eq!(s.transparency, Transparency(50));
+        }
+        let set = Settings { no_liquid_glass: true, transparency: Transparency(80), ..Settings::default() };
+        let text = serde_json::to_string(&set).unwrap();
+        assert!(text.contains(r#""transparency":80"#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), set);
+        // From frosted to clear: less blur and paint; never past 100.
+        let (frosted, clear) = (Transparency(0), Transparency(100));
+        assert_eq!((frosted.blur(), clear.blur()), (1.0, 0.0));
+        assert!(frosted.paint() > Transparency(50).paint() && Transparency(50).paint() > clear.paint());
+        assert_eq!(Transparency(250).blur(), 0.0);
     }
 
     #[test]

@@ -1,10 +1,19 @@
-/* The frosted glass under the ring is native (wheel_window.rs). These fills are kept
-   light so it shows through; colour sits only on the chosen segment. */
+/* On macOS the page is the glass (or sits on the frosted material, if chosen in the
+   menu, wheel_window.rs): colour sits only on the chosen segment. The shine makes
+   each segment read as a bubble lit from above. */
 :root {
-  --seg: rgba(255, 255, 255, 0.38);
+  /* Milky cushions that take on the colour behind them. */
+  --seg: rgba(255, 255, 255, 0.46);
+  --sheen: 0.35;
+  --rim: 0.9;
+  --bezel: rgba(255, 255, 255, 0.30);
+  --pill: rgba(255, 255, 255, 0.75);
+  /* The chosen segment: bright orange-red, lighter at the top. */
+  --accent-top: #f26a2c;
+  --accent-end: #cc400e;
   --seg-edge: rgba(0, 0, 0, 0.07);
   --text: #1d1d1f;
-  --hub: rgba(255, 255, 255, 0.55);
+  --hub: rgba(255, 255, 255, 0.40);
   --hub-text: #3a3a3c;
   --cancel: rgba(0, 0, 0, 0.10);
   /* Dark enough for white 12px text (4.7:1). */
@@ -13,24 +22,55 @@
   --disc: rgba(246, 246, 248, 0.97);
 }
 
+/* macOS: clear glass drawn here, the same from the first frame. Next to no paint, so
+   what is behind shows through; thin bright edges and a rim catch the light. The
+   words stay readable on any background because the glass is frosted right behind
+   each one (wheel_window.rs, from the boxes wheel.js sends). Windows draws its own
+   solid disc and keeps the fills above. */
+:root:not(.solid):not(.plain) {
+  /* How much white the segments carry: from the menu's Transparency slider (wheel.js
+     sets it on each wheel). */
+  --seg-a: 0.22;
+  --seg: rgba(255, 255, 255, var(--seg-a));
+  --seg-edge: rgba(255, 255, 255, 0.3);
+  --sheen: 0.22;
+  --rim: 1;
+  --bezel: rgba(255, 255, 255, 0.10);
+  --hub: rgba(255, 255, 255, calc(var(--seg-a) + 0.04));
+}
+
+
 @media (prefers-color-scheme: dark) {
   :root {
-    --seg: rgba(255, 255, 255, 0.07);
+    --seg: rgba(255, 255, 255, 0.09);
     --seg-edge: rgba(255, 255, 255, 0.10);
+    --sheen: 0.18;
+    --rim: 0.5;
+    --bezel: rgba(255, 255, 255, 0.10);
+    --pill: rgba(0, 0, 0, 0.35);
     --text: #f5f5f7;
     --hub: rgba(0, 0, 0, 0.22);
     --hub-text: #d1d1d6;
     --cancel: rgba(255, 255, 255, 0.14);
     --disc: rgba(36, 36, 38, 0.97);
   }
+
+  :root:not(.solid):not(.plain) {
+    --seg: rgba(255, 255, 255, calc(var(--seg-a) * 0.4));
+    --seg-edge: rgba(255, 255, 255, 0.18);
+    --sheen: 0.14;
+    --rim: 0.6;
+    --bezel: rgba(255, 255, 255, 0.06);
+    --hub: rgba(0, 0, 0, calc(var(--seg-a) * 0.5));
+  }
 }
 
 @media (prefers-contrast: more) {
-  :root { --seg-edge: rgba(0, 0, 0, 0.55); --hub-text: #1d1d1f; }
+  :root, :root:not(.solid) { --seg-edge: rgba(0, 0, 0, 0.55); --hub-text: #1d1d1f; }
 }
 
 @media (prefers-contrast: more) and (prefers-color-scheme: dark) {
-  :root { --seg-edge: rgba(255, 255, 255, 0.6); --hub-text: #f5f5f7; }
+  :root, :root:not(.solid) { --seg-edge: rgba(255, 255, 255, 0.6); --hub-text: #f5f5f7; }
 }
 
 html,
@@ -74,7 +114,8 @@ svg.closing {
   fill: transparent;
 }
 
-.solid .disc {
+.solid .disc,
+.plain .disc {
   fill: var(--disc);
 }
 
@@ -83,25 +124,72 @@ svg.closing {
 }
 
 .seg {
-  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+  transform-box: fill-box;
+  transform-origin: center;
+  /* A little overshoot, so the segment swells like a bubble and settles. */
+  transition: transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* The segment under the cursor moves out toward it. */
+/* The segment under the cursor moves out toward it and swells. */
 .seg.active {
-  transform: translate(var(--dx, 0), var(--dy, 0));
+  transform: translate(var(--dx, 0), var(--dy, 0)) scale(1.06);
 }
 
-.seg path {
+.seg .body {
   fill: var(--seg);
   stroke: var(--seg-edge);
   stroke-width: 1;
   transition: fill 90ms linear;
 }
 
-.seg.active path {
-  fill: var(--accent);
+.seg.active .body {
+  fill: url(#accent);
   stroke: transparent;
 }
+
+.accent-top { stop-color: var(--accent-top); }
+.accent-end { stop-color: var(--accent-end); }
+
+/* The glass rim around the segments and the ring around the hub. */
+.bezel {
+  fill: none;
+  stroke: var(--bezel);
+  pointer-events: none;
+}
+
+.edge {
+  fill: none;
+  stroke: url(#rim);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.pill {
+  fill: var(--pill);
+  stroke: var(--seg-edge);
+  stroke-width: 0.5;
+  pointer-events: none;
+}
+
+.shine {
+  fill: url(#sheen);
+  stroke: url(#rim);
+  stroke-width: 1.2;
+  pointer-events: none;
+}
+
+/* Over glass the segments have no bright outline of their own: two of them side by
+   side made every gap look like a white column. One soft line per side is enough. */
+:root:not(.solid):not(.plain) .shine {
+  stroke: none;
+}
+
+.sheen-top { stop-color: #fff; stop-opacity: var(--sheen); }
+.sheen-mid { stop-color: #fff; stop-opacity: calc(var(--sheen) * 0.15); }
+.sheen-end { stop-color: #fff; stop-opacity: 0; }
+.rim-top { stop-color: #fff; stop-opacity: var(--rim); }
+.rim-mid { stop-color: #fff; stop-opacity: calc(var(--rim) * 0.25); }
+.rim-end { stop-color: #fff; stop-opacity: calc(var(--rim) * 0.55); }
 
 /* Labels never catch the mouse, so a click on "Cancel" reaches the hub under it. */
 .seg text,
@@ -111,9 +199,9 @@ svg.closing {
 
 .seg text {
   fill: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
   text-anchor: middle;
   dominant-baseline: central;
 }
@@ -143,8 +231,8 @@ svg.closing {
 }
 
 /* No file icon above the label where there is no system glass (Windows), so it
-   moves up to the middle. */
-.solid .hub-label {
+   moves up to the middle, with its pill. */
+.solid .hub-tag {
   transform: translateY(-28px);
 }
 
@@ -162,9 +250,15 @@ svg.closing {
 
 /* Reduce Transparency: macOS already makes the glass solid; make the fills solid too. */
 @media (prefers-reduced-transparency: reduce) {
-  :root { --seg: #f2f2f7; --hub: #ffffff; }
+  :root, :root:not(.solid) { --seg: #f2f2f7; --hub: #ffffff; --bezel: #e5e5ea; --pill: #ffffff; --seg-edge: rgba(0, 0, 0, 0.12); }
+  .shine, .edge { display: none; }
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
-  :root { --seg: #2c2c2e; --hub: #1c1c1e; }
+  :root, :root:not(.solid) { --seg: #2c2c2e; --hub: #1c1c1e; --bezel: #3a3a3c; --pill: #1c1c1e; --seg-edge: rgba(255, 255, 255, 0.15); }
+}
+
+/* Increased contrast: the chosen segment in the darker orange white text reads on. */
+@media (prefers-contrast: more) {
+  .seg.active .body { fill: var(--accent); }
 }

@@ -7,6 +7,8 @@ mod converters;
 #[cfg(target_os = "macos")]
 mod drop_view;
 mod formats;
+#[cfg(target_os = "macos")]
+mod glass_slider;
 #[cfg(target_os = "linux")]
 mod linux;
 mod log;
@@ -233,6 +235,20 @@ pub(crate) fn stop_converting(app: &AppHandle) {
 #[tauri::command]
 fn wheel_cancel(app: AppHandle) {
     trigger::hide_wheel(&app, false, None);
+}
+
+/// The page drew a wheel and measured its words: on macOS the glass gets a frosted
+/// patch behind each. Boxes that don't fit the window are dropped.
+#[tauri::command]
+fn wheel_words(app: AppHandle, words: Vec<wheel::WordBox>) {
+    #[cfg(target_os = "macos")]
+    {
+        let words: Vec<_> = words.into_iter().filter(wheel::WordBox::valid).take(formats::MAX_SEGMENTS).collect();
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || wheel_window::set_words(&handle, words));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, words);
 }
 
 /// Queues a drop on the wheel for conversion.
@@ -549,7 +565,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
@@ -596,6 +612,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     {
         let mtm = objc2::MainThreadMarker::new().ok_or("setup isn't on the main thread")?;
         wheel_window::install(app.handle(), mtm)?;
+        glass_slider::install(app.handle(), mtm);
         drop_view::install(app.handle())?;
     }
     #[cfg(windows)]
