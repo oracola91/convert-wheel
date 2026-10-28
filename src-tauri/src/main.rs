@@ -428,6 +428,10 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
     if moved {
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
     }
+    // A few words from the tool for one file, such as how small a picture had to get.
+    if let (Some(note), [_], []) = (running.control.take_note(), done.as_slice(), failed.as_slice()) {
+        body.push_str(&format!(" ({note})"));
+    }
     // A QR code's text is what was wanted: it goes on the clipboard, and the
     // notification shows it (the start of it, if long) instead of a file name.
     if job.format == "tool:qr" && failed.is_empty() && !done.is_empty() {
