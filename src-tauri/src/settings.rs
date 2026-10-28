@@ -107,7 +107,7 @@ pub struct Settings {
 
 /// How see-through the Liquid Glass wheel is: 0 is frosted (the frosted material at
 /// full strength behind it and the most white on the segments), 100 is clear (no
-/// blur, next to no white, and the strongest halo behind the words).
+/// blur and next to no white; only the patches behind the words stay frosted).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Transparency(pub u8);
@@ -131,11 +131,6 @@ impl Transparency {
     /// How much white the segments carry.
     pub fn paint(self) -> f64 {
         0.40 - 0.34 * self.share()
-    }
-
-    /// How strong the halo behind the words is.
-    pub fn halo(self) -> f64 {
-        0.55 + 0.40 * self.share()
     }
 }
 
@@ -254,11 +249,10 @@ mod tests {
         let text = serde_json::to_string(&set).unwrap();
         assert!(text.contains(r#""transparency":80"#), "{text}");
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), set);
-        // From frosted to clear: less blur and paint, a stronger halo; never past 100.
+        // From frosted to clear: less blur and paint; never past 100.
         let (frosted, clear) = (Transparency(0), Transparency(100));
         assert_eq!((frosted.blur(), clear.blur()), (1.0, 0.0));
         assert!(frosted.paint() > Transparency(50).paint() && Transparency(50).paint() > clear.paint());
-        assert!(frosted.halo() < clear.halo());
         assert_eq!(Transparency(250).blur(), 0.0);
     }
 
