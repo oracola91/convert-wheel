@@ -99,6 +99,62 @@ pub struct Settings {
     /// Formats left off the wheel, as "kind:format" (for example "image:avif").
     pub hidden: BTreeSet<String>,
     pub quality: Quality,
+    pub highlight: Highlight,
+}
+
+/// The colour the segment under the cursor lights up in. src/wheel.css has each one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Highlight {
+    #[default]
+    Orange,
+    Red,
+    Pink,
+    Purple,
+    Blue,
+    Teal,
+    Green,
+    Graphite,
+}
+
+impl Highlight {
+    pub const ALL: [Highlight; 8] = [
+        Highlight::Orange,
+        Highlight::Red,
+        Highlight::Pink,
+        Highlight::Purple,
+        Highlight::Blue,
+        Highlight::Teal,
+        Highlight::Green,
+        Highlight::Graphite,
+    ];
+
+    /// The name the page and the settings file use.
+    pub fn key(self) -> &'static str {
+        match self {
+            Highlight::Orange => "orange",
+            Highlight::Red => "red",
+            Highlight::Pink => "pink",
+            Highlight::Purple => "purple",
+            Highlight::Blue => "blue",
+            Highlight::Teal => "teal",
+            Highlight::Green => "green",
+            Highlight::Graphite => "graphite",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Highlight::Orange => "Orange",
+            Highlight::Red => "Red",
+            Highlight::Pink => "Pink",
+            Highlight::Purple => "Purple",
+            Highlight::Blue => "Blue",
+            Highlight::Teal => "Teal",
+            Highlight::Green => "Green",
+            Highlight::Graphite => "Graphite",
+        }
+    }
 }
 
 pub fn key(kind: Kind, format: &str) -> String {
@@ -202,6 +258,25 @@ mod tests {
         let back: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(back.quality.get("audio"), Some(Level::Best));
         assert_eq!(Level::Smaller.pick(1, 2, 3), 1);
+    }
+
+    #[test]
+    fn the_highlight_is_orange_unless_chosen_and_the_page_knows_every_colour() {
+        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
+        assert_eq!(old.highlight, Highlight::Orange);
+        let blue = Settings { highlight: Highlight::Blue, ..Settings::default() };
+        let text = serde_json::to_string(&blue).unwrap();
+        assert!(text.contains(r#""highlight":"blue""#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().highlight, Highlight::Blue);
+        // The page accepts each colour and the stylesheet draws each one but the default.
+        let js = include_str!("../../src/wheel.js");
+        let css = include_str!("../../src/wheel.css");
+        for h in Highlight::ALL {
+            assert!(js.contains(&format!("'{}'", h.key())), "wheel.js lacks {}", h.key());
+            if h != Highlight::default() {
+                assert!(css.contains(&format!("[data-highlight=\"{}\"]", h.key())), "wheel.css lacks {}", h.key());
+            }
+        }
     }
 
     #[test]
