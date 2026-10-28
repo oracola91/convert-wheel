@@ -37,6 +37,8 @@ const CLOSE_SECONDS: f64 = 0.14;
 
 thread_local! {
     static HUB_ICON: RefCell<Option<Retained<NSImageView>>> = const { RefCell::new(None) };
+    /// The Liquid Glass disc, made new at each open (see renew_glass). None before 26.
+    static GLASS: RefCell<Option<Retained<NSGlassEffectView>>> = const { RefCell::new(None) };
 }
 
 pub fn ns_window(app: &AppHandle) -> Option<Retained<NSWindow>> {
@@ -51,18 +53,13 @@ pub fn install(app: &AppHandle, mtm: MainThreadMarker) -> Result<(), String> {
     let content = window.contentView().ok_or("the wheel window has no content")?;
     let bounds = content.bounds();
 
-    // Glass, as a disc. Liquid Glass where macOS has it (26 and later), the regular
-    // kind: it always blurs what is behind, so the milky segments read the same on any
-    // background. (The clear kind adapts to what is behind it: over a light window it
-    // went almost invisible on one open and frosted on the next.) Before 26 the frosted
-    // material. With Reduce Transparency on, macOS draws either one solid by itself.
+    // Glass, as a disc. Liquid Glass where macOS has it (26 and later): the clear kind,
+    // so the desktop shows through, bent at the edge, made new at each open. Before that
+    // the frosted material. With Reduce Transparency on, macOS draws either one solid.
     if AnyClass::get(c"NSGlassEffectView").is_some() {
-        let (c, r) = (wheel::SIZE / 2.0, wheel::R_OUT);
-        let frame = NSRect::new(NSPoint::new(c - r, c - r), NSSize::new(2.0 * r, 2.0 * r));
-        let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
-        glass.setStyle(NSGlassEffectViewStyle::Regular);
-        glass.setCornerRadius(r);
+        let glass = liquid_glass(mtm);
         content.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, None);
+        GLASS.with(|g| *g.borrow_mut() = Some(glass));
     } else {
         let glass = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), bounds);
         glass.setMaterial(NSVisualEffectMaterial::Popover);
@@ -85,6 +82,34 @@ pub fn install(app: &AppHandle, mtm: MainThreadMarker) -> Result<(), String> {
     // A transparent window's shadow follows what is drawn, so this gives the disc a soft edge.
     window.setHasShadow(true);
     Ok(())
+}
+
+fn liquid_glass(mtm: MainThreadMarker) -> Retained<NSGlassEffectView> {
+    let (c, r) = (wheel::SIZE / 2.0, wheel::R_OUT);
+    let frame = NSRect::new(NSPoint::new(c - r, c - r), NSSize::new(2.0 * r, 2.0 * r));
+    let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), frame);
+    glass.setStyle(NSGlassEffectViewStyle::Clear);
+    glass.setCornerRadius(r);
+    glass
+}
+
+/// Puts a new Liquid Glass disc in place of the last one, so every wheel starts the
+/// same, clear way. One disc used open after open came back frosted on some opens
+/// and clear on others, over the same window.
+fn renew_glass(window: &NSWindow, mtm: MainThreadMarker) {
+    let Some(content) = window.contentView() else {
+        return;
+    };
+    GLASS.with(|g| {
+        let mut g = g.borrow_mut();
+        let Some(old) = g.take() else {
+            return;
+        };
+        old.removeFromSuperview();
+        let glass = liquid_glass(mtm);
+        content.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, None);
+        *g = Some(glass);
+    });
 }
 
 /// A black disc of radius `r` centred in the window, used as the glass mask.
@@ -114,6 +139,7 @@ pub fn open(app: &AppHandle, first_path: Option<&str>) {
     if let Some(path) = first_path {
         show_thumbnail(app, path);
     }
+    renew_glass(&window, mtm);
     place_at_cursor(&window, mtm);
     window.setAlphaValue(0.0);
     window.orderFrontRegardless();
