@@ -1,16 +1,18 @@
 //! Roughly how big a file would come out, for the middle of the wheel while a segment
 //! is under the cursor. Nothing is converted for it: sound is worked out from its
-//! length and the bit rate the conversion uses, a picture by converting a piece of it
+//! length and the bit rate the conversion uses, a picture by converting pieces of it
 //! and scaling up, and a video that is only copied into another container stays the
 //! size it is. Everything else (video that is encoded again, documents, PDFs) has no
 //! estimate.
 
 use super::*;
 
-/// The side of the square piece from the middle of a picture that is converted to
-/// measure a format. At full size, so it has the photo's own detail; a shrunk copy of
-/// the whole would have more detail per pixel and come out too big.
-const PIECE: u32 = 512;
+/// The side of each of the nine square pieces, three across and three down, that are
+/// cut from a picture and joined to measure a format. At full size, so they have the
+/// photo's own detail; a shrunk copy of the whole would have more detail per pixel and
+/// come out too big. Spread over the picture, because one piece from the middle, where
+/// a photo's subject usually is, came out up to a quarter too big.
+const PIECE: u32 = 256;
 
 /// How long one measuring tool may take. An estimate that slow is not worth waiting for.
 const LIMIT: Duration = Duration::from_secs(15);
@@ -111,9 +113,22 @@ fn sound_of(src: &Path) -> Option<Sound> {
     })
 }
 
-/// Each picture format converted from a PIECE x PIECE piece of the picture's middle,
-/// scaled up by the picture's pixels. An icon is 256 pixels whatever the picture, so
-/// its piece is the estimate.
+/// Where the three pieces sit along a side `length` pixels long: in the middles of its
+/// thirds. Each is PIECE long, or a third of the side when that is shorter, so on a
+/// small picture the pieces meet and together are the whole side.
+fn pieces_along(length: u32) -> (u32, [u32; 3]) {
+    let piece = PIECE.min(length / 3).max(1);
+    let at = |third: u32| {
+        let middle = u64::from(length) * u64::from(2 * third + 1) / 6;
+        let start = u32::try_from(middle).unwrap_or(u32::MAX).saturating_sub(piece / 2);
+        start.min(length.saturating_sub(piece))
+    };
+    (piece, [at(0), at(1), at(2)])
+}
+
+/// Each picture format converted from nine pieces spread over the picture, joined into
+/// one, and scaled up by the picture's pixels. An icon is 256 pixels whatever the
+/// picture, so its pieces are the estimate.
 fn pictures(src: &Path, ext: &str, targets: &[&str], level: Level) -> Vec<(String, u64)> {
     let wanted: Vec<&str> = targets.iter().copied().filter(|t| formats::outputs_for(ext).contains(t)).collect();
     let (Some(coder), Ok(magick), Ok(work)) = (
@@ -126,18 +141,25 @@ fn pictures(src: &Path, ext: &str, targets: &[&str], level: Level) -> Vec<(Strin
     let Some((width, height)) = (!wanted.is_empty()).then(|| pixel_size(src, coder)).flatten() else {
         return Vec::new();
     };
+    let ((across, xs), (down, ys)) = (pieces_along(width), pieces_along(height));
     let piece = work.path().join("piece.miff");
     let mut cmd = Command::new(&magick);
-    cmd.args(IMAGE_LIMITS)
-        .arg(format!("{coder}:{}[0]", src.display()))
-        .arg("-auto-orient")
-        .args(["-gravity", "center", "-crop", &format!("{PIECE}x{PIECE}+0+0"), "+repage"])
-        .arg(format!("miff:{}", piece.display()));
+    cmd.args(IMAGE_LIMITS).arg(format!("{coder}:{}[0]", src.display())).arg("-auto-orient");
+    for y in ys {
+        for x in xs {
+            cmd.args(["(", "-clone", "0", "-crop", &format!("{across}x{down}+{x}+{y}"), "+repage", ")"]);
+        }
+    }
+    // The nine pieces after the picture, joined three to a row and the rows stacked.
+    for row in ["1-3", "4-6", "7-9"] {
+        cmd.args(["(", "-clone", row, "+append", ")"]);
+    }
+    cmd.args(["-delete", "0-9", "-append", "+repage"]).arg(format!("miff:{}", piece.display()));
     if run(cmd, LIMIT).is_err() {
         return Vec::new();
     }
     let pixels = |w: u32, h: u32| f64::from(w) * f64::from(h);
-    let scale = pixels(width, height) / pixels(width.min(PIECE), height.min(PIECE));
+    let scale = pixels(width, height) / (9.0 * pixels(across, down));
     wanted
         .into_iter()
         .filter_map(|target| {
@@ -229,5 +251,40 @@ mod tests {
         let text = work.path().join("notes.png");
         fs::write(&text, "not a picture").unwrap();
         assert!(sizes(&text, &targets, Quality::default()).is_empty());
+    }
+
+    #[test]
+    fn pieces_spread_over_the_picture() {
+        // A big side: PIECE-long pieces in the middles of its thirds.
+        assert_eq!(pieces_along(3000), (256, [372, 1372, 2372]));
+        // A small side: the pieces meet and are all of it.
+        assert_eq!(pieces_along(300), (100, [0, 100, 200]));
+        // Never past the end, however small.
+        let (piece, at) = pieces_along(2);
+        assert!(at.iter().all(|&x| x + piece <= 2), "{piece} {at:?}");
+    }
+
+    /// Needs ImageMagick. A photo whose middle is plain isn't taken for a plain photo.
+    #[test]
+    fn picture_estimates_look_past_the_middle() {
+        let Ok(magick) = magick() else {
+            eprintln!("ImageMagick isn't installed: picture estimates not tested");
+            return;
+        };
+        let work = tempfile::tempdir().unwrap();
+        let photo = work.path().join("photo.jpg");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "1600x1200", "-seed", "7", "plasma:", "-fill", "gray50"])
+            .args(["-draw", "rectangle 450,350 1150,850", "-quality", "92"])
+            .arg(&photo);
+        run(make, QUICK).unwrap();
+        let found = sizes(&photo, &["png", "webp"], Quality::default());
+        assert_eq!(found.len(), 2, "{found:?}");
+        for (target, estimate) in found {
+            let made = convert(&photo, &target, None, work.path()).unwrap();
+            let real = fs::metadata(&made).unwrap().len() as f64;
+            let ratio = estimate as f64 / real;
+            assert!((0.8..=1.25).contains(&ratio), "{target}: estimated {estimate}, made {real}");
+        }
     }
 }

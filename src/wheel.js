@@ -246,13 +246,17 @@ function show(raw) {
   segments.forEach((g, i) => g.classList.toggle('active', i === hover.segment));
   hub.classList.toggle('cancel', hover.hub);
   hubLabel.classList.toggle('strong', hover.segment !== null || hover.hub);
+  // What the pill says when the words don't fit.
+  let short = null;
   if (hover.hub) {
     hubLabel.textContent = 'Cancel';
   } else if (hover.segment !== null) {
     const f = formats[hover.segment];
     const estimate = paths.length === 1 && paths[0] === estimates.path ? estimates.sizes.get(f) : undefined;
-    if (bytes !== null && estimate !== undefined) hubLabel.textContent = `${sizeText(bytes)} → ~${sizeText(estimate)}`;
-    else if (Object.hasOwn(TOOLS, f)) hubLabel.textContent = TOOLS[f][1];
+    if (bytes !== null && estimate !== undefined) {
+      hubLabel.textContent = `${sizeText(bytes)} → ~${sizeText(estimate)}`;
+      short = `→ ~${sizeText(estimate)}`;
+    } else if (Object.hasOwn(TOOLS, f)) hubLabel.textContent = TOOLS[f][1];
     else hubLabel.textContent = `To ${Object.hasOwn(NAMES, f) ? NAMES[f] : f.toUpperCase()}`;
   } else if (pending) {
     hubLabel.textContent = pinned ? 'Drag a file here' : 'Drop here';
@@ -265,8 +269,33 @@ function show(raw) {
     if (bytes === null) hubLabel.textContent = count;
     else hubLabel.textContent = paths.length === 1 ? sizeText(bytes) : `${count} · ${sizeText(bytes)}`;
   }
-  // The pill fits the words.
-  const width = Math.ceil(hubLabel.getComputedTextLength()) + 22;
+  fitPill(short);
+}
+
+// The pill fits the words, but stays inside the ring around the hub: at most PILL_MAX
+// wide. Longer words are drawn smaller, down to LABEL_MIN, with less room at the ends;
+// past that, the short form is shown when there is one.
+const PILL_MAX = 100;
+const PILL_PAD = 22;
+const PILL_PAD_TIGHT = 14;
+const LABEL_MIN = 9;
+
+function fitPill(short) {
+  hubLabel.style.removeProperty('font-size');
+  let pad = PILL_PAD;
+  let length = hubLabel.getComputedTextLength();
+  if (length + pad > PILL_MAX) {
+    const size = parseFloat(getComputedStyle(hubLabel).fontSize);
+    const fit = Math.min(size, (size * (PILL_MAX - PILL_PAD_TIGHT)) / length);
+    if (fit >= LABEL_MIN || short === null) {
+      pad = PILL_PAD_TIGHT;
+      hubLabel.style.fontSize = `${Math.max(fit, LABEL_MIN)}px`;
+    } else {
+      hubLabel.textContent = short;
+    }
+    length = hubLabel.getComputedTextLength();
+  }
+  const width = Math.ceil(length) + pad;
   hubPill.setAttribute('x', C - width / 2);
   hubPill.setAttribute('width', width);
 }
