@@ -7,6 +7,7 @@ mod converters;
 #[cfg(target_os = "macos")]
 mod drop_view;
 mod editor;
+mod estimates;
 mod formats;
 #[cfg(target_os = "macos")]
 mod glass_slider;
@@ -425,6 +426,10 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
         return (words.stopped.clone(), body, done);
     }
     let (title, mut body) = summary(words, &done, &failed);
+    // How big the files were and are now, first so the menu's short line keeps it.
+    if let (true, false, Some(change)) = (failed.is_empty(), job.format == "tool:qr", size_change(&job.paths, &done)) {
+        body = format!("{change} · {body}");
+    }
     if moved {
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
     }
@@ -461,6 +466,23 @@ fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, downloads: &P
     } else {
         convert::combine(srcs, target, save_in, downloads)
     }
+}
+
+/// "2.2 MB → 410 KB": the files of a drop and what they became. None when a folder is
+/// on either side (unpacked archives, split PDFs), or a size can't be read.
+fn size_change(paths: &[String], done: &[PathBuf]) -> Option<String> {
+    let total = |files: Vec<&Path>| {
+        files.into_iter().try_fold(0u64, |sum, f| {
+            let meta = fs::metadata(f).ok()?;
+            meta.is_file().then(|| sum.saturating_add(meta.len()))
+        })
+    };
+    if done.is_empty() {
+        return None;
+    }
+    let before = total(paths.iter().map(Path::new).collect())?;
+    let after = total(done.iter().map(PathBuf::as_path).collect())?;
+    Some(format!("{} → {}", convert::size_text(before), convert::size_text(after)))
 }
 
 fn file_name(p: &Path) -> String {
@@ -660,6 +682,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     })?;
     menu::build(app)?;
     app.manage(start_worker(app.handle().clone()));
+    app.manage(estimates::start(app.handle().clone()));
     app.manage(wheel::WheelState::default());
     #[cfg(target_os = "macos")]
     {
@@ -732,5 +755,18 @@ mod tests {
     fn the_first_line_already_names_the_file() {
         let running = Running::new("png", &["/tmp/photo.heic".to_string()]);
         assert_eq!(running.line(), "Converting photo.heic to PNG…");
+    }
+
+    #[test]
+    fn the_notification_says_how_the_size_changed() {
+        let work = tempfile::tempdir().unwrap();
+        let (photo, small) = (work.path().join("photo.jpg"), work.path().join("photo (compressed).jpg"));
+        fs::write(&photo, vec![0u8; 2_200_000]).unwrap();
+        fs::write(&small, vec![0u8; 410_000]).unwrap();
+        let paths = [photo.to_string_lossy().into_owned()];
+        assert_eq!(size_change(&paths, &[small.clone()]).as_deref(), Some("2.2 MB → 410 KB"));
+        // A split PDF or an unpacked archive is a folder: no sizes.
+        assert_eq!(size_change(&paths, &[work.path().to_path_buf()]), None);
+        assert_eq!(size_change(&paths, &[]), None);
     }
 }
