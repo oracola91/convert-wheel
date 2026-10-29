@@ -38,7 +38,7 @@ The wheel only shows formats that every dragged file can become. The new file la
 
 A PDF with several pages becomes a folder of pictures next to it, `report (PNG)` holding `report 1.png`, `report 2.png` and so on, at 150 dpi; at most the first 100 pages, and the folder name says so when there were more. Text is taken from PDFs of up to 2000 pages. As text or a Word file, a PDF keeps its words and paragraphs but not its layout, tables or pictures. A scanned PDF has no text to take out. A PDF that needs a password to open is refused with a note to save a copy without it. For a Word file that keeps the layout, open the PDF in Word itself.
 
-A notification says when a drop is done or why it failed. A click on it opens the folder with the new files selected (on Windows only while the notification is on screen, not from the Action Center; on macOS also later from Notification Center). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
+A notification says when a drop is done or why it failed, and how the size changed ("2.2 MB → 410 KB · photo (compressed).jpg"; not for folders, such as a split PDF). A click on it opens the folder with the new files selected (on Windows only while the notification is on screen, not from the Action Center; on macOS also later from Notification Center). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
 
 ## The Tools wheel
 
@@ -214,7 +214,7 @@ The same converter runs from the command line. It prints the path of each new fi
 
 1. Start it from Terminal as above.
 2. Drag a file in Finder and hold Shift while dragging. The wheel appears under the cursor.
-3. Over the wheel, the dragged file shrinks to a small icon so its name doesn't cover the wheel. Move over the segments. The one under the cursor turns orange, moves out toward the cursor, and the middle says what it will become ("To PDF"). On a Force Touch trackpad each new segment gives a light tick. Over the middle it says "Cancel".
+3. Over the wheel, the dragged file shrinks to a small icon so its name doesn't cover the wheel. Move over the segments. The one under the cursor turns orange, moves out toward the cursor, and the middle says what it will become ("To PDF"). For one file it says roughly how big it will be instead, once the app has worked that out ("2.2 MB → ~410 KB"): for pictures (a piece of the middle converted and scaled up), sound (its length at the bit rate used; MP3's rate follows the music, so that one is rougher) and video that is only copied into another container. Video that is encoded again, documents and PDFs have no estimate. On a Force Touch trackpad each new segment gives a light tick. Over the middle it says "Cancel".
 4. Drop on a segment. The new file appears next to the original and a notification confirms it. Click the notification: Finder opens with the new file selected.
 5. Drop in the middle. The file slides back and nothing happens. Outside the wheel the drop works as usual in macOS: it slides back, or Finder moves the file if you let go over a folder.
 

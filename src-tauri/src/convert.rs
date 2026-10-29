@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use crate::formats::{self, Kind};
-use crate::settings::Quality;
+use crate::settings::{Level, Quality};
+
+pub mod estimate;
 
 /// How long each tool may run before it is stopped. Generous: a stuck tool should not
 /// block every later conversion, but a long video must still finish.
@@ -267,26 +269,8 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     let mut cmd = Command::new(magick()?);
     cmd.args(IMAGE_LIMITS);
     cmd.arg(format!("{coder}:{}{frame}", src.display())).arg("-auto-orient");
-    if target == "jpg" {
-        // JPEG has no transparency; without this, transparent areas turn black.
-        cmd.args(["-background", "white", "-alpha", "remove", "-alpha", "off"]);
-    }
-    let level = quality().pictures;
-    if matches!(target, "jpg" | "webp") {
-        cmd.args(["-quality", level.pick("75", "90", "97")]);
-    }
-    // ImageMagick's own default for these (libheif's 50) is Balanced.
-    if let (true, Some(q)) = (matches!(target, "heic" | "avif"), level.pick(Some("40"), None, Some("85"))) {
-        cmd.args(["-quality", q]);
-    }
-    if target == "ico" {
-        // Icons are square, 256 at most, and hold several sizes. A picture that isn't
-        // square is fitted in and padded with transparency rather than stretched.
-        cmd.args(["-resize", "256x256", "-background", "none", "-gravity", "center", "-extent", "256x256"]);
-        cmd.args(["-define", "icon:auto-resize=256,128,64,48,32,16"]);
-    }
-    let out_coder = if target == "jpg" { "jpeg" } else { target };
-    cmd.arg(format!("{out_coder}:{}", out.display()));
+    cmd.args(image_options(target, quality().pictures));
+    cmd.arg(format!("{}:{}", out_coder(target), out.display()));
     run(cmd, QUICK).map_err(|e| {
         if target == "pdf" && e.contains("not authorized") {
             "this computer's ImageMagick security policy doesn't allow writing PDF (common on Ubuntu)".to_string()
@@ -294,6 +278,34 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
             e
         }
     })
+}
+
+/// What ImageMagick is told to write a picture as `target` at `level`.
+fn image_options(target: &str, level: Level) -> Vec<&'static str> {
+    let mut args = Vec::new();
+    if target == "jpg" {
+        // JPEG has no transparency; without this, transparent areas turn black.
+        args.extend(["-background", "white", "-alpha", "remove", "-alpha", "off"]);
+    }
+    if matches!(target, "jpg" | "webp") {
+        args.extend(["-quality", level.pick("75", "90", "97")]);
+    }
+    // ImageMagick's own default for these (libheif's 50) is Balanced.
+    if let (true, Some(q)) = (matches!(target, "heic" | "avif"), level.pick(Some("40"), None, Some("85"))) {
+        args.extend(["-quality", q]);
+    }
+    if target == "ico" {
+        // Icons are square, 256 at most, and hold several sizes. A picture that isn't
+        // square is fitted in and padded with transparency rather than stretched.
+        args.extend(["-resize", "256x256", "-background", "none", "-gravity", "center", "-extent", "256x256"]);
+        args.extend(["-define", "icon:auto-resize=256,128,64,48,32,16"]);
+    }
+    args
+}
+
+/// ImageMagick's name for the format a wheel `target` writes.
+fn out_coder(target: &str) -> &str {
+    if target == "jpg" { "jpeg" } else { target }
 }
 
 /// Caps for a small file that claims to be a huge picture, before it is decoded.
@@ -377,17 +389,8 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             args.extend(["-map_metadata", "-1", "-map_chapters", "-1", "-c", "copy", "-fflags", "+bitexact"]);
             ffmpeg(src, &args, out, AUDIO)
         }
-        // Sound in its own format at a lower bit rate than even the menu's Smaller
-        // Files; FLAC, being lossless, only at its strongest packing.
         "tool:compress" if !video => {
-            let codec: &[&str] = match own {
-                "mp3" => &["-c:a", "libmp3lame", "-b:a", "96k"],
-                "m4a" | "aac" => &["-c:a", "aac", "-b:a", "96k"],
-                "ogg" | "opus" => &["-c:a", "libopus", "-b:a", "64k"],
-                "wma" => &["-c:a", "wmav2", "-b:a", "96k"],
-                "flac" => &["-c:a", "flac", "-compression_level", "12"],
-                other => return Err(format!("{} files can't be compressed", other.to_uppercase())),
-            };
+            let codec = sound_compress_codec(own).ok_or_else(|| format!("{} files can't be compressed", own.to_uppercase()))?;
             let mut args = vec!["-map", "0:a:0", "-map_metadata", "0"];
             args.extend(codec);
             ffmpeg(src, &args, out, AUDIO)
@@ -440,6 +443,19 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+/// Compress for sound: its own format at a lower bit rate than even the menu's
+/// Smaller Files; FLAC, being lossless, only at its strongest packing.
+fn sound_compress_codec(own: &str) -> Option<&'static [&'static str]> {
+    Some(match own {
+        "mp3" => &["-c:a", "libmp3lame", "-b:a", "96k"],
+        "m4a" | "aac" => &["-c:a", "aac", "-b:a", "96k"],
+        "ogg" | "opus" => &["-c:a", "libopus", "-b:a", "64k"],
+        "wma" => &["-c:a", "wmav2", "-b:a", "96k"],
+        "flac" => &["-c:a", "flac", "-compression_level", "12"],
+        _ => return None,
+    })
 }
 
 /// The sample rate of a file's first audio stream, from ffprobe, locked down like
@@ -507,10 +523,14 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
     run(cmd, QUICK)
 }
 
-/// The encoder for an audio format, at the menu's audio quality. WAV, FLAC and AIFF
-/// are lossless and have none.
+/// The encoder for an audio format, at the menu's audio quality.
 fn audio_args(target: &str) -> Vec<&'static str> {
-    let level = quality().audio;
+    audio_args_at(target, quality().audio)
+}
+
+/// The encoder for an audio format at `level`. WAV, FLAC and AIFF are lossless and
+/// take no level.
+fn audio_args_at(target: &str, level: Level) -> Vec<&'static str> {
     match target {
         // VBR: about 130, 190 and 245 kbit/s.
         "mp3" => vec!["-c:a", "libmp3lame", "-q:a", level.pick("5", "2", "0")],
