@@ -9,8 +9,8 @@
 # 2. the newest Convert Wheel release, after checking its signature with the project's
 #    update key (the same check the app makes on every update) and the version in it;
 # 3. Open at Login;
-# 4. on GNOME, the keyboard shortcut Super+Shift+C that opens the wheel, which Wayland
-#    sessions need: there, apps can't see a Shift+drag;
+# 4. on GNOME, the keyboard shortcut Super+Shift+C that opens the wheel (on Wayland,
+#    Shift+drag comes with the app's GNOME Shell extension after the next login);
 # 5. starts the app.
 #
 # A version can be named instead of the newest: `... | sh -s -- 0.2.0`.
@@ -243,7 +243,12 @@ main() {
             else
                 echo "Press the shortcut you add, then drag a file onto the wheel and drop it on a format."
             fi
-            echo "(Wayland hides drags from other apps, so Shift+drag can't work in this session.)"
+            case "${XDG_CURRENT_DESKTOP:-}" in
+                *GNOME*)
+                    echo "Shift+drag: the app installs its GNOME Shell helper when it starts. Log out and"
+                    echo "back in once, then hold Shift while dragging a file in Files." ;;
+                *) echo "(Wayland hides drags from apps: Shift+drag needs GNOME, so not in this session.)" ;;
+            esac
             ;;
         *) echo "On the desktop: Shift+drag a file in an X11 session, or press the shortcut in a Wayland one." ;;
     esac
