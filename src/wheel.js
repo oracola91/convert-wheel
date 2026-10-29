@@ -156,14 +156,35 @@ function sheen() {
     gradient('sheen', [[0, 'sheen-top'], [0.5, 'sheen-mid'], [1, 'sheen-end']]),
     gradient('rim', [[0, 'rim-top'], [0.55, 'rim-mid'], [1, 'rim-end']]),
     gradient('accent', [[0, 'accent-top'], [1, 'accent-end']]),
+    shadowFade(),
   );
   return defs;
+}
+
+// The disc's shadow where the system draws no glass (Windows, Linux): drawn once
+// under the disc. A CSS drop-shadow on the whole wheel is worked out again on every
+// frame of a segment's swell, and WebKitGTK does that slowly enough to make the wheel
+// lag. This is that drop-shadow (0 6px 16px, 28% black): a Gaussian fade by distance
+// from the disc's edge.
+const SHADOW_DROP = 6;
+const SHADOW_REACH = 24;
+const SHADOW_FADE = [[-16, 0.274], [-8, 0.235], [0, 0.14], [8, 0.044], [16, 0.006], [SHADOW_REACH, 0]];
+
+function shadowFade() {
+  const g = el('radialGradient', { id: 'shadow' });
+  for (const [from, alpha] of SHADOW_FADE) {
+    const offset = (R_OUT + from) / (R_OUT + SHADOW_REACH);
+    g.append(el('stop', { offset, 'stop-color': '#000', 'stop-opacity': alpha }));
+  }
+  return g;
 }
 
 // Builds the wheel once per drag; hovering only switches classes, so changes animate.
 function build() {
   svg.replaceChildren(sheen());
-  // Without the system's glass behind it (Windows), the page draws its own disc.
+  // Without the system's glass behind it (Windows, Linux), the page draws its own disc
+  // and its shadow.
+  svg.append(el('circle', { cx: C, cy: C + SHADOW_DROP, r: R_OUT + SHADOW_REACH, class: 'shadow', fill: 'url(#shadow)' }));
   svg.append(el('circle', { cx: C, cy: C, r: R_OUT, class: 'disc' }));
   // The glass rim around the segments and the ring around the hub, each with its edge
   // catching the light.
