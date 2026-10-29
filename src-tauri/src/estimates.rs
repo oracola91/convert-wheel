@@ -56,6 +56,14 @@ pub struct Estimates(Sender<Ask>);
 pub fn start(app: AppHandle) -> Estimates {
     let (tx, rx) = mpsc::channel::<Ask>();
     thread::spawn(move || {
+        // The tools behind an estimate run while the wheel is open, so on Linux they run
+        // below it: the nice value is kept per thread there, and the tools started from
+        // this thread take it on. The wheel and the desktop come first.
+        // SAFETY: setpriority has no preconditions; it only lowers this thread's priority.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+        }
         // What was found for each segment, None where nothing can be told.
         let mut kept: HashMap<Key, HashMap<&'static str, Option<u64>>> = HashMap::new();
         while let Ok(mut ask) = rx.recv() {

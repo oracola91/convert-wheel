@@ -128,8 +128,15 @@ svg.closing {
   fill: var(--disc);
 }
 
-.solid svg {
-  filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.28));
+/* Drawn once under the disc (wheel.js), not a drop-shadow filter: WebKitGTK works a
+   filter out again on every frame of an animation. */
+.shadow {
+  display: none;
+  pointer-events: none;
+}
+
+.solid .shadow {
+  display: inline;
 }
 
 .seg {

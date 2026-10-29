@@ -46,6 +46,21 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "signingIdentity": "-"
+    },
+    "linux": {
+      "deb": {
+        "recommends": [
+          "ffmpeg",
+          "imagemagick",
+          "libheif-plugin-libde265",
+          "libheif-plugin-x265",
+          "mupdf-tools",
+          "libarchive-tools",
+          "libreoffice-writer",
+          "libreoffice-calc",
+          "libreoffice-impress"
+        ]
+      }
     }
   },
   "plugins": {

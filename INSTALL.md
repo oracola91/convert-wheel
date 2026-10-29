@@ -90,6 +90,12 @@ The steps it takes, by hand:
 sudo apt install ffmpeg imagemagick libreoffice mupdf-tools libarchive-tools
 ```
 
+On Ubuntu 24.04 and later, iPhone photos (HEIC) also need libheif's HEVC add-ons, which ImageMagick doesn't bring:
+
+```sh
+sudo apt install libheif-plugin-libde265 libheif-plugin-x265
+```
+
 pandoc comes from [pandoc's own releases](https://github.com/jgm/pandoc/releases), not from Ubuntu or Debian. The app runs pandoc in its sandbox, which needs 2.15 or newer (Ubuntu 22.04 has 2.9), and Ubuntu's and Debian's builds can't write Word files there because they keep pandoc's data files outside the program:
 
 ```sh
