@@ -170,8 +170,15 @@ main() {
     step "1/5 The converters: ffmpeg, ImageMagick, LibreOffice, MuPDF, bsdtar, pandoc (asks for your password)"
     # A broken extra package source makes the update fail but leaves the rest usable.
     apt_get update || echo "(apt-get update reported a problem, above; going on with the package lists there are.)"
+    # Ubuntu 24.04 and later ship libheif's HEVC plugins, which iPhone photos (HEIC) need,
+    # as packages of their own that ImageMagick doesn't bring. Older systems have no such
+    # packages: HEVC is built into their libheif.
+    heif=$(for p in libheif-plugin-libde265 libheif-plugin-x265; do
+        apt-cache show "$p" >/dev/null 2>&1 && printf '%s ' "$p"
+    done)
+    # shellcheck disable=SC2086 # $heif is a list of package names.
     apt_get install -y ffmpeg imagemagick libreoffice-writer libreoffice-calc libreoffice-impress mupdf-tools \
-        libarchive-tools python3 openssl
+        libarchive-tools python3 openssl $heif
     if ! pandoc_ok || pandoc_older; then
         step "    Adding pandoc $PANDOC_VERSION from pandoc's releases"
         pdeb="$work/pandoc-$PANDOC_VERSION-1-amd64.deb"

@@ -1746,7 +1746,50 @@ fn run_tool(mut cmd: Command, limit: Duration) -> Result<(), Failure> {
     running().push(id);
     let result = wait(&mut child, &name, limit, &mut errors);
     running().retain(|&p| p != id);
-    result
+    result.map_err(|mut f| {
+        if let Some(hint) = heic_hint(&f.output) {
+            f.message = hint;
+        }
+        f
+    })
+}
+
+/// libheif reads and writes HEIC through plugins, and Ubuntu (24.04 on) ships the HEVC
+/// ones as packages of their own that ImageMagick doesn't bring. When ImageMagick's
+/// HEIC coder fails and one of them is missing, the message says how to add it.
+fn heic_hint(output: &str) -> Option<String> {
+    if !cfg!(target_os = "linux") || !output.contains("heic.c") {
+        return None;
+    }
+    let missing = heic_plugins_missing(Path::new("/usr/lib"));
+    (!missing.is_empty()).then(|| format!("HEIC needs add-ons that aren't installed: sudo apt install {}", missing.join(" ")))
+}
+
+/// The HEVC plugins libheif lacks under `lib` (in <arch>/libheif/plugins), as package
+/// names. None where libheif has no plugin folder: older libheif has HEVC built in.
+fn heic_plugins_missing(lib: &Path) -> Vec<&'static str> {
+    let folders: Vec<PathBuf> = fs::read_dir(lib)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|arch| arch.path().join("libheif/plugins"))
+        .filter(|f| f.is_dir())
+        .collect();
+    if folders.is_empty() {
+        return Vec::new();
+    }
+    let plugins: Vec<String> = folders
+        .iter()
+        .filter_map(|f| fs::read_dir(f).ok())
+        .flatten()
+        .flatten()
+        .map(|p| p.file_name().to_string_lossy().into_owned())
+        .collect();
+    [("de265", "libheif-plugin-libde265"), ("x265", "libheif-plugin-x265")]
+        .into_iter()
+        .filter(|(part, _)| !plugins.iter().any(|p| p.contains(part)))
+        .map(|(_, package)| package)
+        .collect()
 }
 
 /// Tools running right now, so quitting can stop them instead of leaving them behind.
@@ -2402,6 +2445,22 @@ mod tests {
         let dirs = saved_path();
         assert!(!dirs.is_empty());
         assert!(dirs.iter().all(|d| d.is_absolute() && !d.to_string_lossy().contains('%')), "{dirs:?}");
+    }
+
+    #[test]
+    fn missing_heic_plugins_are_named() {
+        let lib = tempfile::tempdir().unwrap();
+        // Older libheif, with HEVC built in: no plugin folder, nothing to add.
+        assert!(heic_plugins_missing(lib.path()).is_empty());
+        // Ubuntu 26.04 out of the box: only the AV1 plugins.
+        let plugins = lib.path().join("x86_64-linux-gnu/libheif/plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        fs::write(plugins.join("libheif-aomdec.so"), "").unwrap();
+        assert_eq!(heic_plugins_missing(lib.path()), ["libheif-plugin-libde265", "libheif-plugin-x265"]);
+        fs::write(plugins.join("libheif-libde265.so"), "").unwrap();
+        assert_eq!(heic_plugins_missing(lib.path()), ["libheif-plugin-x265"]);
+        fs::write(plugins.join("libheif-x265.so"), "").unwrap();
+        assert!(heic_plugins_missing(lib.path()).is_empty());
     }
 
     #[test]

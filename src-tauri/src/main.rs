@@ -588,6 +588,13 @@ fn cli(args: &[String]) -> i32 {
 }
 
 fn main() {
+    // WebKitGTK's DMA-BUF renderer makes the wheel stutter with some Linux graphics;
+    // drawing through shared memory is the usual way round it. Set before any thread
+    // starts; a value the user set still wins.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     // Panics anywhere (trigger threads, the worker, update tasks) leave a trace.
     panic::set_hook(Box::new(|info| {
         let place = info.location().map(|l| format!(" at {}:{}", l.file(), l.line())).unwrap_or_default();
