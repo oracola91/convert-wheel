@@ -236,6 +236,12 @@ pub(crate) fn follow_keys(app: &AppHandle, keys: &mut KeyFollower, shift: bool, 
     }
 }
 
+/// The wheel is open on this one file.
+pub(crate) fn showing(app: &AppHandle, path: &str) -> bool {
+    let state = app.state::<WheelState>();
+    state.is_open() && matches!(wheel::lock(&state.paths).as_slice(), [p] if p == path)
+}
+
 /// Shows another wheel for the same drag, without closing the window.
 fn switch_wheel(app: &AppHandle, which: Which) {
     let state = app.state::<WheelState>();
@@ -247,6 +253,7 @@ fn switch_wheel(app: &AppHandle, which: Which) {
     let pending = paths.is_empty();
     let bytes = total_bytes(&paths);
     let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
+    crate::estimates::ask(app);
 }
 
 /// Opens the wheel and returns its generation.
@@ -260,6 +267,7 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
     let bytes = total_bytes(&paths);
     let highlight = app.state::<crate::settings::Store>().get().highlight.key();
     let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which, bytes, highlight: Some(highlight), look: Some(look(app)) });
+    crate::estimates::ask(app);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -281,6 +289,7 @@ pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
     app.state::<WheelState>().files_known();
     let bytes = total_bytes(&paths);
     let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
+    crate::estimates::ask(app);
 }
 
 /// A drop on the wheel. Converts (or runs the tool) when it landed on a segment and

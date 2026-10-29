@@ -74,6 +74,9 @@ let hubLabel = null;
 let hubPill = null;
 // The dragged files' total size in bytes, or null (a folder, or not known yet).
 let bytes = null;
+// Roughly how big each segment would make the one dragged file, in bytes, as the app
+// works them out (they arrive a moment after the wheel opens, or never).
+let estimates = { path: null, sizes: new Map() };
 // Between wheel-show and wheel-close. Late events for a closed wheel are ignored.
 let open = false;
 // Counts closes, so clearing the page after one doesn't hit a wheel opened since.
@@ -247,7 +250,9 @@ function show(raw) {
     hubLabel.textContent = 'Cancel';
   } else if (hover.segment !== null) {
     const f = formats[hover.segment];
-    if (Object.hasOwn(TOOLS, f)) hubLabel.textContent = TOOLS[f][1];
+    const estimate = paths.length === 1 && paths[0] === estimates.path ? estimates.sizes.get(f) : undefined;
+    if (bytes !== null && estimate !== undefined) hubLabel.textContent = `${sizeText(bytes)} → ~${sizeText(estimate)}`;
+    else if (Object.hasOwn(TOOLS, f)) hubLabel.textContent = TOOLS[f][1];
     else hubLabel.textContent = `To ${Object.hasOwn(NAMES, f) ? NAMES[f] : f.toUpperCase()}`;
   } else if (pending) {
     hubLabel.textContent = pinned ? 'Drag a file here' : 'Drop here';
@@ -325,6 +330,18 @@ listen('wheel-formats', (event) => {
   build();
   frostWords();
   show(keep);
+});
+
+// Estimates for one file, for one wheel's segments: added to what is known for that
+// file, so switching wheels and back keeps them.
+listen('wheel-estimates', (event) => {
+  const path = event.payload?.path;
+  if (typeof path !== 'string') return;
+  if (path !== estimates.path) estimates = { path, sizes: new Map() };
+  for (const [segment, size] of Object.entries(event.payload?.sizes ?? {})) {
+    if (Number.isSafeInteger(size) && size >= 0) estimates.sizes.set(segment, size);
+  }
+  if (open) show(lastHover);
 });
 
 listen('wheel-hover', (event) => {
