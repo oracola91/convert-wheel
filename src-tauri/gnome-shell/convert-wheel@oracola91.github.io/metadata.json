@@ -1,0 +1,8 @@
+{
+  "uuid": "convert-wheel@oracola91.github.io",
+  "name": "Convert Wheel",
+  "description": "Lets Convert Wheel open its wheel when a file is dragged with Shift held. Installed and kept up to date by the Convert Wheel app.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/oracola91/convert-wheel",
+  "version": 1
+}

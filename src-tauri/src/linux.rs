@@ -3,9 +3,11 @@
 //!
 //! X11 lets any app read the pointer and modifier keys, so it works like Windows: a
 //! drag that starts in a file manager with Shift held opens the wheel. Wayland keeps
-//! the pointer private, so there the wheel opens from a keyboard shortcut instead
+//! the pointer private. On GNOME, the app's GNOME Shell extension (gnome_shell.rs)
+//! reports each drag and its keys over the shortcut's socket, so Shift+drag works
+//! there too. Everywhere, the wheel also opens from a keyboard shortcut
 //! (`convert-wheel --show`, bound in the desktop's keyboard settings) and stays open
-//! until a file is dropped on it. The shortcut works on X11 too.
+//! until a file is dropped on it.
 
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -21,6 +23,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, KeyButMask, Window};
 use x11rb::rust_connection::RustConnection;
 
+use crate::gnome_shell::{Drag, Keys, Step};
 use crate::trigger;
 use crate::wheel::{self, Hover, KeyFollower, WheelState, Which};
 
@@ -31,10 +34,13 @@ const CLOSE: Duration = Duration::from_millis(140);
 const DRAG_THRESHOLD: i32 = 8;
 
 /// Window class names of file managers and desktops, matched whole and in lower case.
+/// On Wayland the class is the app's id (Ubuntu's desktop icons: com.rastersoft.ding).
 const FILE_MANAGERS: &[&str] = &[
     "nautilus", "org.gnome.nautilus", "nemo", "caja", "thunar", "dolphin", "pcmanfm", "pcmanfm-qt", "spacefm",
-    "konqueror", "xfdesktop", "ding", "plasmashell",
+    "konqueror", "xfdesktop", "ding", "com.rastersoft.ding", "plasmashell",
 ];
+/// The longest line the socket takes.
+const LINE: u64 = 128;
 
 pub fn is_wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some()
@@ -46,12 +52,14 @@ pub fn start_trigger(app: AppHandle) {
     if !is_wayland() {
         start_x11(app);
     } else if !shortcut {
-        // On Wayland the shortcut is the only way in; without it nothing opens the wheel.
+        // On Wayland the socket is the only way in; without it nothing opens the wheel.
         crate::notify(
             &app,
             "Convert Wheel can't open its wheel here",
             "This desktop session has no XDG_RUNTIME_DIR, which the keyboard shortcut needs. Details are in the log.",
         );
+    } else if crate::gnome_shell::is_gnome() {
+        thread::spawn(move || crate::gnome_shell::install(&app));
     }
 }
 
@@ -191,14 +199,59 @@ fn start_listener(app: AppHandle) -> bool {
         for stream in listener.incoming().flatten() {
             // A client that connects and says nothing must not block the next one.
             let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
-            let mut line = String::new();
-            let _ = BufReader::new(stream.take(64)).read_line(&mut line);
-            if line.trim() == "show" {
+            let mut reader = BufReader::new(stream);
+            let Some(line) = read_line(&mut reader) else {
+                continue;
+            };
+            if line == "show" {
                 trigger::show_pinned(&app);
+            } else if let Some(from) = line.strip_prefix("drag ") {
+                // In an X11 session the X11 poll sees the drag already.
+                if is_wayland() {
+                    // A busy desktop can be late with a poll; that isn't the drag ending.
+                    let _ = reader.get_ref().set_read_timeout(Some(Duration::from_secs(3)));
+                    follow_drag(&app, from, &mut reader);
+                }
             }
         }
     });
     true
+}
+
+/// One line from the socket without its line end; None at the end, after the read
+/// timeout, or past LINE bytes.
+fn read_line(reader: &mut impl BufRead) -> Option<String> {
+    let mut line = String::new();
+    match reader.by_ref().take(LINE).read_line(&mut line) {
+        Ok(n) if n > 0 && line.ends_with('\n') => Some(line.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// A drag GNOME Shell's extension reports: `from` is the app it started in, then a
+/// "keys" line per poll until "end". Opens and switches the wheel as the X11 poll does;
+/// the extension puts the window under the pointer.
+fn follow_drag(app: &AppHandle, from: &str, reader: &mut impl BufRead) {
+    let from = from.to_lowercase();
+    // No window had the focus (the desktop, on some systems): let it through.
+    let mut drag = Drag::new(from == "-" || FILE_MANAGERS.contains(&from.as_str()));
+    let mut keys = KeyFollower::default();
+    while let Some(line) = read_line(reader) {
+        let Some(held) = line.strip_prefix("keys ").and_then(Keys::parse) else {
+            break;
+        };
+        match drag.poll(held) {
+            Step::Open(which) => trigger::show_wheel(app, Vec::new(), which),
+            Step::Follow => trigger::follow_keys(app, &mut keys, held.shift, held.alt, held.control),
+            Step::Wait => {}
+        }
+    }
+    if drag.shown {
+        trigger::released(app);
+    }
+    if drag.refused {
+        crate::log::line(&format!("Shift+drag from {from}: not a file manager, so no wheel"));
+    }
 }
 
 /// `convert-wheel --show`: asks the running app to open the wheel.
