@@ -73,7 +73,7 @@ For video and audio (with ffmpeg):
 - **Join** (two or more sound files, or two or more videos): one after another, in the order dropped, as one file in the first one's format: "clip (joined).mp4". Every part is encoded again, so different formats, sizes and rates fit: videos take the first one's size (the others fitted in, with bars) and frame rate, and a video without sound gets silence for its length. Up to 50 files.
 - **Trim** (audio and video, one file at a time): opens a window with the sound's loudness along its length, a video's frames above it, and the part to keep between two ends to drag (or times to type, "1:23.4"). Play plays that part first (files up to 20 minutes). Enter trims, Esc cancels, Space plays. The cut is exact, not at the nearest keyframe: the part is encoded again in the file's own format at the menu's quality. The result is "clip (trimmed).mp4".
 
-Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland the keyboard shortcut opens only the Formats wheel for now.
+Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland, Shift+drag (with Option or Control for these wheels) needs GNOME and its helper extension (see Linux below); the keyboard shortcut opens only the Formats wheel.
 
 ## The Actions wheel
 
@@ -124,6 +124,7 @@ Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS
 
 - **X11:** like Windows. A drag that starts in a file manager (Files/Nautilus, Nemo, Caja, Thunar, Dolphin, PCManFM) or on the desktop, with Shift held, opens the wheel at the cursor.
 - **Wayland:** apps can't watch the pointer, so the wheel opens from a keyboard shortcut running `convert-wheel --show`, which reaches the running app over a socket in `XDG_RUNTIME_DIR`. That wheel waits for a file; Esc, a click in the middle or 20 seconds close it.
+- **Wayland on GNOME:** GNOME Shell can see drags, so the app installs a small GNOME Shell extension of its own (`src-tauri/gnome-shell/`, `src-tauri/src/gnome_shell.rs`) into `~/.local/share/gnome-shell/extensions` and turns it on the first time. While a drag goes on, the extension sends the app which app the drag started in and the keys held, over the same socket every 30 ms, and moves the wheel the app opens under the pointer (a Wayland app can't place its own windows). The app opens and switches the wheel from that as it does on X11. GNOME Shell loads a new or updated extension at the next login; the app says so once.
 - **Drop target:** our own GTK handlers instead of WebKit's. They answer "copy" over a format and nothing elsewhere, never "move" even with Shift held, and never ask the file manager to delete the original.
 - **Menu bar icon:** shown through AppIndicator.
 - **Open at Login:** an entry in `~/.config/autostart`.
@@ -283,7 +284,9 @@ SECURITY.md                how to report a security problem
   src/shelf_window.rs      macOS: the shelf panel, drop in and drag out
   src/wheel_window.rs      macOS: glass, hub icon, placement, fades
   src/win32.rs             Windows: trigger, placement, drop target
-  src/linux.rs             Linux: X11 trigger, Wayland shortcut, placement, drop target
+  src/linux.rs             Linux: X11 trigger, Wayland shortcut and drags, placement, drop target
+  src/gnome_shell.rs       Linux: installs the GNOME Shell extension, reads its drag reports
+  gnome-shell/             the GNOME Shell extension (Shift+drag on Wayland)
   tauri.conf.json          window and bundle settings
   tauri.windows.conf.json  Windows window settings and installer types
   tauri.linux.conf.json    Linux window settings and package types

@@ -11,6 +11,10 @@ mod estimates;
 mod formats;
 #[cfg(target_os = "macos")]
 mod glass_slider;
+// Tested everywhere; used on Linux only.
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod gnome_shell;
 #[cfg(target_os = "linux")]
 mod linux;
 mod log;
