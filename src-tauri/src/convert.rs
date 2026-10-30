@@ -335,6 +335,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:mono" => "mono",
         "tool:qr" => "QR code",
         "tool:crop" => "cropped",
+        "tool:adjust" => "adjusted",
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "new speed",
@@ -362,6 +363,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:mono" => "mixed down to mono",
         "tool:qr" => "read for QR codes",
         "tool:crop" => "cropped",
+        "tool:adjust" => "adjusted",
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "sped up or slowed down",
@@ -618,6 +620,12 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
                 cmd.args(["-rotate", &(90 * u32::from(crop.turns)).to_string()]);
             }
             cmd.args(["-crop", &format!("{}x{}+{}+{}", crop.width, crop.height, crop.x, crop.y), "+repage"])
+        }
+        "tool:adjust" => {
+            let Some(Edit::Adjust(adjust)) = control().and_then(|c| c.edit) else {
+                return Err("Adjust opens its window from the wheel".into());
+            };
+            cmd.args(adjust_args(&adjust))
         }
         other => return Err(format!("unknown tool {other}")),
     };
@@ -1843,6 +1851,51 @@ pub enum Edit {
     Speed(u16),
     /// Split for sound and video: parts this many milliseconds long.
     Parts(u64),
+    Adjust(Adjust),
+}
+
+/// Adjust, from its window: brightness, contrast and saturation in percent, where 100
+/// leaves it as it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Adjust {
+    pub brightness: u16,
+    pub contrast: u16,
+    pub saturation: u16,
+}
+
+impl Adjust {
+    /// Within the window's sliders, and something changed.
+    pub fn check(&self) -> Result<(), String> {
+        let within = (50..=150).contains(&self.brightness) && (50..=150).contains(&self.contrast) && self.saturation <= 200;
+        if !within {
+            return Err("the adjustment is outside what the window offers".into());
+        }
+        if (self.brightness, self.contrast, self.saturation) == (100, 100, 100) {
+            return Err("nothing is changed yet: move a slider first".into());
+        }
+        Ok(())
+    }
+}
+
+/// ImageMagick's steps for Adjust: the same as the window's preview, the browser's
+/// brightness(), contrast() and saturate() in that order, each kept within black and
+/// white as the browser keeps it. Alpha is left alone.
+fn adjust_args(adjust: &Adjust) -> Vec<String> {
+    let [b, c, s] = [adjust.brightness, adjust.contrast, adjust.saturation].map(|v| f64::from(v) / 100.0);
+    // The browser's saturate() matrix, which keeps the brightness of each colour.
+    let matrix = [
+        0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s,
+        0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s,
+        0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s,
+    ];
+    let matrix = matrix.iter().map(|v| format!("{v:.4}")).collect::<Vec<_>>().join(" ");
+    [
+        "-channel", "RGB", "-evaluate", "multiply", &format!("{b:.4}"), "-clamp",
+        "-function", "polynomial", &format!("{c:.4},{:.4}", 0.5 - 0.5 * c), "-clamp", "+channel",
+        "-color-matrix", &format!("3x3: {matrix}"), "-clamp",
+    ]
+    .map(String::from)
+    .to_vec()
 }
 
 /// The speeds the Speed window offers, in percent: 200 plays twice as fast.
@@ -3078,6 +3131,13 @@ mod tests {
     }
 
     /// Width x height, as ImageMagick reads it.
+    /// The colour of the pixel `x` across the top row, "128,128,128".
+    fn rgb(path: &Path, x: u32) -> String {
+        let at = format!("%[fx:int(255*p{{{x},0}}.r+0.5)],%[fx:int(255*p{{{x},0}}.g+0.5)],%[fx:int(255*p{{{x},0}}.b+0.5)]");
+        let out = Command::new(magick().unwrap()).arg(path).args(["-format", &at, "info:"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     fn picture_size(path: &Path) -> String {
         let out = Command::new(magick().unwrap()).arg(path).args(["-format", "%wx%h", "info:"]).output().unwrap();
         String::from_utf8_lossy(&out.stdout).trim().to_string()
@@ -3236,6 +3296,25 @@ mod tests {
         assert_eq!(picture_size(&out), "150x120");
         // Without the editor there is no box to cut.
         assert_eq!(convert(&wide, "tool:crop", None, work.path()).unwrap_err(), "Crop opens its window from the wheel");
+
+        // Adjust: a mid grey half again as bright, and an orange with no colour left
+        // (each channel weighed as the browser's saturate() weighs it).
+        let colours = work.path().join("colours.png");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "2x1", "xc:rgb(128,128,128)", "xc:rgb(230,120,30)", "+append"]).arg(&colours);
+        assert!(make.status().unwrap().success());
+        let brighter = Adjust { brightness: 150, contrast: 100, saturation: 100 };
+        let control = Control::with_edit(Quality::default(), Some(Edit::Adjust(brighter)));
+        let out = under(&control, || convert(&colours, "tool:adjust", None, work.path())).unwrap();
+        assert_eq!(out, work.path().join("colours (adjusted).png"));
+        assert_eq!(rgb(&out, 0), "192,192,192");
+        let grey = Adjust { brightness: 100, contrast: 100, saturation: 0 };
+        let control = Control::with_edit(Quality::default(), Some(Edit::Adjust(grey)));
+        let out = under(&control, || convert(&colours, "tool:adjust", None, work.path())).unwrap();
+        assert_eq!(rgb(&out, 2), "137,137,137");
+        assert!(Adjust { brightness: 100, contrast: 100, saturation: 100 }.check().is_err());
+        assert!(Adjust { brightness: 151, contrast: 100, saturation: 100 }.check().is_err());
+        assert!(brighter.check().is_ok() && grey.check().is_ok());
     }
 
     #[test]
