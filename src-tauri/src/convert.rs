@@ -3388,7 +3388,9 @@ mod tests {
         let grey = Adjust { brightness: 100, contrast: 100, saturation: 0 };
         let control = Control::with_edit(Quality::default(), Some(Edit::Adjust(grey)));
         let out = under(&control, || convert(&colours, "tool:adjust", None, work.path())).unwrap();
-        assert_eq!(rgb(&out, 2, 0), "137,137,137");
+        // ImageMagick 6 (Ubuntu) rounds the matrix one level lower than 7.
+        let level = rgb(&out, 2, 0);
+        assert!(["137,137,137", "136,136,136"].contains(&level.as_str()), "{level}");
         assert!(Adjust { brightness: 100, contrast: 100, saturation: 100 }.check().is_err());
         assert!(Adjust { brightness: 151, contrast: 100, saturation: 100 }.check().is_err());
         assert!(brighter.check().is_ok() && grey.check().is_ok());
