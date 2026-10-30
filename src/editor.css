@@ -20,6 +20,9 @@
   --field-edge: rgba(0, 0, 0, 0.16);
   /* Amber for a warning that doesn't stop anything (5:1 on the bar). */
   --warn: #9a5b00;
+  /* Words on the stage, which is dark in both looks. */
+  --on-stage: rgba(255, 255, 255, 0.8);
+  --picked: #ffb27a;
   color-scheme: light dark;
 }
 
@@ -438,4 +441,83 @@ footer input:focus-visible {
 
 #words {
   width: 160px;
+}
+
+/* Reorder: the pages in rows on the stage, scrolling when there are many. The picked
+   one has a ring, a moved one an orange number, and the one being dragged leaves a
+   faint gap where it will land while a copy follows the pointer. */
+#pages {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 18px;
+  list-style: none;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  align-content: start;
+  gap: 16px 12px;
+}
+
+#pages > li,
+.ghost {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  color: var(--on-stage);
+  font-variant-numeric: tabular-nums;
+  cursor: grab;
+  touch-action: none;
+  outline: none;
+  -webkit-user-drag: none;
+}
+
+#pages img,
+.ghost img {
+  max-width: 100%;
+  max-height: 140px;
+  margin-top: auto;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  -webkit-user-drag: none;
+}
+
+#pages > li[aria-selected="true"] {
+  box-shadow: inset 0 0 0 2px var(--picked);
+}
+
+#pages > li.moved span {
+  color: var(--picked);
+  font-weight: 600;
+}
+
+#pages > li.lifted {
+  opacity: 0.3;
+}
+
+.ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10;
+  margin: 0;
+  list-style: none;
+  pointer-events: none;
+  background: var(--stage);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  cursor: grabbing;
+}
+
+#earlier,
+#later {
+  font-size: 16px;
+  line-height: 1;
+  padding: 5px 10px;
+}
+
+#hint {
+  color: var(--muted);
 }

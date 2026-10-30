@@ -135,6 +135,7 @@ const TOOLS: &[(&str, &[&str])] = &[
     ("tool:collage", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:merge", &["pdf"]),
     ("tool:split", &["pdf"]),
+    ("tool:order", &["pdf"]),
     ("tool:smaller", &["pdf"]),
     ("tool:still", &["mp4", "mov", "m4v", "mkv", "webm", "avi"]),
     (
@@ -192,7 +193,7 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 
 /// A tool that first opens the editing window (one file at a time) instead of running.
 pub fn opens_editor(id: &str) -> bool {
-    matches!(id, "tool:crop" | "tool:adjust" | "tool:markup" | "tool:trim" | "tool:bleep" | "tool:speed" | "tool:parts" | "tool:target")
+    matches!(id, "tool:crop" | "tool:adjust" | "tool:markup" | "tool:trim" | "tool:bleep" | "tool:speed" | "tool:parts" | "tool:order" | "tool:target")
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
@@ -388,7 +389,7 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
-        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:smaller"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller"]);
         assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller"]);
         assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
         assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));
