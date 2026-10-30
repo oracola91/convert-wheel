@@ -1,8 +1,9 @@
-//! The editing window some tools open first: Crop (the picture with a box to drag,
-//! turned a quarter at a time), Trim (a sound's or video's loudness and frames, with a
-//! start and an end to drag), Speed (a speed to pick), Split for sound and video (how
-//! many parts, or how long each) and Compress to a Size (a size to type or pick). The page only sends numbers back; which file they
-//! apply to stays here, so the page can never name one.
+//! The editing window some tools open first: Crop (the picture, or a frame of a video,
+//! with a box to drag, turned a quarter at a time), Trim (a sound's or video's loudness
+//! and frames, with a start and an end to drag; Bleep uses it too, for the part to
+//! bleep), Speed (a speed to pick), Split for sound and video (how many parts, or how
+//! long each) and Compress to a Size (a size to type or pick). The page only sends
+//! numbers back; which file they apply to stays here, so the page can never name one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -45,7 +46,8 @@ enum View {
     Crop { width: u32, height: u32, preview: String },
     /// The length (the times come back in milliseconds), the loudness along it, and for
     /// a video eight frames; the sound as a small MP3 to play, when not too long.
-    Trim { length_ms: u64, peaks: Vec<u8>, strip: Option<String>, sound: Option<String> },
+    /// With `bleep`, the same window picks the part Bleep turns into a tone.
+    Trim { length_ms: u64, peaks: Vec<u8>, strip: Option<String>, sound: Option<String>, bleep: bool },
     /// The file's size, what it is ("picture", "video", "sound"), for sound and video
     /// the least it can be compressed to, and for a picture the sizes under which it
     /// will probably get smaller, and small and blurry, to warn about.
@@ -80,6 +82,7 @@ impl View {
     fn title(&self, name: &str) -> String {
         match self {
             View::Crop { .. } => format!("Crop: {name}"),
+            View::Trim { bleep: true, .. } => format!("Bleep: {name}"),
             View::Trim { .. } => format!("Trim: {name}"),
             View::Size { .. } => format!("Compress to a size: {name}"),
             View::Speed { .. } => format!("Speed: {name}"),
@@ -96,7 +99,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Trim, Speed, Split and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Trim, Bleep, Speed, Split and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -119,6 +122,7 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
                 peaks: m.peaks,
                 strip: m.strip.map(|jpeg| data_url("image/jpeg", &jpeg)),
                 sound: m.sound.map(|mp3| data_url("audio/mpeg", &mp3)),
+                bleep: tool == "tool:bleep",
             })
         };
         match view {
@@ -242,8 +246,17 @@ pub fn editor_apply(app: AppHandle, editing: State<Editing>, crop: Crop) -> Resu
 #[tauri::command]
 pub fn editor_trim(app: AppHandle, editing: State<Editing>, trim: Trim) -> Result<(), String> {
     finish(&app, &editing, "tool:trim", |view| match view {
-        View::Trim { length_ms, .. } => trim.check(*length_ms).map(|()| Edit::Trim(trim)),
+        View::Trim { length_ms, bleep: false, .. } => trim.check(*length_ms).map(|()| Edit::Trim(trim)),
         _ => Err("this window doesn't trim".into()),
+    })
+}
+
+/// Bleep: the part to turn into a tone, checked like Trim's part to keep.
+#[tauri::command]
+pub fn editor_bleep(app: AppHandle, editing: State<Editing>, part: Trim) -> Result<(), String> {
+    finish(&app, &editing, "tool:bleep", |view| match view {
+        View::Trim { length_ms, bleep: true, .. } => part.check(*length_ms).map(|()| Edit::Trim(part)),
+        _ => Err("this window doesn't bleep".into()),
     })
 }
 

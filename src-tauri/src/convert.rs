@@ -336,6 +336,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:qr" => "QR code",
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
+        "tool:bleep" => "bleeped",
         "tool:speed" => "new speed",
         "tool:parts" => "parts",
         "tool:join" => "joined",
@@ -362,6 +363,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:qr" => "read for QR codes",
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
+        "tool:bleep" => "bleeped",
         "tool:speed" => "sped up or slowed down",
         "tool:parts" => "split into parts",
         "tool:join" => "joined",
@@ -441,6 +443,28 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
                 return Err("Trim opens its window from the wheel".into());
             };
             cut(src, ext, trim.start_ms, trim.end_ms, out)
+        }
+        // The part chosen in the Bleep window becomes a tone; the rest of the sound, and
+        // a video's picture, stay as they are (the picture is copied, not encoded again).
+        "tool:bleep" => {
+            let Some(Edit::Trim(part)) = control().and_then(|c| c.edit) else {
+                return Err("Bleep opens its window from the wheel".into());
+            };
+            if video && sample_rate(src, out).is_none() {
+                return Err("this video has no sound to bleep".into());
+            }
+            let sound = bleep_filter(part.start_ms, part.end_ms);
+            let mut args = vec!["-filter_complex", &sound, "-map_metadata", "0"];
+            if video {
+                let codec = video_sound_codec(own).ok_or_else(|| format!("{} files can't be bleeped", own.to_uppercase()))?;
+                args.extend(["-map", "0:v:0", "-map", "[bleeped]", "-c:v", "copy"]);
+                args.extend(codec);
+                args.extend(faststart(own));
+            } else {
+                args.extend(["-map", "[bleeped]"]);
+                args.extend(audio_args(own));
+            }
+            ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
         }
         // Faster or slower, at the speed chosen in its window, the sound at its own
         // pitch; encoded again in the file's own format, at the menu's quality.
@@ -764,6 +788,21 @@ fn video_fit(target: &str) -> Option<&'static str> {
     }
 }
 
+/// ffmpeg's filters for Bleep: the first sound silenced from `start_ms` to `end_ms`,
+/// and a 1 kHz tone there instead. amix halves what it mixes, so the sum is doubled
+/// again: its switch to leave the level alone is newer than some ffmpeg in use.
+fn bleep_filter(start_ms: u64, end_ms: u64) -> String {
+    let seconds = |ms: u64| format!("{}.{:03}", ms / 1000, ms % 1000);
+    // Quoted: inside a filter, a comma would end it.
+    let during = format!("'between(t,{},{})'", seconds(start_ms), seconds(end_ms));
+    let outside = format!("'not(between(t,{},{}))'", seconds(start_ms), seconds(end_ms));
+    format!(
+        "[0:a:0]volume=0:enable={during}[quiet];\
+         sine=frequency=1000:sample_rate=48000,volume=2,volume=0:enable={outside}[tone];\
+         [quiet][tone]amix=inputs=2:duration=first,volume=2[bleeped]"
+    )
+}
+
 /// ffmpeg's filters for a Crop on a video: the quarter turns (clockwise, as ImageMagick
 /// turns a picture), the box, then the fit `target`'s encoder needs.
 fn video_crop_filter(crop: &Crop, fit: Option<&str>) -> String {
@@ -826,23 +865,37 @@ fn video_codec(target: &str) -> Option<Vec<&'static str>> {
     let level = quality().video;
     // MPEG-4 Part 2 and Windows Media 8 take a fixed quantiser: lower is better.
     let quantiser = level.pick("5", "3", "2");
-    Some(match target {
+    let mut args = match target {
         "mp4" | "mov" | "m4v" | "mkv" => {
-            let mut args = vec!["-c:v", "libx264", "-preset", "medium", "-crf", level.pick("26", "20", "17")];
-            args.extend(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
-            if target != "mkv" {
-                args.extend(["-movflags", "+faststart"]);
-            }
-            args
+            vec!["-c:v", "libx264", "-preset", "medium", "-crf", level.pick("26", "20", "17"), "-pix_fmt", "yuv420p"]
         }
         "webm" => vec![
             "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0", "-deadline", "good", "-cpu-used", "4",
-            "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
+            "-row-mt", "1",
         ],
-        "avi" => vec!["-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4"],
-        "wmv" => vec!["-c:v", "wmv2", "-q:v", quantiser, "-c:a", "wmav2", "-b:a", "192k"],
+        "avi" => vec!["-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser],
+        "wmv" => vec!["-c:v", "wmv2", "-q:v", quantiser],
+        _ => return None,
+    };
+    args.extend(video_sound_codec(target)?);
+    args.extend(faststart(target));
+    Some(args)
+}
+
+/// The sound encoder of a video in `target`: for Bleep, which copies the picture as it is.
+fn video_sound_codec(target: &str) -> Option<&'static [&'static str]> {
+    Some(match target {
+        "mp4" | "mov" | "m4v" | "mkv" => &["-c:a", "aac", "-b:a", "192k"],
+        "webm" => &["-c:a", "libopus", "-b:a", "128k"],
+        "avi" => &["-c:a", "libmp3lame", "-q:a", "4"],
+        "wmv" => &["-c:a", "wmav2", "-b:a", "192k"],
         _ => return None,
     })
+}
+
+/// MP4, MOV and M4V start playing before they are fully loaded with their index in front.
+fn faststart(target: &str) -> &'static [&'static str] {
+    if matches!(target, "mp4" | "mov" | "m4v") { &["-movflags", "+faststart"] } else { &[] }
 }
 
 fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
@@ -3314,6 +3367,19 @@ mod tests {
         }
     }
 
+    /// The loudest moment of a file's sound between two times, in dB, from ffmpeg.
+    fn loudest(path: &Path, from: &str, to: &str) -> f64 {
+        let out = Command::new(tool("ffmpeg").unwrap())
+            .args(["-hide_banner", "-ss", from, "-to", to, "-i"])
+            .arg(path)
+            .args(["-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stderr);
+        let line = text.lines().find(|l| l.contains("max_volume:")).expect("volumedetect says nothing");
+        line.split("max_volume:").nth(1).unwrap().trim().trim_end_matches(" dB").parse().unwrap()
+    }
+
     /// A video's picture size, "320x240", from ffprobe.
     fn video_size(path: &Path) -> String {
         let out = Command::new(tool("ffprobe").unwrap())
@@ -3461,6 +3527,19 @@ mod tests {
         let turned = Control::with_edit(Quality::default(), Some(Edit::Crop(turned)));
         let tall = under(&turned, || convert(&clip, "tool:crop", None, work.path())).unwrap();
         assert_eq!(video_size(&tall), "240x100");
+
+        // Bleep: the clip's tone is at about -18 dB and the bleep at -12 dB, so the part
+        // bleeped is louder and the rest is as it was; the picture is copied as it is,
+        // and the length stays.
+        let part = Control::with_edit(Quality::default(), Some(Edit::Trim(Trim { start_ms: 500, end_ms: 1000 })));
+        let bleeped = under(&part, || convert(&clip, "tool:bleep", None, work.path())).unwrap();
+        assert_eq!(bleeped, work.path().join("clip (bleeped).mp4"));
+        let (during, before) = (loudest(&bleeped, "0.6", "0.9"), loudest(&bleeped, "0.1", "0.4"));
+        assert!(during > -14.0 && before < -16.0, "bleep {during} dB, before it {before} dB");
+        let length = media_length(&bleeped, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((1.9..2.1).contains(&length), "{length}");
+        assert_eq!(video_size(&bleeped), "320x240");
+        assert_eq!(convert(&clip, "tool:bleep", None, work.path()).unwrap_err(), "Bleep opens its window from the wheel");
 
         // Split: parts of a second each, in a folder named after the clip.
         let halves = Control::with_edit(Quality::default(), Some(Edit::Parts(1000)));

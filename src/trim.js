@@ -1,7 +1,8 @@
 // The Trim window: a sound's loudness along its length (and a video's frames above
 // it), a part to keep with a start and an end to drag, the times to type, and the
-// part to play before trimming. The app hands over the length, the loudness, the
-// frames and a small MP3; this page sends back only the two times, in milliseconds.
+// part to play before trimming. For Bleep the same window picks the part to bleep
+// instead. The app hands over the length, the loudness, the frames and a small MP3;
+// this page sends back only the two times, in milliseconds.
 if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
@@ -87,7 +88,7 @@ function place() {
   keep.style.width = `${((end - start) / length) * 100}%`;
   if (document.activeElement !== startIn) startIn.value = fmt(start);
   if (document.activeElement !== endIn) endIn.value = fmt(end);
-  lengthOut.textContent = `Keeps ${fmt(end - start)} of ${fmt(length)}`;
+  lengthOut.textContent = `${session.bleep ? 'Bleeps' : 'Keeps'} ${fmt(end - start)} of ${fmt(length)}`;
   for (const grip of keep.querySelectorAll('.grip')) {
     const at = grip.dataset.end === 'start' ? start : end;
     grip.setAttribute('aria-valuemin', '0');
@@ -192,8 +193,9 @@ async function trimIt() {
   stop();
   apply.disabled = true;
   try {
-    // The app checks the times, queues the trim and closes this window.
-    await invoke('editor_trim', { trim: { start_ms: start, end_ms: end } });
+    // The app checks the times, queues the job and closes this window.
+    const part = { start_ms: start, end_ms: end };
+    await (session.bleep ? invoke('editor_bleep', { part }) : invoke('editor_trim', { trim: part }));
   } catch (error) {
     say(String(error));
     apply.disabled = false;
@@ -248,15 +250,18 @@ async function load() {
     && Number.isInteger(session.length_ms) && session.length_ms > MIN_MS
     && Array.isArray(session.peaks) && session.peaks.length > 0
     && (session.strip === null || (typeof session.strip === 'string' && session.strip.startsWith('data:image/jpeg;base64,')))
-    && (session.sound === null || (typeof session.sound === 'string' && session.sound.startsWith('data:audio/mpeg;base64,')));
+    && (session.sound === null || (typeof session.sound === 'string' && session.sound.startsWith('data:audio/mpeg;base64,')))
+    && typeof session.bleep === 'boolean';
   if (!valid) {
     session = null;
     apply.disabled = true;
     say('Nothing to trim. Drag the file onto Trim again.');
     return;
   }
-  document.title = `Trim: ${session.name}`;
-  end = session.length_ms;
+  document.title = `${session.bleep ? 'Bleep' : 'Trim'}: ${session.name}`;
+  // Bleep starts on the first second, to be moved onto the part to bleep.
+  end = session.bleep ? Math.min(session.length_ms, 1000) : session.length_ms;
+  if (session.bleep) apply.textContent = 'Bleep';
   if (session.strip) {
     strip.src = session.strip;
     strip.hidden = false;

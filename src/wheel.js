@@ -38,6 +38,7 @@ const TOOLS = {
   'tool:rotate': ['Rotate', 'Rotate right'],
   'tool:crop': ['Crop', 'Crop and turn'],
   'tool:trim': ['Trim', 'Trim the ends'],
+  'tool:bleep': ['Bleep', 'Bleep out a part'],
   'tool:speed': ['Speed', 'Faster or slower'],
   'tool:parts': ['Split', 'Split into parts'],
   'tool:join': ['Join', 'Join into one'],
