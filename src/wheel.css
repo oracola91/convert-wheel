@@ -250,6 +250,17 @@ svg.closing {
   fill: var(--cancel);
 }
 
+/* Linux: WebKitGTK draws fewer frames, so a fade reads as the highlight trailing the
+   cursor. The colour changes at once and the swell is quicker. */
+.linux .seg {
+  transition-duration: 150ms;
+}
+
+.linux .seg .body,
+.linux .hub {
+  transition: none;
+}
+
 .hub-label {
   fill: var(--hub-text);
   font-size: 11px;
