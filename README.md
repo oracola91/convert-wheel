@@ -63,6 +63,7 @@ For PDFs (with MuPDF):
 
 - **Merge** (two PDFs or more dropped together): one PDF with all their pages, in the order dropped, next to the first: "report (merged).pdf". Up to 2000 pages in all. A PDF that MuPDF can't read stops the merge with its name, instead of being left out quietly.
 - **Split**: one PDF per page in a new folder, "report (pages)/report 01.pdf"; the first 100 pages, and the folder name says so when there were more.
+- **Reorder** (one PDF of 2 to 100 pages at a time): opens a window with a small picture of every page, to drag into a new order. A page picked with a click or the arrow keys also moves with Shift and the arrow keys; Reverse turns the whole order round, Reset puts it back. Enter reorders, Esc cancels. Bookmarks follow their pages, and the title and author stay: "report (reordered).pdf". The window only sends the new order back.
 - **Smaller**: pictures above 225 dpi scaled down to 150 dpi and photos saved again as JPEG at quality 60, each only where that is smaller; fonts and streams compressed, unused and duplicate parts dropped. Text stays text. Older MuPDF without the picture options (Ubuntu's own packages) only tidies the file, which seldom makes it much smaller. Not saved if it isn't smaller.
 
 For video and audio (with ffmpeg):
