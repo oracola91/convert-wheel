@@ -27,6 +27,7 @@ mod settings;
 mod shelf;
 #[cfg(target_os = "macos")]
 mod shelf_window;
+mod transfer;
 mod trigger;
 mod update;
 mod wheel;
@@ -534,7 +535,7 @@ pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
 
 /// `notify` for a finished drop. A click on the notification shows `done`, the files
 /// it produced, in the file manager.
-fn notify_done(app: &AppHandle, title: &str, body: &str, done: Vec<PathBuf>) {
+pub(crate) fn notify_done(app: &AppHandle, title: &str, body: &str, done: Vec<PathBuf>) {
     let id = NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst);
     show_notification(app, id, title, body, &done);
     app.state::<reveal::Results>().finished(id, done);
@@ -648,6 +649,9 @@ fn main() {
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // The folder picker for Copy To and Move To, used from Rust only: no page is
+        // given the plugin's permissions.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Anything that stops the start is logged and shown; otherwise the app
             // would vanish without a word.
