@@ -3,9 +3,11 @@
 //! colour), Mark Up (drawing and blacking out on the picture), Trim (a sound's or
 //! video's loudness and frames, with a start and an end to drag; Bleep uses it too,
 //! for the part to bleep), Speed (a speed to pick), Split for sound and video (how many
-//! parts, or how long each), Compress to a Size (a size to type or pick) and Reorder (a
-//! PDF's pages, to drag into a new order). The page only sends numbers back (and Mark
-//! Up's words); which file they apply to stays here, so the page can never name one.
+//! parts, or how long each), Compress to a Size (a size to type or pick), Reorder (a
+//! PDF's pages, to drag into a new order) and Info (what a file says about itself, and
+//! a sound's or PDF's tags to change). The page only sends numbers back (and Mark Up's
+//! words, Info's tags); which file they apply to stays here, so the page can never name
+//! one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -65,6 +67,8 @@ enum View {
     /// A small PNG of each page of a PDF, in page order, as data: URLs. The new order
     /// comes back as page numbers from 1.
     Order { pages: Vec<String> },
+    /// What the file is, what it says (label, value) and the tags that can be changed.
+    Info { what: &'static str, facts: Vec<(String, String)>, fields: Vec<convert::info::Field> },
 }
 
 impl View {
@@ -78,6 +82,7 @@ impl View {
             View::Speed { .. } => "speed.html",
             View::Parts { .. } => "parts.html",
             View::Order { .. } => "order.html",
+            View::Info { .. } => "info.html",
         }
     }
 
@@ -87,6 +92,7 @@ impl View {
             View::Size { .. } => ((480.0, 370.0), (420.0, 330.0)),
             View::Speed { .. } => ((480.0, 300.0), (420.0, 280.0)),
             View::Parts { .. } => ((480.0, 360.0), (420.0, 330.0)),
+            View::Info { .. } => ((480.0, 560.0), (420.0, 360.0)),
             _ => ((780.0, 620.0), (560.0, 460.0)),
         }
     }
@@ -102,6 +108,7 @@ impl View {
             View::Speed { .. } => format!("Speed: {name}"),
             View::Parts { .. } => format!("Split: {name}"),
             View::Order { .. } => format!("Reorder: {name}"),
+            View::Info { .. } => format!("Info: {name}"),
         }
     }
 }
@@ -114,7 +121,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Trim, Bleep, Speed, Split, Reorder and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Trim, Bleep, Speed, Split, Reorder, Info and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -128,6 +135,8 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
         } else if tool == "tool:order" {
             convert::page_pictures(&path)
                 .map(|pngs| View::Order { pages: pngs.iter().map(|png| data_url("image/png", png)).collect() })
+        } else if tool == "tool:info" {
+            convert::info::read(&path).map(|i| View::Info { what: i.what, facts: i.facts, fields: i.fields })
         } else if tool == "tool:markup" {
             convert::preview(&path)
                 .map(|(width, height, jpeg)| View::Markup { width, height, preview: data_url("image/jpeg", &jpeg) })
@@ -338,6 +347,15 @@ pub fn editor_order(app: AppHandle, editing: State<Editing>, order: Vec<u32>) ->
     finish(&app, &editing, "tool:order", |view| match view {
         View::Order { pages } => convert::check_order(&order, pages.len()).map(|()| Edit::Order(order)),
         _ => Err("this window doesn't reorder".into()),
+    })
+}
+
+/// Info: changed tags, only ones the window offered for this file.
+#[tauri::command]
+pub fn editor_info(app: AppHandle, editing: State<Editing>, changes: Vec<(String, String)>) -> Result<(), String> {
+    finish(&app, &editing, "tool:info", |view| match view {
+        View::Info { fields, .. } => convert::info::check(&changes, fields).map(|()| Edit::Info(changes)),
+        _ => Err("this window doesn't change tags".into()),
     })
 }
 
