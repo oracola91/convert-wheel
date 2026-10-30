@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Adjust</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="adjust.js" defer></script>
+</head>
+<body>
+  <main>
+    <div id="stage">
+      <img id="picture" alt="The picture, as it will look">
+      <p id="message" hidden></p>
+    </div>
+    <footer>
+      <label class="slider">Brightness
+        <input type="range" id="brightness" min="50" max="150" step="1" value="100">
+        <output id="brightness-value" for="brightness">100%</output>
+      </label>
+      <label class="slider">Contrast
+        <input type="range" id="contrast" min="50" max="150" step="1" value="100">
+        <output id="contrast-value" for="contrast">100%</output>
+      </label>
+      <label class="slider">Saturation
+        <input type="range" id="saturation" min="0" max="200" step="1" value="100">
+        <output id="saturation-value" for="saturation">100%</output>
+      </label>
+      <button type="button" id="reset">Reset</button>
+      <div class="end">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="button" id="apply" class="primary">Adjust</button>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>

@@ -397,3 +397,27 @@ footer input:focus-visible {
   color: var(--warn);
   font-weight: 600;
 }
+
+/* Adjust: the picture fitted into the stage, as it will look, and a slider for each
+   setting under it. */
+#picture {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.slider input[type="range"] {
+  width: 120px;
+  padding: 0;
+  background: none;
+  border: none;
+  accent-color: var(--accent);
+}
+
+.slider output {
+  min-width: 3.2em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}

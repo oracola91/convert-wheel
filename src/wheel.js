@@ -37,6 +37,7 @@ const TOOLS = {
   'tool:clean': ['No metadata', 'Remove metadata'],
   'tool:rotate': ['Rotate', 'Rotate right'],
   'tool:crop': ['Crop', 'Crop and turn'],
+  'tool:adjust': ['Adjust', 'Light and colour'],
   'tool:trim': ['Trim', 'Trim the ends'],
   'tool:bleep': ['Bleep', 'Bleep out a part'],
   'tool:speed': ['Speed', 'Faster or slower'],

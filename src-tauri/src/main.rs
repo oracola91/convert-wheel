@@ -151,6 +151,7 @@ impl Words {
                 "Stopped reading QR codes",
             ),
             "tool:crop" => tool("Cropping {}", "Cropped", "Cropped {} files", "crop", "Stopped cropping"),
+            "tool:adjust" => tool("Adjusting {}", "Adjusted", "Adjusted {} files", "adjust", "Stopped adjusting"),
             "tool:trim" => tool("Trimming {}", "Trimmed", "Trimmed {} files", "trim", "Stopped trimming"),
             "tool:bleep" => tool("Bleeping {}", "Bleeped", "Bleeped {} files", "bleep", "Stopped bleeping"),
             "tool:speed" => tool(
@@ -680,7 +681,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
