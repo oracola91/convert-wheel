@@ -24,6 +24,7 @@ use crate::formats::{self, Kind};
 use crate::settings::{Level, Quality};
 
 pub mod estimate;
+pub mod info;
 pub mod markup;
 
 /// How long each tool may run before it is stopped. Generous: a stuck tool should not
@@ -156,6 +157,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
             file(size_limit().and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
         }
         (Some("tool:parts"), Kind::Audio | Kind::Video) => media_parts(&input, &ext, work.path()),
+        (Some("tool:info"), Kind::Image | Kind::Video) => Err("Info only reads a picture's or a video's details".to_string()),
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
@@ -332,6 +334,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:collage" => "collage",
         "tool:smaller" => "smaller",
         "tool:order" => "reordered",
+        "tool:info" => "new info",
         "tool:still" => "first frame",
         "tool:loudness" => "even loudness",
         "tool:mono" => "mono",
@@ -362,6 +365,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:split" => "split",
         "tool:smaller" => "made smaller",
         "tool:order" => "reordered",
+        "tool:info" => "given new tags",
         "tool:still" => "turned into a picture",
         "tool:loudness" => "evened out",
         "tool:mono" => "mixed down to mono",
@@ -399,6 +403,14 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
     let own = formats::canonical(ext);
     let video = formats::kind_of(ext) == Some(Kind::Video);
     match tool_id {
+        // The sound and its other tags as they are, with the tags from Info's window.
+        "tool:info" => {
+            let Some(Edit::Info(changes)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Info opens its window from the wheel".into());
+            };
+            let args = info::sound_args(own, &changes)?;
+            ffmpeg(src, &args.iter().map(String::as_str).collect::<Vec<_>>(), out, QUICK)
+        }
         // The picture and sound as they are, without the file's and the streams'
         // metadata (where and when it was recorded, the device, tags, cover art) or
         // the data tracks phones keep it in. A copy: quick, nothing is encoded again.
@@ -1196,6 +1208,15 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
             mutool.run_args(work.path(), &["clean", "-g"], &[out_name, &pages])?;
             Ok(Output::File)
         }
+        "tool:info" => {
+            let Some(Edit::Info(changes)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Info opens its window from the wheel".into());
+            };
+            fs::write(work.path().join("info.js"), info::PDF_WRITE).map_err(|e| format!("work file: {e}"))?;
+            let after = info::pdf_args(out_name, &changes)?;
+            mutool.run_args(work.path(), &["run", "info.js"], &after.iter().map(String::as_str).collect::<Vec<_>>())?;
+            Ok(Output::File)
+        }
         "tool:smaller" => {
             let mut args = vec!["clean"];
             args.extend(SMALLER);
@@ -1908,6 +1929,8 @@ pub enum Edit {
     Markup(markup::Markup),
     /// Reorder: the PDF's page numbers, from 1, in their new order.
     Order(Vec<u32>),
+    /// Info: the tags changed in its window, by name, with their new values.
+    Info(Vec<(String, String)>),
 }
 
 /// Adjust, from its window: brightness, contrast and saturation in percent, where 100
@@ -3671,6 +3694,73 @@ mod tests {
                 .output()
                 .unwrap();
             assert_eq!(String::from_utf8_lossy(&size.stdout).trim(), "1920,1080", "{target}");
+        }
+    }
+
+    /// Needs ffmpeg, MuPDF and ImageMagick: a part whose tool isn't installed isn't
+    /// checked, unless REQUIRE_MUTOOL asks for MuPDF.
+    #[test]
+    fn info_reads_and_changes_tags() {
+        let work = tempfile::tempdir().unwrap();
+        let field = |i: &info::Info, key: &str| i.fields.iter().find(|f| f.key == key).map(|f| f.value.clone());
+        let fact = |i: &info::Info, label: &str| i.facts.iter().find(|(l, _)| l == label).map(|(_, v)| v.clone());
+        if tool("ffmpeg").is_ok() && tool("ffprobe").is_ok() {
+            let song = work.path().join("song.mp3");
+            let mut make = Command::new(tool("ffmpeg").unwrap());
+            make.args(["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1"])
+                .args(["-metadata", "title=Old", "-metadata", "artist=Someone"])
+                .arg(&song);
+            assert!(make.status().unwrap().success());
+            assert_eq!(field(&info::read(&song).unwrap(), "title").as_deref(), Some("Old"));
+            let changes = vec![("title".to_string(), "Café — тест".to_string()), ("album".to_string(), "First".to_string())];
+            let control = Control::with_edit(Quality::default(), Some(Edit::Info(changes)));
+            let out = under(&control, || convert(&song, "tool:info", None, work.path())).unwrap();
+            assert_eq!(out, work.path().join("song (new info).mp3"));
+            let after = info::read(&out).unwrap();
+            assert_eq!(field(&after, "title").as_deref(), Some("Café — тест"));
+            assert_eq!(field(&after, "artist").as_deref(), Some("Someone"));
+            assert_eq!(field(&after, "album").as_deref(), Some("First"));
+
+            // A video's details are only read, where it was recorded too.
+            let clip = work.path().join("clip.mp4");
+            let mut make = Command::new(tool("ffmpeg").unwrap());
+            make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=5:duration=1", "-c:v", "libx264"])
+                .args(["-metadata", "location=+48.85+002.29/", "-metadata", "title=Holiday"])
+                .arg(&clip);
+            assert!(make.status().unwrap().success());
+            let video = info::read(&clip).unwrap();
+            assert!(video.fields.is_empty());
+            assert_eq!(fact(&video, "Title").as_deref(), Some("Holiday"));
+            assert_eq!(fact(&video, "Location").as_deref(), Some("48.85000, 2.29000"));
+        }
+        if tool("mutool").is_ok() {
+            let pdf = work.path().join("report.pdf");
+            fs::write(&pdf, tiny_pdf(&["One", "Two"])).unwrap();
+            let before = info::read(&pdf).unwrap();
+            assert_eq!(fact(&before, "Pages").as_deref(), Some("2"));
+            assert_eq!(field(&before, "Title").as_deref(), Some(""));
+            let changes = vec![("Title".to_string(), "Café — тест".to_string()), ("Author".to_string(), "Me".to_string())];
+            let control = Control::with_edit(Quality::default(), Some(Edit::Info(changes)));
+            let out = under(&control, || convert(&pdf, "tool:info", None, work.path())).unwrap();
+            assert_eq!(out, work.path().join("report (new info).pdf"));
+            let after = info::read(&out).unwrap();
+            assert_eq!(field(&after, "Title").as_deref(), Some("Café — тест"));
+            assert_eq!(field(&after, "Author").as_deref(), Some("Me"));
+            assert_eq!(fact(&after, "Pages").as_deref(), Some("2"));
+        } else {
+            let required = std::env::var_os("REQUIRE_MUTOOL").is_some_and(|v| !v.is_empty());
+            assert!(!required, "mutool should be installed here");
+        }
+        if let Ok(magick) = magick() {
+            let png = work.path().join("plain.png");
+            let mut make = Command::new(&magick);
+            make.args(["-size", "30x20", "xc:white"]).arg(&png);
+            assert!(make.status().unwrap().success());
+            let picture = info::read(&png).unwrap();
+            assert_eq!(fact(&picture, "Size").as_deref(), Some("30 × 20 pixels"));
+            assert_eq!(fact(&picture, "Location").as_deref(), Some("none in the file"));
+            assert!(picture.fields.is_empty());
+            assert!(convert(&png, "tool:info", None, work.path()).is_err());
         }
     }
 

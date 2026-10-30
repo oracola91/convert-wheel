@@ -521,3 +521,42 @@ footer input:focus-visible {
 #hint {
   color: var(--muted);
 }
+
+/* Info: what the file says, a label and a value each, then the tags to change. The
+   panel scrolls when a file says a lot. */
+#panel.scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+#facts,
+#fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  margin: 0;
+}
+
+#fields {
+  align-items: center;
+  margin-top: 6px;
+}
+
+#facts dt {
+  color: var(--muted);
+}
+
+#facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+#panel #fields input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: 13px;
+  font-variant-numeric: normal;
+}
