@@ -1,9 +1,10 @@
 //! The editing window some tools open first: Crop (the picture, or a frame of a video,
-//! with a box to drag, turned a quarter at a time), Trim (a sound's or video's loudness
-//! and frames, with a start and an end to drag; Bleep uses it too, for the part to
-//! bleep), Speed (a speed to pick), Split for sound and video (how many parts, or how
-//! long each) and Compress to a Size (a size to type or pick). The page only sends
-//! numbers back; which file they apply to stays here, so the page can never name one.
+//! with a box to drag, turned a quarter at a time), Adjust (sliders for light and
+//! colour), Trim (a sound's or video's loudness and frames, with a start and an end to
+//! drag; Bleep uses it too, for the part to bleep), Speed (a speed to pick), Split for
+//! sound and video (how many parts, or how long each) and Compress to a Size (a size
+//! to type or pick). The page only sends numbers back; which file they apply to stays
+//! here, so the page can never name one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -44,6 +45,8 @@ enum View {
     /// The picture's size upright, in pixels (the box comes back in these), and a JPEG
     /// of it, at most 1400 pixels across, as a data: URL.
     Crop { width: u32, height: u32, preview: String },
+    /// The same picture, for Adjust's sliders.
+    Adjust { preview: String },
     /// The length (the times come back in milliseconds), the loudness along it, and for
     /// a video eight frames; the sound as a small MP3 to play, when not too long.
     /// With `bleep`, the same window picks the part Bleep turns into a tone.
@@ -62,6 +65,7 @@ impl View {
     fn page(&self) -> &'static str {
         match self {
             View::Crop { .. } => "editor.html",
+            View::Adjust { .. } => "adjust.html",
             View::Trim { .. } => "trim.html",
             View::Size { .. } => "size.html",
             View::Speed { .. } => "speed.html",
@@ -82,6 +86,7 @@ impl View {
     fn title(&self, name: &str) -> String {
         match self {
             View::Crop { .. } => format!("Crop: {name}"),
+            View::Adjust { .. } => format!("Adjust: {name}"),
             View::Trim { bleep: true, .. } => format!("Bleep: {name}"),
             View::Trim { .. } => format!("Trim: {name}"),
             View::Size { .. } => format!("Compress to a size: {name}"),
@@ -99,7 +104,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Trim, Bleep, Speed, Split and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Adjust, Trim, Bleep, Speed, Split and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -110,6 +115,8 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
             play_length(&path).map(|(length_ms, what)| View::Speed { length_ms, what, speeds: convert::SPEEDS })
         } else if tool == "tool:parts" {
             play_length(&path).map(|(length_ms, what)| View::Parts { length_ms, what })
+        } else if tool == "tool:adjust" {
+            convert::preview(&path).map(|(_, _, jpeg)| View::Adjust { preview: data_url("image/jpeg", &jpeg) })
         } else if tool == "tool:crop" {
             // A video is cropped on one of its frames.
             let ext = crate::formats::extension(&path).unwrap_or_default();
@@ -288,6 +295,15 @@ pub fn editor_parts(app: AppHandle, editing: State<Editing>, every_ms: u64) -> R
         View::Parts { length_ms, .. } if convert::parts_count(*length_ms, every_ms).is_some() => Ok(Edit::Parts(every_ms)),
         View::Parts { .. } => Err("that makes fewer than two parts, or too many".into()),
         _ => Err("this window doesn't split".into()),
+    })
+}
+
+/// Adjust: the sliders, within what the window offers, with something changed.
+#[tauri::command]
+pub fn editor_adjust(app: AppHandle, editing: State<Editing>, adjust: convert::Adjust) -> Result<(), String> {
+    finish(&app, &editing, "tool:adjust", |view| match view {
+        View::Adjust { .. } => adjust.check().map(|()| Edit::Adjust(adjust)),
+        _ => Err("this window doesn't adjust".into()),
     })
 }
 
