@@ -24,6 +24,7 @@ use crate::formats::{self, Kind};
 use crate::settings::{Level, Quality};
 
 pub mod estimate;
+pub mod markup;
 
 /// How long each tool may run before it is stopped. Generous: a stuck tool should not
 /// block every later conversion, but a long video must still finish.
@@ -100,7 +101,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     let (stem, out_ext) = match tool {
         Some(t) => {
             // Compress to a Size names the size: "photo (under 2 MB).jpg".
-            let suffix = match (t, control().and_then(|c| c.edit)) {
+            let suffix = match (t, control().and_then(|c| c.edit.clone())) {
                 ("tool:target", Some(Edit::Size(bytes))) => format!("under {}", size_text(bytes)),
                 // Speed names the speed: "clip (2x speed).mov".
                 ("tool:speed", Some(Edit::Speed(percent))) => format!("{}x speed", speed_text(percent)),
@@ -336,6 +337,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:qr" => "QR code",
         "tool:crop" => "cropped",
         "tool:adjust" => "adjusted",
+        "tool:markup" => "marked up",
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "new speed",
@@ -364,6 +366,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:qr" => "read for QR codes",
         "tool:crop" => "cropped",
         "tool:adjust" => "adjusted",
+        "tool:markup" => "marked up",
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "sped up or slowed down",
@@ -428,7 +431,7 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         // phone's video by its tag first) and then turned as chosen there; encoded again
         // in the file's own format, at the menu's quality.
         "tool:crop" => {
-            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit) else {
+            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Crop opens its window from the wheel".into());
             };
             let codec = video_codec(own).ok_or_else(|| format!("{} files can't be cropped", own.to_uppercase()))?;
@@ -441,7 +444,7 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         // encoded again (in the file's own format, at the menu's quality), rather than
         // copied, which could only cut at the nearest keyframe.
         "tool:trim" => {
-            let Some(Edit::Trim(trim)) = control().and_then(|c| c.edit) else {
+            let Some(Edit::Trim(trim)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Trim opens its window from the wheel".into());
             };
             cut(src, ext, trim.start_ms, trim.end_ms, out)
@@ -449,7 +452,7 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         // The part chosen in the Bleep window becomes a tone; the rest of the sound, and
         // a video's picture, stay as they are (the picture is copied, not encoded again).
         "tool:bleep" => {
-            let Some(Edit::Trim(part)) = control().and_then(|c| c.edit) else {
+            let Some(Edit::Trim(part)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Bleep opens its window from the wheel".into());
             };
             if video && sample_rate(src, out).is_none() {
@@ -471,7 +474,7 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         // Faster or slower, at the speed chosen in its window, the sound at its own
         // pitch; encoded again in the file's own format, at the menu's quality.
         "tool:speed" => {
-            let Some(Edit::Speed(percent)) = control().and_then(|c| c.edit) else {
+            let Some(Edit::Speed(percent)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Speed opens its window from the wheel".into());
             };
             let tempo = atempo(percent);
@@ -544,7 +547,7 @@ pub fn parts_count(length_ms: u64, every_ms: u64) -> Option<u64> {
 /// Split for sound and video: parts of the length chosen in its window, in order, each
 /// cut exactly like Trim. They come back like a split PDF's pages.
 fn media_parts(src: &Path, ext: &str, work: &Path) -> Result<Output, String> {
-    let Some(Edit::Parts(every_ms)) = control().and_then(|c| c.edit) else {
+    let Some(Edit::Parts(every_ms)) = control().and_then(|c| c.edit.clone()) else {
         return Err("Split opens its window from the wheel".into());
     };
     let length = media_length(src, &work.join("probe")).ok_or("can't tell how long it plays")?;
@@ -613,7 +616,7 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
         "tool:clean" => cmd.args(["+profile", "!icc,*", "+set", "comment"]),
         "tool:rotate" => cmd.args(["-rotate", "90"]),
         "tool:crop" => {
-            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit) else {
+            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Crop opens its window from the wheel".into());
             };
             if crop.turns > 0 {
@@ -622,10 +625,22 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
             cmd.args(["-crop", &format!("{}x{}+{}+{}", crop.width, crop.height, crop.x, crop.y), "+repage"])
         }
         "tool:adjust" => {
-            let Some(Edit::Adjust(adjust)) = control().and_then(|c| c.edit) else {
+            let Some(Edit::Adjust(adjust)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Adjust opens its window from the wheel".into());
             };
             cmd.args(adjust_args(&adjust))
+        }
+        "tool:markup" => {
+            let Some(Edit::Markup(marks)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Mark Up opens its window from the wheel".into());
+            };
+            cmd.args(markup::draw_args(&marks, markup::font().as_deref())?);
+            // Blacked out means gone: the EXIF's small preview would still show it.
+            if marks.redacts() {
+                cmd.args(["+profile", "!icc,*", "+set", "comment"])
+            } else {
+                &mut cmd
+            }
         }
         other => return Err(format!("unknown tool {other}")),
     };
@@ -1337,7 +1352,7 @@ fn note(text: String) {
 
 /// The size Compress to a Size aims under, from the editor.
 fn size_limit() -> Result<u64, String> {
-    match control().and_then(|c| c.edit) {
+    match control().and_then(|c| c.edit.clone()) {
         Some(Edit::Size(bytes)) => Ok(bytes),
         _ => Err("Compress to a Size opens its window from the wheel".into()),
     }
@@ -1841,7 +1856,7 @@ pub struct Control {
 }
 
 /// What a tool that opens the editor was given there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edit {
     Crop(Crop),
     Trim(Trim),
@@ -1852,6 +1867,8 @@ pub enum Edit {
     /// Split for sound and video: parts this many milliseconds long.
     Parts(u64),
     Adjust(Adjust),
+    /// Mark Up: what was drawn and blacked out.
+    Markup(markup::Markup),
 }
 
 /// Adjust, from its window: brightness, contrast and saturation in percent, where 100
@@ -3131,9 +3148,9 @@ mod tests {
     }
 
     /// Width x height, as ImageMagick reads it.
-    /// The colour of the pixel `x` across the top row, "128,128,128".
-    fn rgb(path: &Path, x: u32) -> String {
-        let at = format!("%[fx:int(255*p{{{x},0}}.r+0.5)],%[fx:int(255*p{{{x},0}}.g+0.5)],%[fx:int(255*p{{{x},0}}.b+0.5)]");
+    /// The colour of the pixel at `x`, `y`, "128,128,128".
+    fn rgb(path: &Path, x: u32, y: u32) -> String {
+        let at = format!("%[fx:int(255*p{{{x},{y}}}.r+0.5)],%[fx:int(255*p{{{x},{y}}}.g+0.5)],%[fx:int(255*p{{{x},{y}}}.b+0.5)]");
         let out = Command::new(magick().unwrap()).arg(path).args(["-format", &at, "info:"]).output().unwrap();
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
@@ -3307,14 +3324,39 @@ mod tests {
         let control = Control::with_edit(Quality::default(), Some(Edit::Adjust(brighter)));
         let out = under(&control, || convert(&colours, "tool:adjust", None, work.path())).unwrap();
         assert_eq!(out, work.path().join("colours (adjusted).png"));
-        assert_eq!(rgb(&out, 0), "192,192,192");
+        assert_eq!(rgb(&out, 0, 0), "192,192,192");
         let grey = Adjust { brightness: 100, contrast: 100, saturation: 0 };
         let control = Control::with_edit(Quality::default(), Some(Edit::Adjust(grey)));
         let out = under(&control, || convert(&colours, "tool:adjust", None, work.path())).unwrap();
-        assert_eq!(rgb(&out, 2), "137,137,137");
+        assert_eq!(rgb(&out, 2, 0), "137,137,137");
         assert!(Adjust { brightness: 100, contrast: 100, saturation: 100 }.check().is_err());
         assert!(Adjust { brightness: 151, contrast: 100, saturation: 100 }.check().is_err());
         assert!(brighter.check().is_ok() && grey.check().is_ok());
+
+        // Mark Up: a pen line, words that look like a file name and a percent, and a
+        // blacked-out corner, on a picture with a comment that must not outlive it.
+        let note = work.path().join("note.png");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "200x100", "xc:white", "-set", "comment", "secret"]).arg(&note);
+        assert!(make.status().unwrap().success());
+        let marks = markup::Markup {
+            shapes: vec![
+                markup::Shape::Pen { colour: "red".into(), width: 6, points: vec![[10, 90], [190, 90]] },
+                markup::Shape::Text { colour: "blue".into(), size: 24, at: [10, 10], text: "@/etc/hosts 50%".into() },
+                markup::Shape::Redact { from: [150, 0], to: [199, 40] },
+            ],
+        };
+        assert!(marks.check(200, 100).is_ok());
+        let control = Control::with_edit(Quality::default(), Some(Edit::Markup(marks)));
+        let out = under(&control, || convert(&note, "tool:markup", None, work.path())).unwrap();
+        assert_eq!(out, work.path().join("note (marked up).png"));
+        assert_eq!(rgb(&out, 175, 20), "0,0,0");
+        assert_eq!(rgb(&out, 100, 90), "229,50,45");
+        let words = Command::new(&magick).arg(&out).args(["-crop", "120x30+10+10", "-format", "%[fx:mean]", "info:"]).output().unwrap();
+        let mean: f64 = String::from_utf8_lossy(&words.stdout).trim().parse().unwrap();
+        assert!(mean < 0.97, "no words drawn: {mean}");
+        let comment = Command::new(&magick).arg(&out).args(["-format", "%c", "info:"]).output().unwrap();
+        assert!(!String::from_utf8_lossy(&comment.stdout).contains("secret"));
     }
 
     #[test]

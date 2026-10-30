@@ -1,10 +1,11 @@
 //! The editing window some tools open first: Crop (the picture, or a frame of a video,
 //! with a box to drag, turned a quarter at a time), Adjust (sliders for light and
-//! colour), Trim (a sound's or video's loudness and frames, with a start and an end to
-//! drag; Bleep uses it too, for the part to bleep), Speed (a speed to pick), Split for
-//! sound and video (how many parts, or how long each) and Compress to a Size (a size
-//! to type or pick). The page only sends numbers back; which file they apply to stays
-//! here, so the page can never name one.
+//! colour), Mark Up (drawing and blacking out on the picture), Trim (a sound's or
+//! video's loudness and frames, with a start and an end to drag; Bleep uses it too,
+//! for the part to bleep), Speed (a speed to pick), Split for sound and video (how many
+//! parts, or how long each) and Compress to a Size (a size to type or pick). The page
+//! only sends numbers back (and Mark Up's words); which file they apply to stays here,
+//! so the page can never name one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -47,6 +48,8 @@ enum View {
     Crop { width: u32, height: u32, preview: String },
     /// The same picture, for Adjust's sliders.
     Adjust { preview: String },
+    /// The same picture and its size, for Mark Up's drawing (sent back in its pixels).
+    Markup { width: u32, height: u32, preview: String },
     /// The length (the times come back in milliseconds), the loudness along it, and for
     /// a video eight frames; the sound as a small MP3 to play, when not too long.
     /// With `bleep`, the same window picks the part Bleep turns into a tone.
@@ -66,6 +69,7 @@ impl View {
         match self {
             View::Crop { .. } => "editor.html",
             View::Adjust { .. } => "adjust.html",
+            View::Markup { .. } => "markup.html",
             View::Trim { .. } => "trim.html",
             View::Size { .. } => "size.html",
             View::Speed { .. } => "speed.html",
@@ -87,6 +91,7 @@ impl View {
         match self {
             View::Crop { .. } => format!("Crop: {name}"),
             View::Adjust { .. } => format!("Adjust: {name}"),
+            View::Markup { .. } => format!("Mark up: {name}"),
             View::Trim { bleep: true, .. } => format!("Bleep: {name}"),
             View::Trim { .. } => format!("Trim: {name}"),
             View::Size { .. } => format!("Compress to a size: {name}"),
@@ -104,7 +109,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Adjust, Trim, Bleep, Speed, Split and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Trim, Bleep, Speed, Split and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -115,6 +120,9 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
             play_length(&path).map(|(length_ms, what)| View::Speed { length_ms, what, speeds: convert::SPEEDS })
         } else if tool == "tool:parts" {
             play_length(&path).map(|(length_ms, what)| View::Parts { length_ms, what })
+        } else if tool == "tool:markup" {
+            convert::preview(&path)
+                .map(|(width, height, jpeg)| View::Markup { width, height, preview: data_url("image/jpeg", &jpeg) })
         } else if tool == "tool:adjust" {
             convert::preview(&path).map(|(_, _, jpeg)| View::Adjust { preview: data_url("image/jpeg", &jpeg) })
         } else if tool == "tool:crop" {
@@ -304,6 +312,15 @@ pub fn editor_adjust(app: AppHandle, editing: State<Editing>, adjust: convert::A
     finish(&app, &editing, "tool:adjust", |view| match view {
         View::Adjust { .. } => adjust.check().map(|()| Edit::Adjust(adjust)),
         _ => Err("this window doesn't adjust".into()),
+    })
+}
+
+/// Mark Up: the shapes, every one inside the picture and from the window's tools.
+#[tauri::command]
+pub fn editor_markup(app: AppHandle, editing: State<Editing>, markup: convert::markup::Markup) -> Result<(), String> {
+    finish(&app, &editing, "tool:markup", |view| match view {
+        View::Markup { width, height, .. } => markup.check(*width, *height).map(|()| Edit::Markup(markup)),
+        _ => Err("this window doesn't mark up".into()),
     })
 }
 
