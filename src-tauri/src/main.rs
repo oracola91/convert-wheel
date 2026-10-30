@@ -382,7 +382,10 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
     let words = &running.words;
     // Converting or compressing video is slow; the video tools that copy are quick.
     let encodes = !formats::is_tool(&job.format)
-        || matches!(job.format.as_str(), "tool:compress" | "tool:trim" | "tool:speed" | "tool:parts" | "tool:join" | "tool:target");
+        || matches!(
+            job.format.as_str(),
+            "tool:compress" | "tool:crop" | "tool:trim" | "tool:speed" | "tool:parts" | "tool:join" | "tool:target"
+        );
     let slow = encodes
         && job.paths.iter().any(|p| {
             formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
