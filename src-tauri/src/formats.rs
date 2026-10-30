@@ -142,7 +142,7 @@ const TOOLS: &[(&str, &[&str])] = &[
         "tool:target",
         &[
             "jpg", "jpeg", "heic", "heif", "webp", "avif", "mp4", "mov", "m4v", "mkv", "webm", "mp3", "m4a", "aac", "ogg",
-            "opus", "wma",
+            "opus", "wma", "pdf",
         ],
     ),
     (
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
-        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller", "tool:info"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller", "tool:target", "tool:info"]);
         assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller"]);
         assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
         assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));

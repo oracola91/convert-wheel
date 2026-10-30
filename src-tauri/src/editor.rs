@@ -215,6 +215,7 @@ fn size_view(path: &Path) -> Result<View, String> {
     let what = match crate::formats::kind_of(&ext) {
         Some(crate::formats::Kind::Video) => "video",
         Some(crate::formats::Kind::Audio) => "sound",
+        Some(crate::formats::Kind::Pdf) => "PDF",
         _ => "picture",
     };
     let warnings = if what == "picture" { convert::picture_warnings(path) } else { None };

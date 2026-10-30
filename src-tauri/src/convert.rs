@@ -156,6 +156,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         (Some("tool:target"), Kind::Audio | Kind::Video) => {
             file(size_limit().and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
         }
+        (Some("tool:target"), Kind::Pdf) => file(size_limit().and_then(|limit| pdf_to_size(&input, &out, work.path(), limit))),
         (Some("tool:parts"), Kind::Audio | Kind::Video) => media_parts(&input, &ext, work.path()),
         (Some("tool:info"), Kind::Image | Kind::Video) => Err("Info only reads a picture's or a video's details".to_string()),
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
@@ -1232,6 +1233,42 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
         }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+/// Compress to a Size for PDFs: Smaller's tidying with every picture saved again, at
+/// most this many dpi and at this JPEG quality, a step at a time until the PDF fits.
+const PDF_STEPS: &[(u32, u32)] = &[(150, 70), (150, 50), (120, 45), (96, 40), (72, 35), (60, 30), (50, 25)];
+
+fn pdf_to_size(src: &Path, out: &Path, work: &Path, limit: u64) -> Result<(), String> {
+    let mutool = Mutool { path: tool("mutool")?, src, deadline: Instant::now() + PDF_TOTAL };
+    let out_name = out.file_name().and_then(|n| n.to_str()).ok_or("work folder name")?;
+    let mut smallest = u64::MAX;
+    for &(dpi, quality) in PDF_STEPS {
+        let mut args: Vec<String> =
+            ["clean", "-gggg", "-z", "-f", "-i", "-Z", "--recompress-images-when", "always"].map(String::from).to_vec();
+        for colour in ["color", "gray"] {
+            for kind in ["lossy", "lossless"] {
+                args.extend([format!("--{colour}-{kind}-image-subsample-dpi"), format!("{dpi},{dpi}")]);
+                args.extend([format!("--{colour}-{kind}-image-recompress-method"), format!("jpeg:{quality}")]);
+            }
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        match mutool.run_failure(work, &args, &[out_name]) {
+            Err(f) if f.output.contains("usage:") => {
+                return Err("this MuPDF can't save a PDF's pictures again: a newer one is needed for PDFs".into());
+            }
+            other => other.map_err(password_message)?,
+        }
+        let size = fs::metadata(out).map_err(|e| format!("work file: {e}"))?.len();
+        if size <= limit {
+            if (dpi, quality) != PDF_STEPS[0] {
+                note(format!("pictures at {dpi} dpi"));
+            }
+            return Ok(());
+        }
+        smallest = smallest.min(size);
+    }
+    Err(format!("this PDF can't be made {} or smaller: the least was {}", size_text(limit), size_text(smallest)))
 }
 
 /// Most pictures One PDF takes.
@@ -3551,6 +3588,29 @@ mod tests {
         let err = under(&control, || convert(&two, "tool:order", None, work.path())).unwrap_err();
         assert!(err.contains("the PDF has 2"), "{err}");
         assert_eq!(convert(&three, "tool:order", None, work.path()).unwrap_err(), "Reorder opens its window from the wheel");
+
+        // To a size: a PDF of two photos, its pictures saved again until it fits; text
+        // alone can't get that small.
+        if let Ok(magick) = magick() {
+            let photos: Vec<PathBuf> = (1..=2)
+                .map(|n| {
+                    let photo = work.path().join(format!("photo {n}.jpg"));
+                    let mut make = Command::new(&magick);
+                    make.args(["-size", "1200x1600", "plasma:", "-quality", "95"]).arg(&photo);
+                    assert!(make.status().unwrap().success());
+                    photo
+                })
+                .collect();
+            let album = combine(&photos, "tool:onepdf", None, work.path()).unwrap();
+            let limit = fs::metadata(&album).unwrap().len() / 3;
+            let control = Control::with_edit(Quality::default(), Some(Edit::Size(limit)));
+            let small = under(&control, || convert(&album, "tool:target", None, work.path())).unwrap();
+            assert!(fs::metadata(&small).unwrap().len() <= limit);
+            assert_eq!(pages(&small), 2);
+            let control = Control::with_edit(Quality::default(), Some(Edit::Size(1_000)));
+            let err = under(&control, || convert(&album, "tool:target", None, work.path())).unwrap_err();
+            assert!(err.contains("can't be made 1 KB or smaller"), "{err}");
+        }
 
         let merged = combine(&[three.clone(), two.clone()], "tool:merge", None, work.path()).unwrap();
         assert_eq!(merged, work.path().join("report (merged).pdf"));
