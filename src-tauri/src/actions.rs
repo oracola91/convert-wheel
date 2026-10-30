@@ -1,8 +1,9 @@
 //! The Actions wheel (Control+Shift while dragging): what can be done with the dragged
 //! files themselves. None of them changes a file: Copy Path puts the paths on the
-//! clipboard, Show in Folder opens the file manager on them, Terminal opens one in
-//! their folder, and AirDrop (macOS) offers to send them. Making and unpacking
-//! archives take a while, so they go through the conversion queue (archive.rs).
+//! clipboard, Show in Folder opens the file manager on them, Copy To and Move To put
+//! them in a folder of the user's choosing (transfer.rs), Terminal opens one in their
+//! folder, and AirDrop (macOS) offers to send them. Making and unpacking archives take
+//! a while, so they go through the conversion queue (archive.rs).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -27,6 +28,8 @@ pub fn run(app: &AppHandle, action: &str, paths: Vec<String>) {
     match action {
         "act:path" => copy_paths(app, &files),
         "act:show" => reveal::show(app, files),
+        "act:copyto" => crate::transfer::start(app, false, files),
+        "act:moveto" => crate::transfer::start(app, true, files),
         "act:terminal" => {
             let app = app.clone();
             thread::spawn(move || {
