@@ -102,6 +102,8 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
             // Compress to a Size names the size: "photo (under 2 MB).jpg".
             let suffix = match (t, control().and_then(|c| c.edit)) {
                 ("tool:target", Some(Edit::Size(bytes))) => format!("under {}", size_text(bytes)),
+                // Speed names the speed: "clip (2x speed).mov".
+                ("tool:speed", Some(Edit::Speed(percent))) => format!("{}x speed", speed_text(percent)),
                 _ => tool_suffix(t).to_string(),
             };
             (format!("{base} ({suffix})"), tool_out_ext(t, &ext))
@@ -332,6 +334,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:qr" => "QR code",
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
+        "tool:speed" => "new speed",
         "tool:join" => "joined",
         "tool:target" => "compressed",
         _ => "changed",
@@ -356,6 +359,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:qr" => "read for QR codes",
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
+        "tool:speed" => "sped up or slowed down",
         "tool:join" => "joined",
         "tool:target" => "compressed to a size",
         _ => "changed",
@@ -426,6 +430,30 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
                 args.extend(video_encode(own).ok_or_else(|| format!("{} files can't be trimmed", own.to_uppercase()))?);
             } else {
                 args.extend(["-map", "0:a:0"]);
+                args.extend(audio_args(own));
+            }
+            ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
+        }
+        // Faster or slower, at the speed chosen in its window, the sound at its own
+        // pitch; encoded again in the file's own format, at the menu's quality.
+        "tool:speed" => {
+            let Some(Edit::Speed(percent)) = control().and_then(|c| c.edit) else {
+                return Err("Speed opens its window from the wheel".into());
+            };
+            let tempo = atempo(percent);
+            let mut args = vec!["-map_metadata", "0"];
+            let frames;
+            if video {
+                let codec = video_codec(own).ok_or_else(|| format!("{} files can't change speed", own.to_uppercase()))?;
+                let pts = format!("setpts=PTS*100/{percent}");
+                frames = match video_fit(own) {
+                    Some(fit) => format!("{pts},{fit}"),
+                    None => pts,
+                };
+                args.extend(["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", &frames, "-af", &tempo]);
+                args.extend(codec);
+            } else {
+                args.extend(["-map", "0:a:0", "-af", &tempo]);
                 args.extend(audio_args(own));
             }
             ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
@@ -659,13 +687,49 @@ fn copy_streams(src: &Path, extra: &[&str], out: &Path) -> bool {
 /// height; phone and screen recordings often aren't, so round down by a pixel there.
 fn video_encode(target: &str) -> Option<Vec<&'static str>> {
     let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND];
-    match target {
-        "mp4" | "mov" | "m4v" | "mkv" => args.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]),
-        "avi" | "wmv" => args.extend(["-vf", FIT_HD]),
-        _ => {}
+    if let Some(fit) = video_fit(target) {
+        args.extend(["-vf", fit]);
     }
     args.extend(video_codec(target)?);
     Some(args)
+}
+
+/// How the picture is fitted for `target`'s encoder: H.264 wants even sides, and the
+/// older AVI and WMV encoders no more than HD.
+fn video_fit(target: &str) -> Option<&'static str> {
+    match target {
+        "mp4" | "mov" | "m4v" | "mkv" => Some("scale=trunc(iw/2)*2:trunc(ih/2)*2"),
+        "avi" | "wmv" => Some(FIT_HD),
+        _ => None,
+    }
+}
+
+/// ffmpeg's tempo filter for a speed in percent, in steps of 0.5 to 2, which every
+/// ffmpeg takes: 4x is twice 2x.
+fn atempo(percent: u16) -> String {
+    let mut left = f64::from(percent) / 100.0;
+    let mut steps = Vec::new();
+    while left > 2.0 {
+        steps.push("atempo=2".to_string());
+        left /= 2.0;
+    }
+    while left < 0.5 {
+        steps.push("atempo=0.5".to_string());
+        left /= 0.5;
+    }
+    steps.push(format!("atempo={left}"));
+    steps.join(",")
+}
+
+/// How long a sound or video plays, in milliseconds, for the Speed window.
+pub fn length_ms(src: &Path) -> Result<u64, String> {
+    tool("ffprobe")?;
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let length = media_length(src, &work.path().join("probe")).ok_or("can't tell how long it plays")?;
+    Ok(u64::try_from(length.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// The encoders of `video_encode`, without the streams and the picture's fit: for
@@ -1634,6 +1698,16 @@ pub enum Edit {
     Trim(Trim),
     /// Compress to a Size: at most this many bytes.
     Size(u64),
+    /// Speed: the new speed in percent of the old one, one of SPEEDS.
+    Speed(u16),
+}
+
+/// The speeds the Speed window offers, in percent: 200 plays twice as fast.
+pub const SPEEDS: &[u16] = &[25, 50, 75, 125, 150, 200, 400];
+
+/// A speed as people say it: "0.5", "2".
+pub fn speed_text(percent: u16) -> String {
+    (f64::from(percent) / 100.0).to_string()
 }
 
 /// "2 MB", "1.5 MB", "500 KB", the way Finder counts (1000 bytes to a kilobyte).
@@ -2533,6 +2607,16 @@ mod tests {
     }
 
     #[test]
+    fn speeds_become_tempo_steps_every_ffmpeg_takes() {
+        assert_eq!(atempo(200), "atempo=2");
+        assert_eq!(atempo(400), "atempo=2,atempo=2");
+        assert_eq!(atempo(25), "atempo=0.5,atempo=0.5");
+        assert_eq!(atempo(75), "atempo=0.75");
+        let said: Vec<String> = SPEEDS.iter().map(|&p| speed_text(p)).collect();
+        assert_eq!(said, ["0.25", "0.5", "0.75", "1.25", "1.5", "2", "4"]);
+    }
+
+    #[test]
     fn a_collage_is_as_square_as_it_can_be() {
         let columns: Vec<usize> = [1, 2, 3, 4, 5, 9, 10, MAX_COLLAGE].into_iter().map(collage_columns).collect();
         assert_eq!(columns, [1, 2, 2, 2, 3, 3, 4, 6]);
@@ -3241,6 +3325,15 @@ mod tests {
         let length = media_length(&cut, &work.path().join("probe")).unwrap().as_secs_f64();
         assert!((0.9..1.1).contains(&length), "{length}");
         assert_eq!(convert(&clip, "tool:trim", None, work.path()).unwrap_err(), "Trim opens its window from the wheel");
+
+        // Speed: twice as fast plays half as long, and the name says how fast.
+        assert!((1900..=2100).contains(&length_ms(&clip).unwrap()));
+        let fast = Control::with_edit(Quality::default(), Some(Edit::Speed(200)));
+        let quick = under(&fast, || convert(&clip, "tool:speed", None, work.path())).unwrap();
+        assert_eq!(quick, work.path().join("clip (2x speed).mp4"));
+        let length = media_length(&quick, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((0.9..1.15).contains(&length), "{length}");
+        assert_eq!(convert(&clip, "tool:speed", None, work.path()).unwrap_err(), "Speed opens its window from the wheel");
 
         // Join: a second, smaller video without sound goes after the first, fitted into
         // its size, with silence; the result is one 4-second MP4 at 320x240 with sound.

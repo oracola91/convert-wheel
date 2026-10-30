@@ -1,6 +1,7 @@
 //! The editing window some tools open first: Crop (the picture with a box to drag,
 //! turned a quarter at a time), Trim (a sound's or video's loudness and frames, with a
-//! start and an end to drag) and Compress to a Size (a size to type or pick). The page only sends numbers back; which file they
+//! start and an end to drag), Speed (a speed to pick) and Compress to a Size (a size to
+//! type or pick). The page only sends numbers back; which file they
 //! apply to stays here, so the page can never name one.
 
 use std::path::{Path, PathBuf};
@@ -49,6 +50,8 @@ enum View {
     /// the least it can be compressed to, and for a picture the sizes under which it
     /// will probably get smaller, and small and blurry, to warn about.
     Size { bytes: u64, what: &'static str, least: Option<u64>, smaller_below: Option<u64>, blurry_below: Option<u64> },
+    /// How long it plays, what it is ("video", "sound"), and the speeds offered.
+    Speed { length_ms: u64, what: &'static str, speeds: &'static [u16] },
 }
 
 impl View {
@@ -57,6 +60,7 @@ impl View {
             View::Crop { .. } => "editor.html",
             View::Trim { .. } => "trim.html",
             View::Size { .. } => "size.html",
+            View::Speed { .. } => "speed.html",
         }
     }
 
@@ -64,6 +68,7 @@ impl View {
     fn window(&self) -> ((f64, f64), (f64, f64)) {
         match self {
             View::Size { .. } => ((480.0, 370.0), (420.0, 330.0)),
+            View::Speed { .. } => ((480.0, 300.0), (420.0, 280.0)),
             _ => ((780.0, 620.0), (560.0, 460.0)),
         }
     }
@@ -73,6 +78,7 @@ impl View {
             View::Crop { .. } => format!("Crop: {name}"),
             View::Trim { .. } => format!("Trim: {name}"),
             View::Size { .. } => format!("Compress to a size: {name}"),
+            View::Speed { .. } => format!("Speed: {name}"),
         }
     }
 }
@@ -85,13 +91,15 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Trim and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Trim, Speed and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
     thread::spawn(move || {
         let view = if tool == "tool:target" {
             size_view(&path)
+        } else if tool == "tool:speed" {
+            speed_view(&path)
         } else if tool == "tool:crop" {
             convert::preview(&path)
                 .map(|(width, height, jpeg)| View::Crop { width, height, preview: data_url("image/jpeg", &jpeg) })
@@ -173,6 +181,13 @@ fn size_view(path: &Path) -> Result<View, String> {
     })
 }
 
+/// What the Speed window shows: how long the file plays now, and what it is.
+fn speed_view(path: &Path) -> Result<View, String> {
+    let ext = crate::formats::extension(path).unwrap_or_default();
+    let what = if crate::formats::kind_of(&ext) == Some(crate::formats::Kind::Video) { "video" } else { "sound" };
+    Ok(View::Speed { length_ms: convert::length_ms(path)?, what, speeds: convert::SPEEDS })
+}
+
 fn close_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.close();
@@ -229,6 +244,16 @@ pub fn editor_size(app: AppHandle, editing: State<Editing>, bytes: u64) -> Resul
         View::Size { bytes: own, .. } if bytes >= 1_000 && bytes < *own => Ok(Edit::Size(bytes)),
         View::Size { .. } => Err("pick a size under the file's own, of at least 1 KB".into()),
         _ => Err("this window doesn't compress".into()),
+    })
+}
+
+/// Speed: one of the speeds the window offers.
+#[tauri::command]
+pub fn editor_speed(app: AppHandle, editing: State<Editing>, percent: u16) -> Result<(), String> {
+    finish(&app, &editing, "tool:speed", |view| match view {
+        View::Speed { speeds, .. } if speeds.contains(&percent) => Ok(Edit::Speed(percent)),
+        View::Speed { .. } => Err("pick one of the speeds offered".into()),
+        _ => Err("this window doesn't change speed".into()),
     })
 }
 
