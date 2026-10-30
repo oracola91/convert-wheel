@@ -3733,11 +3733,28 @@ mod tests {
             assert_eq!(fact(&video, "Title").as_deref(), Some("Holiday"));
             assert_eq!(fact(&video, "Location").as_deref(), Some("48.85000, 2.29000"));
         }
+        if let Ok(magick) = magick() {
+            let png = work.path().join("plain.png");
+            let mut make = Command::new(&magick);
+            make.args(["-size", "30x20", "xc:white"]).arg(&png);
+            assert!(make.status().unwrap().success());
+            let picture = info::read(&png).unwrap();
+            assert_eq!(fact(&picture, "Size").as_deref(), Some("30 × 20 pixels"));
+            assert_eq!(fact(&picture, "Location").as_deref(), Some("none in the file"));
+            assert!(picture.fields.is_empty());
+            assert!(convert(&png, "tool:info", None, work.path()).is_err());
+        }
         if tool("mutool").is_ok() {
             let pdf = work.path().join("report.pdf");
             fs::write(&pdf, tiny_pdf(&["One", "Two"])).unwrap();
             let before = info::read(&pdf).unwrap();
             assert_eq!(fact(&before, "Pages").as_deref(), Some("2"));
+            // Ubuntu 22.04's MuPDF 1.19 can't change a PDF's details; Homebrew's can.
+            assert!(!before.fields.is_empty() || !cfg!(target_os = "macos"), "Homebrew's MuPDF should change PDF tags");
+            if before.fields.is_empty() {
+                eprintln!("this MuPDF only reads a PDF's details: changing them not tested");
+                return;
+            }
             assert_eq!(field(&before, "Title").as_deref(), Some(""));
             let changes = vec![("Title".to_string(), "Café — тест".to_string()), ("Author".to_string(), "Me".to_string())];
             let control = Control::with_edit(Quality::default(), Some(Edit::Info(changes)));
@@ -3750,17 +3767,6 @@ mod tests {
         } else {
             let required = std::env::var_os("REQUIRE_MUTOOL").is_some_and(|v| !v.is_empty());
             assert!(!required, "mutool should be installed here");
-        }
-        if let Ok(magick) = magick() {
-            let png = work.path().join("plain.png");
-            let mut make = Command::new(&magick);
-            make.args(["-size", "30x20", "xc:white"]).arg(&png);
-            assert!(make.status().unwrap().success());
-            let picture = info::read(&png).unwrap();
-            assert_eq!(fact(&picture, "Size").as_deref(), Some("30 × 20 pixels"));
-            assert_eq!(fact(&picture, "Location").as_deref(), Some("none in the file"));
-            assert!(picture.fields.is_empty());
-            assert!(convert(&png, "tool:info", None, work.path()).is_err());
         }
     }
 
