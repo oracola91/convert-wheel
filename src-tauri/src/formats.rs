@@ -106,6 +106,7 @@ const TOOLS: &[(&str, &[&str])] = &[
         ],
     ),
     ("tool:onepdf", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
+    ("tool:collage", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:merge", &["pdf"]),
     ("tool:split", &["pdf"]),
     ("tool:smaller", &["pdf"]),
@@ -130,7 +131,7 @@ const TOOLS: &[(&str, &[&str])] = &[
 
 /// A tool that turns the whole drop into one file, instead of working on each file.
 pub fn combines(id: &str) -> bool {
-    matches!(id, "tool:merge" | "tool:onepdf" | "tool:join" | "act:zip" | "act:tgz" | "act:tar")
+    matches!(id, "tool:merge" | "tool:onepdf" | "tool:collage" | "tool:join" | "act:zip" | "act:tgz" | "act:tar")
 }
 
 /// A Tools wheel id ("tool:half") rather than a format.
@@ -322,15 +323,18 @@ mod tests {
     fn tools_are_offered_when_every_file_takes_them() {
         let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:crop", "tool:target"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG"])), one);
-        let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:onepdf"];
+        let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:onepdf", "tool:collage"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), two);
         // BMP has no metadata to remove and nothing to compress it with.
         // Crop opens a window for one picture: not offered for two.
-        assert_eq!(tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])), ["tool:half", "tool:rotate", "tool:qr", "tool:onepdf"]);
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])),
+            ["tool:half", "tool:rotate", "tool:qr", "tool:onepdf", "tool:collage"]
+        );
         assert_eq!(tools_for(&v(&["/tmp/a.bmp"])), ["tool:half", "tool:rotate", "tool:qr", "tool:crop"]);
         // An animated GIF's first frame can still hold a QR code.
         assert_eq!(tools_for(&v(&["/tmp/a.gif"])), ["tool:qr"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:qr", "tool:onepdf"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:qr", "tool:onepdf", "tool:collage"]);
         // Trim opens a window for one file.
         assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:trim", "tool:still", "tool:target"]);
         assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:trim", "tool:still"]);
@@ -374,6 +378,16 @@ mod tests {
     fn no_kind_offers_more_than_the_wheel_draws() {
         for (_, _, outs) in KINDS {
             assert!(outs.len() <= MAX_SEGMENTS);
+        }
+    }
+
+    #[test]
+    fn the_page_names_and_draws_every_tool_and_action() {
+        let words = include_str!("../../src/wheel.js");
+        let icons = include_str!("../../src/icons.js");
+        for id in TOOLS.iter().map(|(id, _)| *id).chain(ACTIONS.iter().copied()) {
+            assert!(words.contains(&format!("'{id}': [")), "wheel.js has no words for {id}");
+            assert!(icons.contains(&format!("\"{id}\": ")), "icons.js has no icon for {id}");
         }
     }
 }
