@@ -50,6 +50,7 @@ const TOOLS = {
   'tool:merge': ['Merge', 'Merge into one'],
   'tool:split': ['Split', 'One file per page'],
   'tool:order': ['Reorder', 'Change the page order'],
+  'tool:info': ['Info', 'See and edit details'],
   'tool:smaller': ['Smaller', 'Make smaller'],
   'tool:still': ['First frame', 'First frame as JPEG'],
   'tool:loudness': ['Loudness', 'Even out loudness'],

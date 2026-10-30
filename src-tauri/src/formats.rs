@@ -154,6 +154,13 @@ const TOOLS: &[(&str, &[&str])] = &[
     ),
     ("tool:loudness", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
     ("tool:mono", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
+    (
+        "tool:info",
+        &[
+            "jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "mp4", "mov", "m4v", "mkv", "webm", "avi",
+            "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus", "wma", "pdf",
+        ],
+    ),
 ];
 
 /// A tool that turns the whole drop into one file, instead of working on each file.
@@ -193,7 +200,7 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 
 /// A tool that first opens the editing window (one file at a time) instead of running.
 pub fn opens_editor(id: &str) -> bool {
-    matches!(id, "tool:crop" | "tool:adjust" | "tool:markup" | "tool:trim" | "tool:bleep" | "tool:speed" | "tool:parts" | "tool:order" | "tool:target")
+    matches!(id, "tool:crop" | "tool:adjust" | "tool:markup" | "tool:trim" | "tool:bleep" | "tool:speed" | "tool:parts" | "tool:order" | "tool:info" | "tool:target")
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
@@ -350,7 +357,7 @@ mod tests {
 
     #[test]
     fn tools_are_offered_when_every_file_takes_them() {
-        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:adjust", "tool:markup", "tool:crop", "tool:target"];
+        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:adjust", "tool:markup", "tool:crop", "tool:target", "tool:info"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG"])), one);
         let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:onepdf", "tool:collage"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), two);
@@ -367,21 +374,21 @@ mod tests {
         // Trim opens a window for one file.
         assert_eq!(
             tools_for(&v(&["/tmp/a.MOV"])),
-            ["tool:compress", "tool:clean", "tool:crop", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:target"]
+            ["tool:compress", "tool:clean", "tool:crop", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:target", "tool:info"]
         );
         assert_eq!(
             tools_for(&v(&["/tmp/a.avi"])),
-            ["tool:clean", "tool:crop", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still"]
+            ["tool:clean", "tool:crop", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:info"]
         );
         assert_eq!(
             tools_for(&v(&["/tmp/a.mp3"])),
-            ["tool:compress", "tool:clean", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:target", "tool:loudness", "tool:mono"]
+            ["tool:compress", "tool:clean", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:target", "tool:loudness", "tool:mono", "tool:info"]
         );
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:compress", "tool:clean", "tool:join", "tool:loudness", "tool:mono"]);
         // WAV and AIFF are uncompressed by design: nothing to compress them with.
         assert_eq!(
             tools_for(&v(&["/tmp/a.wav"])),
-            ["tool:clean", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:loudness", "tool:mono"]
+            ["tool:clean", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:loudness", "tool:mono", "tool:info"]
         );
         assert_eq!(tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])), ["tool:compress", "tool:clean", "tool:still", "tool:join"]);
         // Sound and video together: each is compressed or cleaned in its own way, but
@@ -389,7 +396,7 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
-        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller", "tool:info"]);
         assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller"]);
         assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
         assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));
