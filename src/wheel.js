@@ -51,6 +51,8 @@ const TOOLS = {
   'tool:qr': ['QR code', 'Read the QR code'],
   'act:path': ['Copy path', 'Copy path'],
   'act:show': ['Show', 'Show in folder'],
+  'act:copyto': ['Copy to', 'Copy to a folder'],
+  'act:moveto': ['Move to', 'Move to a folder'],
   'act:terminal': ['Terminal', 'Open Terminal here'],
   'act:airdrop': ['AirDrop', 'Send with AirDrop'],
   'act:zip': ['ZIP', 'Make a ZIP'],
