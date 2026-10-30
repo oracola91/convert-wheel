@@ -59,6 +59,9 @@ const TOOLS = {
 };
 
 const svg = document.getElementById('wheel');
+// WebKitGTK (Linux) draws fewer frames than macOS or Windows; wheel.css keeps the
+// highlight from trailing the cursor there.
+document.documentElement.classList.toggle('linux', /\bLinux\b/.test(navigator.userAgent));
 let paths = [];
 // Formats, or tool ids ("tool:half") or action ids ("act:path").
 let formats = [];
