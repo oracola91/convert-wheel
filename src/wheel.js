@@ -38,6 +38,7 @@ const TOOLS = {
   'tool:rotate': ['Rotate', 'Rotate right'],
   'tool:crop': ['Crop', 'Crop and turn'],
   'tool:trim': ['Trim', 'Trim the ends'],
+  'tool:speed': ['Speed', 'Faster or slower'],
   'tool:join': ['Join', 'Join into one'],
   'tool:target': ['To a size', 'Compress to a size'],
   'tool:onepdf': ['One PDF', 'Into one PDF'],
