@@ -128,6 +128,7 @@ impl Words {
                 "Stopped splitting",
             ),
             "tool:smaller" => tool("Shrinking {}", "Made smaller", "Made {} files smaller", "shrink", "Stopped shrinking"),
+            "tool:order" => tool("Reordering {}", "Reordered the pages", "Reordered {} files", "reorder", "Stopped reordering"),
             "tool:still" => tool(
                 "Taking the first frame of {}",
                 "Saved the first frame",
@@ -682,7 +683,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_order, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {

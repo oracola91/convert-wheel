@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reorder</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="order.js" defer></script>
+</head>
+<body>
+  <main>
+    <div id="stage">
+      <ol id="pages" role="listbox" aria-label="Pages, in their new order"></ol>
+      <p id="message" hidden></p>
+    </div>
+    <footer>
+      <div class="group">
+        <button type="button" id="earlier" title="Move earlier (Shift+Left)" aria-label="Move the page earlier">←</button>
+        <button type="button" id="later" title="Move later (Shift+Right)" aria-label="Move the page later">→</button>
+      </div>
+      <button type="button" id="reverse">Reverse</button>
+      <button type="button" id="reset">Reset</button>
+      <span id="hint">Drag the pages into their new order</span>
+      <div class="end">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="button" id="apply" class="primary">Reorder</button>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>

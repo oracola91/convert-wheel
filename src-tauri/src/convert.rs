@@ -331,6 +331,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:onepdf" => "one PDF",
         "tool:collage" => "collage",
         "tool:smaller" => "smaller",
+        "tool:order" => "reordered",
         "tool:still" => "first frame",
         "tool:loudness" => "even loudness",
         "tool:mono" => "mono",
@@ -360,6 +361,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:collage" => "put into a collage",
         "tool:split" => "split",
         "tool:smaller" => "made smaller",
+        "tool:order" => "reordered",
         "tool:still" => "turned into a picture",
         "tool:loudness" => "evened out",
         "tool:mono" => "mixed down to mono",
@@ -1119,6 +1121,29 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
 /// Most pages Split makes files of; the folder says so when the PDF had more.
 const MAX_SPLIT: usize = 100;
 
+/// Most pages Reorder's window shows: a picture of each has to go to it.
+const MAX_ORDER: usize = 100;
+
+/// Reorder, from its window: every page of the PDF once, by its number from 1, in an
+/// order that isn't the old one.
+pub fn check_order(order: &[u32], count: usize) -> Result<(), String> {
+    if order.len() != count {
+        return Err(format!("the new order has {} pages and the PDF has {count}: drag it onto Reorder again", order.len()));
+    }
+    let mut seen = vec![false; count];
+    let every_page_once = order.iter().all(|&n| {
+        let i = (n as usize).wrapping_sub(1);
+        i < count && !std::mem::replace(&mut seen[i], true)
+    });
+    if !every_page_once {
+        return Err("the new order must have every page of the PDF once".into());
+    }
+    if order.iter().zip(1..).all(|(&n, i)| n == i) {
+        return Err("nothing is changed yet: move a page first".into());
+    }
+    Ok(())
+}
+
 /// Smaller: pictures above 225 dpi are scaled down to 150 dpi, and photos are saved
 /// again as JPEG at quality 60, each only where that makes it smaller. Fonts and
 /// streams are compressed, unused and duplicate objects go.
@@ -1158,6 +1183,18 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
                 }
             }
             Ok(Output::Pages { files, cut: count > MAX_SPLIT })
+        }
+        "tool:order" => {
+            let Some(Edit::Order(order)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Reorder opens its window from the wheel".into());
+            };
+            // Again here: the PDF may have changed since its window opened.
+            check_order(&order, count)?;
+            // Given pages, clean keeps just those, in that order; the bookmarks follow
+            // their pages, and the title and author stay.
+            let pages = order.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+            mutool.run_args(work.path(), &["clean", "-g"], &[out_name, &pages])?;
+            Ok(Output::File)
         }
         "tool:smaller" => {
             let mut args = vec!["clean"];
@@ -1869,6 +1906,8 @@ pub enum Edit {
     Adjust(Adjust),
     /// Mark Up: what was drawn and blacked out.
     Markup(markup::Markup),
+    /// Reorder: the PDF's page numbers, from 1, in their new order.
+    Order(Vec<u32>),
 }
 
 /// Adjust, from its window: brightness, contrast and saturation in percent, where 100
@@ -2522,6 +2561,27 @@ pub fn preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     };
     let bytes = fs::read(&jpeg).map_err(|e| format!("work file: {e}"))?;
     Ok((width, height, bytes))
+}
+
+/// For Reorder's window: a PNG of every page of a PDF, at most 240 pixels either way.
+/// A PDF of one page, or of more than Reorder shows, is turned away here.
+pub fn page_pictures(src: &Path) -> Result<Vec<Vec<u8>>, String> {
+    let work = tempfile::tempdir().map_err(|e| format!("work folder: {e}"))?;
+    let mutool = Mutool { path: tool("mutool")?, src, deadline: Instant::now() + QUICK };
+    match mutool.page_count(work.path())? {
+        0 => Err("this PDF has no pages".into()),
+        1 => Err("this PDF has only one page".into()),
+        count if count > MAX_ORDER => Err(format!("this PDF has {count} pages: Reorder takes PDFs of up to {MAX_ORDER} pages")),
+        count => {
+            let dir = work.path().join("pages");
+            fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
+            // Inside the pages folder, so the "%d" is the only "%" mutool sees.
+            mutool.run(&dir, &["draw", "-q", "-r", "72", "-w", "240", "-h", "240", "-o", "%d.png"], &format!("1-{count}"))?;
+            (1..=count)
+                .map(|n| fs::read(dir.join(format!("{n}.png"))).map_err(|_| format!("MuPDF didn't draw page {n} of this PDF")))
+                .collect()
+        }
+    }
 }
 
 fn magick() -> Result<PathBuf, String> {
@@ -3414,6 +3474,16 @@ mod tests {
     }
 
     #[test]
+    fn reorder_takes_every_page_once_in_a_new_order() {
+        assert_eq!(check_order(&[2, 1, 3], 3), Ok(()));
+        assert!(check_order(&[1, 2, 3], 3).unwrap_err().contains("nothing is changed"));
+        assert!(check_order(&[2, 1], 3).unwrap_err().contains("the PDF has 3"));
+        for wrong in [[2, 2, 1], [0, 1, 2], [4, 1, 2], [u32::MAX, 1, 2]] {
+            assert!(check_order(&wrong, 3).unwrap_err().contains("every page"), "{wrong:?}");
+        }
+    }
+
+    #[test]
     fn pdf_tools_split_merge_and_shrink() {
         if tool("mutool").is_err() {
             let required = std::env::var_os("REQUIRE_MUTOOL").is_some_and(|v| !v.is_empty());
@@ -3439,6 +3509,23 @@ mod tests {
         let one = work.path().join("one.pdf");
         fs::write(&one, tiny_pdf(&["Only"])).unwrap();
         assert_eq!(convert(&one, "tool:split", None, work.path()).unwrap_err(), "this PDF has only one page");
+
+        // Reorder: a picture of each page for its window, then the pages in the order
+        // the window sent.
+        let pictures = page_pictures(&three).unwrap();
+        assert_eq!(pictures.len(), 3);
+        assert!(pictures.iter().all(|png| png.starts_with(b"\x89PNG")));
+        assert_eq!(page_pictures(&one).unwrap_err(), "this PDF has only one page");
+        let control = Control::with_edit(Quality::default(), Some(Edit::Order(vec![3, 1, 2])));
+        let reordered = under(&control, || convert(&three, "tool:order", None, work.path())).unwrap();
+        assert_eq!(reordered, work.path().join("report (reordered).pdf"));
+        let text = convert(&reordered, "txt", None, work.path()).unwrap();
+        assert_eq!(fs::read_to_string(text).unwrap(), "Three\n\nOne\n\nTwo\n");
+        // The PDF changed after its window opened: the order no longer fits it.
+        let control = Control::with_edit(Quality::default(), Some(Edit::Order(vec![2, 1, 3])));
+        let err = under(&control, || convert(&two, "tool:order", None, work.path())).unwrap_err();
+        assert!(err.contains("the PDF has 2"), "{err}");
+        assert_eq!(convert(&three, "tool:order", None, work.path()).unwrap_err(), "Reorder opens its window from the wheel");
 
         let merged = combine(&[three.clone(), two.clone()], "tool:merge", None, work.path()).unwrap();
         assert_eq!(merged, work.path().join("report (merged).pdf"));

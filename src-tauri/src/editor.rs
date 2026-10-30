@@ -3,9 +3,9 @@
 //! colour), Mark Up (drawing and blacking out on the picture), Trim (a sound's or
 //! video's loudness and frames, with a start and an end to drag; Bleep uses it too,
 //! for the part to bleep), Speed (a speed to pick), Split for sound and video (how many
-//! parts, or how long each) and Compress to a Size (a size to type or pick). The page
-//! only sends numbers back (and Mark Up's words); which file they apply to stays here,
-//! so the page can never name one.
+//! parts, or how long each), Compress to a Size (a size to type or pick) and Reorder (a
+//! PDF's pages, to drag into a new order). The page only sends numbers back (and Mark
+//! Up's words); which file they apply to stays here, so the page can never name one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -62,6 +62,9 @@ enum View {
     Speed { length_ms: u64, what: &'static str, speeds: &'static [u16] },
     /// How long it plays and what it is, to split into parts.
     Parts { length_ms: u64, what: &'static str },
+    /// A small PNG of each page of a PDF, in page order, as data: URLs. The new order
+    /// comes back as page numbers from 1.
+    Order { pages: Vec<String> },
 }
 
 impl View {
@@ -74,6 +77,7 @@ impl View {
             View::Size { .. } => "size.html",
             View::Speed { .. } => "speed.html",
             View::Parts { .. } => "parts.html",
+            View::Order { .. } => "order.html",
         }
     }
 
@@ -97,6 +101,7 @@ impl View {
             View::Size { .. } => format!("Compress to a size: {name}"),
             View::Speed { .. } => format!("Speed: {name}"),
             View::Parts { .. } => format!("Split: {name}"),
+            View::Order { .. } => format!("Reorder: {name}"),
         }
     }
 }
@@ -109,7 +114,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Trim, Bleep, Speed, Split and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Trim, Bleep, Speed, Split, Reorder and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -120,6 +125,9 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
             play_length(&path).map(|(length_ms, what)| View::Speed { length_ms, what, speeds: convert::SPEEDS })
         } else if tool == "tool:parts" {
             play_length(&path).map(|(length_ms, what)| View::Parts { length_ms, what })
+        } else if tool == "tool:order" {
+            convert::page_pictures(&path)
+                .map(|pngs| View::Order { pages: pngs.iter().map(|png| data_url("image/png", png)).collect() })
         } else if tool == "tool:markup" {
             convert::preview(&path)
                 .map(|(width, height, jpeg)| View::Markup { width, height, preview: data_url("image/jpeg", &jpeg) })
@@ -321,6 +329,15 @@ pub fn editor_markup(app: AppHandle, editing: State<Editing>, markup: convert::m
     finish(&app, &editing, "tool:markup", |view| match view {
         View::Markup { width, height, .. } => markup.check(*width, *height).map(|()| Edit::Markup(markup)),
         _ => Err("this window doesn't mark up".into()),
+    })
+}
+
+/// Reorder: every page once, in an order that isn't the old one.
+#[tauri::command]
+pub fn editor_order(app: AppHandle, editing: State<Editing>, order: Vec<u32>) -> Result<(), String> {
+    finish(&app, &editing, "tool:order", |view| match view {
+        View::Order { pages } => convert::check_order(&order, pages.len()).map(|()| Edit::Order(order)),
+        _ => Err("this window doesn't reorder".into()),
     })
 }
 
