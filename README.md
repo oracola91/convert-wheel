@@ -55,6 +55,8 @@ The other tools keep the metadata. Every tool saves the picture again: JPEG at i
 
 **One PDF** (two pictures or more dropped together): a PDF with one picture per page, in the order dropped, next to the first: "IMG_1234 (one PDF).pdf". Each page is as long as an A4 page on its long side (a picture under 842 pixels keeps a smaller page); photos go in as JPEG, screenshots and other pictures as PNG. Up to 200 pictures. Needs ImageMagick and MuPDF.
 
+**Collage** (two pictures or more dropped together): one picture with all of them in a grid on white, in the order dropped, each fitted into a square of its own, next to the first: "IMG_1234 (collage).jpg". Two make one row, five make a row of three and a row of two (a short last row sits in the middle). Up to 36 pictures. Needs ImageMagick.
+
 For PDFs (with MuPDF):
 
 - **Merge** (two PDFs or more dropped together): one PDF with all their pages, in the order dropped, next to the first: "report (merged).pdf". Up to 2000 pages in all. A PDF that MuPDF can't read stops the merge with its name, instead of being left out quietly.

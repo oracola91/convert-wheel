@@ -324,6 +324,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:rotate" => "rotated",
         "tool:merge" => "merged",
         "tool:onepdf" => "one PDF",
+        "tool:collage" => "collage",
         "tool:smaller" => "smaller",
         "tool:still" => "first frame",
         "tool:loudness" => "even loudness",
@@ -346,6 +347,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:rotate" => "rotated",
         "tool:merge" => "merged",
         "tool:onepdf" => "put into one PDF",
+        "tool:collage" => "put into a collage",
         "tool:split" => "split",
         "tool:smaller" => "made smaller",
         "tool:still" => "turned into a picture",
@@ -955,6 +957,7 @@ fn combine_words(tool_id: &str) -> Option<(&'static str, &'static str)> {
     match tool_id {
         "tool:merge" => Some(("Merge needs two PDFs or more", "only PDFs can be merged")),
         "tool:onepdf" => Some(("One PDF needs two pictures or more", "only pictures can go into one PDF")),
+        "tool:collage" => Some(("Collage needs two pictures or more", "only pictures can go into a collage")),
         "tool:join" => Some(("Join needs two files or more", "only sound files, or only video files, can be joined")),
         _ => None,
     }
@@ -972,6 +975,9 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
     };
     if target == "tool:join" {
         return join_media(srcs, only, save_in, fallback);
+    }
+    if target == "tool:collage" {
+        return collage(srcs, only, save_in, fallback);
     }
     let pictures = target == "tool:onepdf";
     if pictures && srcs.len() > MAX_PICTURES {
@@ -1028,6 +1034,69 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
         return Err(format!("MuPDF couldn't read one of the {what}"));
     }
     place_combined(&out, first, target, "pdf", save_in, fallback)
+}
+
+/// Most pictures a collage takes: six rows of six.
+const MAX_COLLAGE: usize = 36;
+/// The square each picture of a collage is fitted into, and the white around it.
+const COLLAGE_TILE: &str = "800x800";
+const COLLAGE_GAP: &str = "12";
+
+/// Collage: the dropped pictures in a grid on white, in the order dropped, each fitted
+/// into a square of its own. The result is a JPEG next to the first picture, named
+/// after it: "IMG_1234 (collage).jpg".
+fn collage(srcs: &[PathBuf], only: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
+    if srcs.len() > MAX_COLLAGE {
+        return Err(format!("Collage takes up to {MAX_COLLAGE} pictures"));
+    }
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let magick = magick()?;
+    let mut tiles = Vec::new();
+    for (i, src) in srcs.iter().enumerate() {
+        let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let fail = |e: String| format!("{name}: {}", redact(&e, src, work.path()));
+        let ext = formats::extension(src).unwrap_or_default();
+        if !formats::tool_takes("tool:collage", &ext) {
+            return Err(fail(only.into()));
+        }
+        let meta = fs::metadata(src).map_err(|e| fail(format!("can't read the file: {e}")))?;
+        if !meta.is_file() {
+            return Err(fail("this is not a regular file".into()));
+        }
+        let staged = work.path().join(format!("input-{i}.{ext}"));
+        fs::copy(src, &staged).map_err(|e| fail(format!("can't read the file: {e}")))?;
+        let coder = sniff_image(&read_head(&staged)?).ok_or_else(|| fail("this is not an image format the wheel can read".into()))?;
+        let tile = work.path().join(format!("tile-{i}.png"));
+        let mut cmd = Command::new(&magick);
+        cmd.args(IMAGE_LIMITS);
+        cmd.arg(format!("{coder}:{}[0]", staged.display())).arg("-auto-orient");
+        cmd.args(["-resize", COLLAGE_TILE, "-background", "white", "-alpha", "remove", "-alpha", "off"]);
+        cmd.args(["-gravity", "center", "-extent", COLLAGE_TILE, "-bordercolor", "white", "-border", COLLAGE_GAP]);
+        cmd.arg(format!("png:{}", tile.display()));
+        run(cmd, QUICK).map_err(fail)?;
+        tiles.push(tile);
+    }
+    // One row at a time, side by side, then the rows one under the other; a short
+    // last row sits in the middle.
+    let out = work.path().join("result.jpg");
+    let mut cmd = Command::new(&magick);
+    cmd.args(IMAGE_LIMITS);
+    for row in tiles.chunks(collage_columns(tiles.len())) {
+        cmd.arg("(").args(row).args(["+append", ")"]);
+    }
+    cmd.args(["-background", "white", "-gravity", "center", "-append", "-quality", "90"]);
+    cmd.arg(format!("jpeg:{}", out.display()));
+    run(cmd, QUICK).map_err(|e| redact(&e, &srcs[0], work.path()))?;
+    place_combined(&out, &srcs[0], "tool:collage", "jpg", save_in, fallback)
+}
+
+/// How many pictures go side by side in a collage of `n`: the side of the smallest
+/// square grid that holds them all, so 2 make one row and 5 make rows of 3 and 2.
+fn collage_columns(n: usize) -> usize {
+    (1..=n).find(|columns| columns * columns >= n).unwrap_or(1)
 }
 
 /// Puts the one result of a drop next to its first file, named after it ("report
@@ -2464,6 +2533,12 @@ mod tests {
     }
 
     #[test]
+    fn a_collage_is_as_square_as_it_can_be() {
+        let columns: Vec<usize> = [1, 2, 3, 4, 5, 9, 10, MAX_COLLAGE].into_iter().map(collage_columns).collect();
+        assert_eq!(columns, [1, 2, 2, 2, 3, 3, 4, 6]);
+    }
+
+    #[test]
     fn place_never_overwrites() {
         let work = tempfile::tempdir().unwrap();
         let src = work.path().join("report.docx");
@@ -3032,6 +3107,18 @@ mod tests {
             assert_eq!(pages(&one), 2);
             let err = combine(&[pictures[0].clone(), three.clone()], "tool:onepdf", None, work.path()).unwrap_err();
             assert_eq!(err, "report.pdf: only pictures can go into one PDF");
+
+            // A collage: each picture in an 800 pixel square with 12 around it, side by
+            // side; a third goes in the middle of a second row.
+            let collage = combine(&pictures, "tool:collage", None, work.path()).unwrap();
+            assert_eq!(collage, work.path().join("wide (collage).jpg"));
+            assert_eq!(picture_size(&collage), "1648x824");
+            pictures.push(pictures[0].clone());
+            let three_up = combine(&pictures, "tool:collage", None, work.path()).unwrap();
+            assert_eq!(three_up, work.path().join("wide (collage) 2.jpg"));
+            assert_eq!(picture_size(&three_up), "1648x1648");
+            let err = combine(&[pictures[0].clone(), three.clone()], "tool:collage", None, work.path()).unwrap_err();
+            assert_eq!(err, "report.pdf: only pictures can go into a collage");
         }
 
         // A tiny text-only PDF has nothing to shrink, or very little.

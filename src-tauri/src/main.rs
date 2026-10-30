@@ -111,6 +111,14 @@ impl Words {
                 "make one PDF of",
                 "Stopped making the PDF",
             ),
+            // A collage makes one picture of the whole drop: "{}" is "3 files".
+            "tool:collage" => tool(
+                "Making a collage of {}",
+                "Made a collage",
+                "Made a collage of {} files",
+                "make a collage of",
+                "Stopped making the collage",
+            ),
             "tool:split" => tool(
                 "Splitting {} into pages",
                 "Split into pages",
