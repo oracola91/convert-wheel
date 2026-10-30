@@ -41,6 +41,7 @@ const TOOLS = {
   'tool:join': ['Join', 'Join into one'],
   'tool:target': ['To a size', 'Compress to a size'],
   'tool:onepdf': ['One PDF', 'Into one PDF'],
+  'tool:collage': ['Collage', 'Into one picture'],
   'tool:merge': ['Merge', 'Merge into one'],
   'tool:split': ['Split', 'One file per page'],
   'tool:smaller': ['Smaller', 'Make smaller'],
