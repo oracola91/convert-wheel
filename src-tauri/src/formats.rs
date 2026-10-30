@@ -112,6 +112,13 @@ const TOOLS: &[(&str, &[&str])] = &[
             "opus", "wma",
         ],
     ),
+    (
+        "tool:parts",
+        &[
+            "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg",
+            "opus", "wma",
+        ],
+    ),
     ("tool:onepdf", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:collage", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:merge", &["pdf"]),
@@ -173,7 +180,7 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 
 /// A tool that first opens the editing window (one file at a time) instead of running.
 pub fn opens_editor(id: &str) -> bool {
-    matches!(id, "tool:crop" | "tool:trim" | "tool:speed" | "tool:target")
+    matches!(id, "tool:crop" | "tool:trim" | "tool:speed" | "tool:parts" | "tool:target")
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
@@ -347,16 +354,19 @@ mod tests {
         // Trim opens a window for one file.
         assert_eq!(
             tools_for(&v(&["/tmp/a.MOV"])),
-            ["tool:compress", "tool:clean", "tool:trim", "tool:speed", "tool:still", "tool:target"]
+            ["tool:compress", "tool:clean", "tool:trim", "tool:speed", "tool:parts", "tool:still", "tool:target"]
         );
-        assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:trim", "tool:speed", "tool:still"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:trim", "tool:speed", "tool:parts", "tool:still"]);
         assert_eq!(
             tools_for(&v(&["/tmp/a.mp3"])),
-            ["tool:compress", "tool:clean", "tool:trim", "tool:speed", "tool:target", "tool:loudness", "tool:mono"]
+            ["tool:compress", "tool:clean", "tool:trim", "tool:speed", "tool:parts", "tool:target", "tool:loudness", "tool:mono"]
         );
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:compress", "tool:clean", "tool:join", "tool:loudness", "tool:mono"]);
         // WAV and AIFF are uncompressed by design: nothing to compress them with.
-        assert_eq!(tools_for(&v(&["/tmp/a.wav"])), ["tool:clean", "tool:trim", "tool:speed", "tool:loudness", "tool:mono"]);
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.wav"])),
+            ["tool:clean", "tool:trim", "tool:speed", "tool:parts", "tool:loudness", "tool:mono"]
+        );
         assert_eq!(tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])), ["tool:compress", "tool:clean", "tool:still", "tool:join"]);
         // Sound and video together: each is compressed or cleaned in its own way, but
         // Join takes one kind only.
