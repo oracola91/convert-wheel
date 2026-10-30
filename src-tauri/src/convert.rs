@@ -420,6 +420,19 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             ffmpeg(src, &args, out, VIDEO)
         }
         "tool:still" => ffmpeg(src, &["-map", "0:v:0", "-frames:v", "1", "-q:v", "2", "-update", "1"], out, QUICK),
+        // The box chosen in the Crop window, on the picture upright (ffmpeg turns a
+        // phone's video by its tag first) and then turned as chosen there; encoded again
+        // in the file's own format, at the menu's quality.
+        "tool:crop" => {
+            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit) else {
+                return Err("Crop opens its window from the wheel".into());
+            };
+            let codec = video_codec(own).ok_or_else(|| format!("{} files can't be cropped", own.to_uppercase()))?;
+            let frames = video_crop_filter(&crop, video_fit(own));
+            let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", &frames, "-map_metadata", "0"];
+            args.extend(codec);
+            ffmpeg(src, &args, out, VIDEO)
+        }
         // The part chosen in the editor, cut exactly where asked: read from the start and
         // encoded again (in the file's own format, at the menu's quality), rather than
         // copied, which could only cut at the nearest keyframe.
@@ -749,6 +762,34 @@ fn video_fit(target: &str) -> Option<&'static str> {
         "avi" | "wmv" => Some(FIT_HD),
         _ => None,
     }
+}
+
+/// ffmpeg's filters for a Crop on a video: the quarter turns (clockwise, as ImageMagick
+/// turns a picture), the box, then the fit `target`'s encoder needs.
+fn video_crop_filter(crop: &Crop, fit: Option<&str>) -> String {
+    let turn = match crop.turns {
+        1 => Some("transpose=clock"),
+        2 => Some("hflip,vflip"),
+        3 => Some("transpose=cclock"),
+        _ => None,
+    };
+    let mut steps: Vec<String> = turn.map(String::from).into_iter().collect();
+    steps.push(format!("crop={}:{}:{}:{}", crop.width, crop.height, crop.x, crop.y));
+    steps.extend(fit.map(String::from));
+    steps.join(",")
+}
+
+/// The Crop window's picture of a video: a typical frame (ffmpeg's thumbnail filter
+/// picks one of the first hundred, so rarely a black first one), upright and at full
+/// size, then made into the preview the way a picture's is.
+pub fn video_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let frame = work.path().join("frame.jpg");
+    ffmpeg(src, &["-map", "0:v:0", "-vf", "thumbnail", "-frames:v", "1", "-q:v", "2", "-update", "1"], &frame, QUICK)?;
+    preview(&frame)
 }
 
 /// ffmpeg's tempo filter for a speed in percent, in steps of 0.5 to 2, which every
@@ -3273,6 +3314,16 @@ mod tests {
         }
     }
 
+    /// A video's picture size, "320x240", from ffprobe.
+    fn video_size(path: &Path) -> String {
+        let out = Command::new(tool("ffprobe").unwrap())
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x"])
+            .arg(path)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     /// What ffprobe says about a file's first audio stream and its tags.
     fn probe(path: &Path) -> String {
         let out = Command::new(tool("ffprobe").unwrap())
@@ -3395,6 +3446,21 @@ mod tests {
         let length = media_length(&quick, &work.path().join("probe")).unwrap().as_secs_f64();
         assert!((0.9..1.15).contains(&length), "{length}");
         assert_eq!(convert(&clip, "tool:speed", None, work.path()).unwrap_err(), "Speed opens its window from the wheel");
+
+        // Crop: the window's frame is the video's size, upright; the box comes out at
+        // its own size, turned first when asked.
+        let (width, height, jpeg) = video_preview(&clip).unwrap();
+        assert_eq!((width, height), (320, 240));
+        assert!(jpeg.starts_with(&[0xFF, 0xD8]));
+        let boxed = Control::with_edit(Quality::default(), Some(Edit::Crop(Crop { x: 10, y: 20, width: 100, height: 80, turns: 0 })));
+        let cropped = under(&boxed, || convert(&clip, "tool:crop", None, work.path())).unwrap();
+        assert_eq!(cropped, work.path().join("clip (cropped).mp4"));
+        assert_eq!(video_size(&cropped), "100x80");
+        let turned = Crop { x: 0, y: 0, width: 240, height: 100, turns: 1 };
+        assert!(turned.check(320, 240).is_ok());
+        let turned = Control::with_edit(Quality::default(), Some(Edit::Crop(turned)));
+        let tall = under(&turned, || convert(&clip, "tool:crop", None, work.path())).unwrap();
+        assert_eq!(video_size(&tall), "240x100");
 
         // Split: parts of a second each, in a folder named after the clip.
         let halves = Control::with_edit(Quality::default(), Some(Edit::Parts(1000)));

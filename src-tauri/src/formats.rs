@@ -97,7 +97,10 @@ const TOOLS: &[(&str, &[&str])] = &[
     ),
     ("tool:rotate", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     ("tool:qr", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
-    ("tool:crop", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    (
+        "tool:crop",
+        &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"],
+    ),
     (
         "tool:trim",
         &[
@@ -354,9 +357,12 @@ mod tests {
         // Trim opens a window for one file.
         assert_eq!(
             tools_for(&v(&["/tmp/a.MOV"])),
-            ["tool:compress", "tool:clean", "tool:trim", "tool:speed", "tool:parts", "tool:still", "tool:target"]
+            ["tool:compress", "tool:clean", "tool:crop", "tool:trim", "tool:speed", "tool:parts", "tool:still", "tool:target"]
         );
-        assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:trim", "tool:speed", "tool:parts", "tool:still"]);
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.avi"])),
+            ["tool:clean", "tool:crop", "tool:trim", "tool:speed", "tool:parts", "tool:still"]
+        );
         assert_eq!(
             tools_for(&v(&["/tmp/a.mp3"])),
             ["tool:compress", "tool:clean", "tool:trim", "tool:speed", "tool:parts", "tool:target", "tool:loudness", "tool:mono"]
