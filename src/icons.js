@@ -9,6 +9,7 @@ const ICONS = {
   "tool:rotate": "<path d=\"M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8\" /><path d=\"M21 3v5h-5\" />", // rotate-cw
   "tool:crop": "<path d=\"M6 2v14a2 2 0 0 0 2 2h14\" /><path d=\"M18 22V8a2 2 0 0 0-2-2H2\" />", // crop
   "tool:trim": "<circle cx=\"6\" cy=\"6\" r=\"3\" /><path d=\"M8.12 8.12 12 12\" /><path d=\"M20 4 8.12 15.88\" /><circle cx=\"6\" cy=\"18\" r=\"3\" /><path d=\"M14.8 14.8 20 20\" />", // scissors
+  "tool:bleep": "<path d=\"M11 4.702a.7.7 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.7.7 0 0 0 11 19.298z\" /><path d=\"m16.5 14.5 5-5\" /><path d=\"m16.5 9.5 5 5\" />", // volume-x
   "tool:speed": "<path d=\"m12 14 4-4\" /><path d=\"M3.34 19a10 10 0 1 1 17.32 0\" />", // gauge
   "tool:parts": "<path d=\"M12 2v20\" /><path d=\"M16 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3\" /><path d=\"M8 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3\" />", // square-split-horizontal
   "tool:join": "<path d=\"M14 3a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1\" /><path d=\"M19 3a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1\" /><path d=\"m7 15 3 3\" /><path d=\"m7 21 3-3H5a2 2 0 0 1-2-2v-2\" /><rect x=\"14\" y=\"14\" width=\"7\" height=\"7\" rx=\"1\" /><rect x=\"3\" y=\"3\" width=\"7\" height=\"7\" rx=\"1\" />", // combine
