@@ -108,7 +108,10 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
         } else if tool == "tool:parts" {
             play_length(&path).map(|(length_ms, what)| View::Parts { length_ms, what })
         } else if tool == "tool:crop" {
-            convert::preview(&path)
+            // A video is cropped on one of its frames.
+            let ext = crate::formats::extension(&path).unwrap_or_default();
+            let video = crate::formats::kind_of(&ext) == Some(crate::formats::Kind::Video);
+            if video { convert::video_preview(&path) } else { convert::preview(&path) }
                 .map(|(width, height, jpeg)| View::Crop { width, height, preview: data_url("image/jpeg", &jpeg) })
         } else {
             convert::media_preview(&path).map(|m| View::Trim {
