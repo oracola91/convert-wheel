@@ -159,6 +159,13 @@ impl Words {
                 "change the speed of",
                 "Stopped changing the speed",
             ),
+            "tool:parts" => tool(
+                "Splitting {} into parts",
+                "Split into parts",
+                "Split {} files into parts",
+                "split",
+                "Stopped splitting",
+            ),
             "tool:target" => tool(
                 "Compressing {} to a size",
                 "Compressed to a size",
@@ -375,7 +382,7 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
     let words = &running.words;
     // Converting or compressing video is slow; the video tools that copy are quick.
     let encodes = !formats::is_tool(&job.format)
-        || matches!(job.format.as_str(), "tool:compress" | "tool:trim" | "tool:speed" | "tool:join" | "tool:target");
+        || matches!(job.format.as_str(), "tool:compress" | "tool:trim" | "tool:speed" | "tool:parts" | "tool:join" | "tool:target");
     let slow = encodes
         && job.paths.iter().any(|p| {
             formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
@@ -669,7 +676,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {

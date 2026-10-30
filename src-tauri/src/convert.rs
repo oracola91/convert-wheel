@@ -154,6 +154,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         (Some("tool:target"), Kind::Audio | Kind::Video) => {
             file(size_limit().and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
         }
+        (Some("tool:parts"), Kind::Audio | Kind::Video) => media_parts(&input, &ext, work.path()),
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
@@ -184,8 +185,9 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     };
     let save = |dir: &Path| match &output {
         Output::File => place(&out, dir, &stem, &out_ext),
-        // A split PDF: "report (pages)/report 01.pdf". A PDF's pages as pictures:
-        // "report (PNG)/report 01.png".
+        // A split PDF: "report (pages)/report 01.pdf". A split video: "clip (parts)/clip
+        // 01.mp4". A PDF's pages as pictures: "report (PNG)/report 01.png".
+        Output::Pages { files, cut } if tool == Some("tool:parts") => place_pages(files, *cut, dir, base, "parts", &out_ext),
         Output::Pages { files, cut } if tool.is_some() => place_pages(files, *cut, dir, base, "pages", &out_ext),
         Output::Pages { files, cut } => place_pages(files, *cut, dir, base, &target.to_uppercase(), target),
     };
@@ -335,6 +337,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
         "tool:speed" => "new speed",
+        "tool:parts" => "parts",
         "tool:join" => "joined",
         "tool:target" => "compressed",
         _ => "changed",
@@ -360,6 +363,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:crop" => "cropped",
         "tool:trim" => "trimmed",
         "tool:speed" => "sped up or slowed down",
+        "tool:parts" => "split into parts",
         "tool:join" => "joined",
         "tool:target" => "compressed to a size",
         _ => "changed",
@@ -423,16 +427,7 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             let Some(Edit::Trim(trim)) = control().and_then(|c| c.edit) else {
                 return Err("Trim opens its window from the wheel".into());
             };
-            let seconds = |ms: u64| format!("{}.{:03}", ms / 1000, ms % 1000);
-            let (from, to) = (seconds(trim.start_ms), seconds(trim.end_ms));
-            let mut args = vec!["-ss", from.as_str(), "-to", to.as_str(), "-map_metadata", "0"];
-            if video {
-                args.extend(video_encode(own).ok_or_else(|| format!("{} files can't be trimmed", own.to_uppercase()))?);
-            } else {
-                args.extend(["-map", "0:a:0"]);
-                args.extend(audio_args(own));
-            }
-            ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
+            cut(src, ext, trim.start_ms, trim.end_ms, out)
         }
         // Faster or slower, at the speed chosen in its window, the sound at its own
         // pitch; encoded again in the file's own format, at the menu's quality.
@@ -473,6 +468,58 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+/// The part of a sound or video from `start_ms` to `end_ms`, cut exactly where asked:
+/// read from the start and encoded again (in the file's own format, at the menu's
+/// quality), rather than copied, which could only cut at the nearest keyframe.
+fn cut(src: &Path, ext: &str, start_ms: u64, end_ms: u64, out: &Path) -> Result<(), String> {
+    let own = formats::canonical(ext);
+    let video = formats::kind_of(ext) == Some(Kind::Video);
+    let seconds = |ms: u64| format!("{}.{:03}", ms / 1000, ms % 1000);
+    let (from, to) = (seconds(start_ms), seconds(end_ms));
+    let mut args = vec!["-ss", from.as_str(), "-to", to.as_str(), "-map_metadata", "0"];
+    if video {
+        args.extend(video_encode(own).ok_or_else(|| format!("{} files can't be cut", own.to_uppercase()))?);
+    } else {
+        args.extend(["-map", "0:a:0"]);
+        args.extend(audio_args(own));
+    }
+    ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
+}
+
+/// Most parts Split makes of a sound or video.
+const MAX_PARTS: u64 = 50;
+
+/// How many parts of `every_ms` a file `length_ms` long makes: None for fewer than two,
+/// more than MAX_PARTS, or parts under a second. What is left at the end becomes a
+/// part of its own from a second up, and otherwise goes onto the last one.
+pub fn parts_count(length_ms: u64, every_ms: u64) -> Option<u64> {
+    if every_ms < 1000 {
+        return None;
+    }
+    let count = length_ms / every_ms + u64::from(length_ms % every_ms >= 1000);
+    (2..=MAX_PARTS).contains(&count).then_some(count)
+}
+
+/// Split for sound and video: parts of the length chosen in its window, in order, each
+/// cut exactly like Trim. They come back like a split PDF's pages.
+fn media_parts(src: &Path, ext: &str, work: &Path) -> Result<Output, String> {
+    let Some(Edit::Parts(every_ms)) = control().and_then(|c| c.edit) else {
+        return Err("Split opens its window from the wheel".into());
+    };
+    let length = media_length(src, &work.join("probe")).ok_or("can't tell how long it plays")?;
+    let length_ms = u64::try_from(length.as_millis()).unwrap_or(u64::MAX);
+    let count = parts_count(length_ms, every_ms).ok_or("that makes fewer than two parts, or too many")?;
+    let own = formats::canonical(ext);
+    let mut files = Vec::new();
+    for i in 0..count {
+        let end = if i + 1 == count { length_ms } else { (i + 1) * every_ms };
+        let part = work.join(format!("part-{i}.{own}"));
+        cut(src, ext, i * every_ms, end, &part)?;
+        files.push(part);
+    }
+    Ok(Output::Pages { files, cut: false })
 }
 
 /// Compress for sound: its own format at a lower bit rate than even the menu's
@@ -1700,6 +1747,8 @@ pub enum Edit {
     Size(u64),
     /// Speed: the new speed in percent of the old one, one of SPEEDS.
     Speed(u16),
+    /// Split for sound and video: parts this many milliseconds long.
+    Parts(u64),
 }
 
 /// The speeds the Speed window offers, in percent: 200 plays twice as fast.
@@ -2617,6 +2666,18 @@ mod tests {
     }
 
     #[test]
+    fn parts_are_a_second_or_more_and_a_short_end_goes_onto_the_last() {
+        assert_eq!(parts_count(10_000, 3_334), Some(3));
+        // Half a second left over: onto the last part, not a part of its own.
+        assert_eq!(parts_count(10_500, 5_000), Some(2));
+        assert_eq!(parts_count(11_000, 5_000), Some(3));
+        assert_eq!(parts_count(5_000, 5_000), None);
+        assert_eq!(parts_count(10_000, 999), None);
+        assert_eq!(parts_count(50_000, 1_000), Some(MAX_PARTS));
+        assert_eq!(parts_count(60_000, 1_000), None);
+    }
+
+    #[test]
     fn a_collage_is_as_square_as_it_can_be() {
         let columns: Vec<usize> = [1, 2, 3, 4, 5, 9, 10, MAX_COLLAGE].into_iter().map(collage_columns).collect();
         assert_eq!(columns, [1, 2, 2, 2, 3, 3, 4, 6]);
@@ -3334,6 +3395,18 @@ mod tests {
         let length = media_length(&quick, &work.path().join("probe")).unwrap().as_secs_f64();
         assert!((0.9..1.15).contains(&length), "{length}");
         assert_eq!(convert(&clip, "tool:speed", None, work.path()).unwrap_err(), "Speed opens its window from the wheel");
+
+        // Split: parts of a second each, in a folder named after the clip.
+        let halves = Control::with_edit(Quality::default(), Some(Edit::Parts(1000)));
+        let folder = under(&halves, || convert(&clip, "tool:parts", None, work.path())).unwrap();
+        assert_eq!(folder, work.path().join("clip (parts)"));
+        for n in 1..=2 {
+            let part = folder.join(format!("clip {n}.mp4"));
+            let length = media_length(&part, &work.path().join("probe")).unwrap().as_secs_f64();
+            assert!((0.9..1.15).contains(&length), "part {n}: {length}");
+        }
+        assert!(!folder.join("clip 3.mp4").exists());
+        assert_eq!(convert(&clip, "tool:parts", None, work.path()).unwrap_err(), "Split opens its window from the wheel");
 
         // Join: a second, smaller video without sound goes after the first, fitted into
         // its size, with silence; the result is one 4-second MP4 at 320x240 with sound.

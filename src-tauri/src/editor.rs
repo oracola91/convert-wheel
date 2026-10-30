@@ -1,7 +1,7 @@
 //! The editing window some tools open first: Crop (the picture with a box to drag,
 //! turned a quarter at a time), Trim (a sound's or video's loudness and frames, with a
-//! start and an end to drag), Speed (a speed to pick) and Compress to a Size (a size to
-//! type or pick). The page only sends numbers back; which file they
+//! start and an end to drag), Speed (a speed to pick), Split for sound and video (how
+//! many parts, or how long each) and Compress to a Size (a size to type or pick). The page only sends numbers back; which file they
 //! apply to stays here, so the page can never name one.
 
 use std::path::{Path, PathBuf};
@@ -52,6 +52,8 @@ enum View {
     Size { bytes: u64, what: &'static str, least: Option<u64>, smaller_below: Option<u64>, blurry_below: Option<u64> },
     /// How long it plays, what it is ("video", "sound"), and the speeds offered.
     Speed { length_ms: u64, what: &'static str, speeds: &'static [u16] },
+    /// How long it plays and what it is, to split into parts.
+    Parts { length_ms: u64, what: &'static str },
 }
 
 impl View {
@@ -61,6 +63,7 @@ impl View {
             View::Trim { .. } => "trim.html",
             View::Size { .. } => "size.html",
             View::Speed { .. } => "speed.html",
+            View::Parts { .. } => "parts.html",
         }
     }
 
@@ -69,6 +72,7 @@ impl View {
         match self {
             View::Size { .. } => ((480.0, 370.0), (420.0, 330.0)),
             View::Speed { .. } => ((480.0, 300.0), (420.0, 280.0)),
+            View::Parts { .. } => ((480.0, 360.0), (420.0, 330.0)),
             _ => ((780.0, 620.0), (560.0, 460.0)),
         }
     }
@@ -79,6 +83,7 @@ impl View {
             View::Trim { .. } => format!("Trim: {name}"),
             View::Size { .. } => format!("Compress to a size: {name}"),
             View::Speed { .. } => format!("Speed: {name}"),
+            View::Parts { .. } => format!("Split: {name}"),
         }
     }
 }
@@ -91,7 +96,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Trim, Speed and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Trim, Speed, Split and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -99,7 +104,9 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
         let view = if tool == "tool:target" {
             size_view(&path)
         } else if tool == "tool:speed" {
-            speed_view(&path)
+            play_length(&path).map(|(length_ms, what)| View::Speed { length_ms, what, speeds: convert::SPEEDS })
+        } else if tool == "tool:parts" {
+            play_length(&path).map(|(length_ms, what)| View::Parts { length_ms, what })
         } else if tool == "tool:crop" {
             convert::preview(&path)
                 .map(|(width, height, jpeg)| View::Crop { width, height, preview: data_url("image/jpeg", &jpeg) })
@@ -181,11 +188,11 @@ fn size_view(path: &Path) -> Result<View, String> {
     })
 }
 
-/// What the Speed window shows: how long the file plays now, and what it is.
-fn speed_view(path: &Path) -> Result<View, String> {
+/// For Speed and Split: how long the file plays, and whether it is a video or a sound.
+fn play_length(path: &Path) -> Result<(u64, &'static str), String> {
     let ext = crate::formats::extension(path).unwrap_or_default();
     let what = if crate::formats::kind_of(&ext) == Some(crate::formats::Kind::Video) { "video" } else { "sound" };
-    Ok(View::Speed { length_ms: convert::length_ms(path)?, what, speeds: convert::SPEEDS })
+    Ok((convert::length_ms(path)?, what))
 }
 
 fn close_window(app: &AppHandle) {
@@ -254,6 +261,17 @@ pub fn editor_speed(app: AppHandle, editing: State<Editing>, percent: u16) -> Re
         View::Speed { speeds, .. } if speeds.contains(&percent) => Ok(Edit::Speed(percent)),
         View::Speed { .. } => Err("pick one of the speeds offered".into()),
         _ => Err("this window doesn't change speed".into()),
+    })
+}
+
+/// Split for sound and video: parts of this many milliseconds, if that makes from two
+/// to the most parts it takes.
+#[tauri::command]
+pub fn editor_parts(app: AppHandle, editing: State<Editing>, every_ms: u64) -> Result<(), String> {
+    finish(&app, &editing, "tool:parts", |view| match view {
+        View::Parts { length_ms, .. } if convert::parts_count(*length_ms, every_ms).is_some() => Ok(Edit::Parts(every_ms)),
+        View::Parts { .. } => Err("that makes fewer than two parts, or too many".into()),
+        _ => Err("this window doesn't split".into()),
     })
 }
 
