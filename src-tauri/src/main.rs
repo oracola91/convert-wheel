@@ -152,6 +152,7 @@ impl Words {
             ),
             "tool:crop" => tool("Cropping {}", "Cropped", "Cropped {} files", "crop", "Stopped cropping"),
             "tool:adjust" => tool("Adjusting {}", "Adjusted", "Adjusted {} files", "adjust", "Stopped adjusting"),
+            "tool:markup" => tool("Marking up {}", "Marked up", "Marked up {} files", "mark up", "Stopped marking up"),
             "tool:trim" => tool("Trimming {}", "Trimmed", "Trimmed {} files", "trim", "Stopped trimming"),
             "tool:bleep" => tool("Bleeping {}", "Bleeped", "Bleeped {} files", "bleep", "Stopped bleeping"),
             "tool:speed" => tool(
@@ -335,7 +336,7 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
         for job in rx {
             // The quality chosen in the menu when the drop starts holds for all of it.
             let quality = app.state::<settings::Store>().get().quality;
-            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality, job.edit));
+            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality, job.edit.clone()));
             app.state::<NowConverting>().set(Some(Arc::clone(&running)));
             menu::show_progress(&app, &running.line());
             let (finished, done_signal) = mpsc::channel::<()>();
@@ -681,7 +682,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {

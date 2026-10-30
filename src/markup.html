@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mark up</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="markup.js" defer></script>
+</head>
+<body>
+  <main>
+    <div id="stage">
+      <canvas id="photo" role="img" aria-label="The picture, with what is drawn on it"></canvas>
+      <p id="message" hidden></p>
+    </div>
+    <footer>
+      <div class="group" role="group" aria-label="Tool">
+        <button type="button" data-tool="pen" aria-pressed="true">Pen</button>
+        <button type="button" data-tool="arrow" aria-pressed="false">Arrow</button>
+        <button type="button" data-tool="box" aria-pressed="false">Box</button>
+        <button type="button" data-tool="text" aria-pressed="false">Text</button>
+        <button type="button" data-tool="redact" aria-pressed="false">Black out</button>
+      </div>
+      <div id="colours" class="group" role="group" aria-label="Colour"></div>
+      <div class="group" role="group" aria-label="Line">
+        <button type="button" data-thick="false" aria-pressed="true">Thin</button>
+        <button type="button" data-thick="true" aria-pressed="false">Thick</button>
+      </div>
+      <input id="words" maxlength="200" placeholder="Words for Text" aria-label="Words for the Text tool" autocomplete="off">
+      <button type="button" id="undo" disabled>Undo</button>
+      <div class="end">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="button" id="apply" class="primary" disabled>Save</button>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>
