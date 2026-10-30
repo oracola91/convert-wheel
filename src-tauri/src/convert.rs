@@ -3604,12 +3604,18 @@ mod tests {
             let album = combine(&photos, "tool:onepdf", None, work.path()).unwrap();
             let limit = fs::metadata(&album).unwrap().len() / 3;
             let control = Control::with_edit(Quality::default(), Some(Edit::Size(limit)));
-            let small = under(&control, || convert(&album, "tool:target", None, work.path())).unwrap();
-            assert!(fs::metadata(&small).unwrap().len() <= limit);
-            assert_eq!(pages(&small), 2);
-            let control = Control::with_edit(Quality::default(), Some(Edit::Size(1_000)));
-            let err = under(&control, || convert(&album, "tool:target", None, work.path())).unwrap_err();
-            assert!(err.contains("can't be made 1 KB or smaller"), "{err}");
+            match under(&control, || convert(&album, "tool:target", None, work.path())) {
+                // Ubuntu 22.04's MuPDF has no picture options.
+                Err(e) if e.contains("a newer one is needed") => eprintln!("old MuPDF: PDFs to a size not tested"),
+                small => {
+                    let small = small.unwrap();
+                    assert!(fs::metadata(&small).unwrap().len() <= limit);
+                    assert_eq!(pages(&small), 2);
+                    let control = Control::with_edit(Quality::default(), Some(Edit::Size(1_000)));
+                    let err = under(&control, || convert(&album, "tool:target", None, work.path())).unwrap_err();
+                    assert!(err.contains("can't be made 1 KB or smaller"), "{err}");
+                }
+            }
         }
 
         let merged = combine(&[three.clone(), two.clone()], "tool:merge", None, work.path()).unwrap();
