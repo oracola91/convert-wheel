@@ -41,8 +41,9 @@ const PDF: &[(&str, &str)] = &[("Title", "Title"), ("Author", "Author"), ("Subje
 const MAX_VALUE: usize = 1000;
 
 /// Reads a PDF's Info for the window into the JSON file named second. getMetaData
-/// decodes the PDF's own text encodings.
-const PDF_READ: &str = r#"var doc = Document.openDocument(scriptArgs[0]);
+/// decodes the PDF's own text encodings. MuPDF before 1.20 or so opens a document with
+/// `new Document`, a PDF to change with `new PDFDocument`.
+const PDF_READ: &str = r#"var doc = Document.openDocument ? Document.openDocument(scriptArgs[0]) : new Document(scriptArgs[0]);
 var keys = ["Title", "Author", "Subject", "Keywords", "Creator", "Producer", "CreationDate", "ModDate"];
 var out = {};
 for (var i = 0; i < keys.length; i++) out[keys[i]] = doc.getMetaData("info:" + keys[i]) || "";
@@ -54,7 +55,7 @@ b.save(scriptArgs[1]);
 /// Saves the PDF (first) as the file named second with the tags that follow, as name
 /// and value pairs. Older MuPDF has no setMetaData: there the Info dictionary is set
 /// directly.
-pub const PDF_WRITE: &str = r#"var doc = Document.openDocument(scriptArgs[0]);
+pub const PDF_WRITE: &str = r#"var doc = Document.openDocument ? Document.openDocument(scriptArgs[0]) : new PDFDocument(scriptArgs[0]);
 for (var i = 2; i + 1 < scriptArgs.length; i += 2) {
   if (doc.setMetaData) {
     doc.setMetaData("info:" + scriptArgs[i], scriptArgs[i + 1]);
