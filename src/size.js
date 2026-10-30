@@ -18,6 +18,7 @@ const HINTS = {
   picture: 'The highest quality that fits; if even the lowest is too big, the picture gets smaller too.',
   video: 'The bit rate the size allows over the video’s length, in two passes; a low rate also makes the picture smaller.',
   sound: 'The bit rate the size allows over the sound’s length.',
+  PDF: 'Its pictures are saved again, smaller step by step, until it fits; text stays text.',
 };
 
 // { name, bytes, what, least, smaller_below, blurry_below } from the app, once loaded.
