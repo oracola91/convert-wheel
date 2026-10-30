@@ -40,35 +40,24 @@ const PDF: &[(&str, &str)] = &[("Title", "Title"), ("Author", "Author"), ("Subje
 /// The most characters a tag takes from the window.
 const MAX_VALUE: usize = 1000;
 
-/// Reads a PDF's Info for the window into the JSON file named second. getMetaData
-/// decodes the PDF's own text encodings. MuPDF before 1.20 or so opens a document with
-/// `new Document`, a PDF to change with `new PDFDocument`.
+/// Reads a PDF's Info for the window into the JSON file named second, and whether this
+/// MuPDF can change it ("write"). getMetaData decodes the PDF's own text encodings.
+/// Older MuPDF (Ubuntu 22.04's 1.19) opens a document with `new Document` and has no
+/// setMetaData: there the details are only read.
 const PDF_READ: &str = r#"var doc = Document.openDocument ? Document.openDocument(scriptArgs[0]) : new Document(scriptArgs[0]);
 var keys = ["Title", "Author", "Subject", "Keywords", "Creator", "Producer", "CreationDate", "ModDate"];
 var out = {};
 for (var i = 0; i < keys.length; i++) out[keys[i]] = doc.getMetaData("info:" + keys[i]) || "";
+out.write = Document.openDocument && typeof doc.setMetaData === "function" ? "yes" : "";
 var b = new Buffer();
 b.write(JSON.stringify(out));
 b.save(scriptArgs[1]);
 "#;
 
 /// Saves the PDF (first) as the file named second with the tags that follow, as name
-/// and value pairs. Older MuPDF has no setMetaData: there the Info dictionary is set
-/// directly.
-pub const PDF_WRITE: &str = r#"var doc = Document.openDocument ? Document.openDocument(scriptArgs[0]) : new PDFDocument(scriptArgs[0]);
-for (var i = 2; i + 1 < scriptArgs.length; i += 2) {
-  if (doc.setMetaData) {
-    doc.setMetaData("info:" + scriptArgs[i], scriptArgs[i + 1]);
-  } else {
-    var trailer = doc.getTrailer();
-    var info = trailer.get("Info");
-    if (!info || info.isNull()) {
-      info = doc.addObject(doc.newDictionary());
-      trailer.put("Info", info);
-    }
-    info.put(scriptArgs[i], scriptArgs[i + 1]);
-  }
-}
+/// and value pairs. Only run where PDF_READ found setMetaData.
+pub const PDF_WRITE: &str = r#"var doc = Document.openDocument(scriptArgs[0]);
+for (var i = 2; i + 1 < scriptArgs.length; i += 2) doc.setMetaData("info:" + scriptArgs[i], scriptArgs[i + 1]);
 doc.save(scriptArgs[1]);
 "#;
 
@@ -305,7 +294,17 @@ fn pdf(src: &Path) -> Result<Info, String> {
             facts.push((label.to_string(), pdf_date(&value)));
         }
     }
-    let fields = PDF.iter().map(|&(key, label)| Field { key, label, value: get(key).unwrap_or_default() }).collect();
+    let fields = if get("write").is_some() {
+        PDF.iter().map(|&(key, label)| Field { key, label, value: get(key).unwrap_or_default() }).collect()
+    } else {
+        // Shown, not changed, by an older MuPDF.
+        for &(key, label) in PDF.iter().rev() {
+            if let Some(value) = get(key) {
+                facts.insert(1, (label.to_string(), value));
+            }
+        }
+        Vec::new()
+    };
     Ok(Info { what: "PDF", facts, fields })
 }
 
