@@ -1,8 +1,8 @@
 //! Mark Up: what the window drew on a picture (pen lines, arrows, boxes and words) and
 //! the parts it blacked out, as shapes in the picture's own pixels, upright. The page
 //! sends only these; here they are checked and turned into ImageMagick's drawing
-//! steps, in colours from a fixed list, so nothing the page sends can name a file or
-//! reach a command. Blacked-out parts are drawn last, so nothing lands on top of them,
+//! steps, in colours named from a fixed list or given as a strict `#rrggbb` code, so
+//! nothing the page sends can name a file or reach a command. Blacked-out parts are drawn last, so nothing lands on top of them,
 //! and a picture with any of them loses its metadata too: the small preview a camera
 //! keeps in the EXIF would otherwise still show what was covered.
 
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// The colours the window offers, by the names it sends.
+/// The window's six quick colours, by the names it sends. Any other comes as a code.
 const COLOURS: &[(&str, &str)] = &[
     ("red", "#e5322d"),
     ("yellow", "#f5c400"),
@@ -84,8 +84,15 @@ impl Markup {
     }
 }
 
-fn hex(colour: &str) -> Option<&'static str> {
-    COLOURS.iter().find(|(name, _)| *name == colour).map(|(_, hex)| *hex)
+/// The colour to draw in: one of the names above, or a code of `#` and six of 0-9 and
+/// a-f (lower case, as the window sends it). Nothing else is passed on.
+fn hex(colour: &str) -> Option<&str> {
+    if let Some((_, hex)) = COLOURS.iter().find(|(name, _)| *name == colour) {
+        return Some(*hex);
+    }
+    let digits = colour.strip_prefix('#')?;
+    let code = digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    code.then_some(colour)
 }
 
 /// ImageMagick's steps for the shapes (checked first): the drawn ones in the order
@@ -218,8 +225,11 @@ mod tests {
         assert!(ok.redacts());
         assert!(Markup { shapes: vec![] }.check(100, 50).is_err());
         assert!(Markup { shapes: vec![pen(vec![[0, 0], [101, 50]])] }.check(100, 50).is_err());
-        let odd = Shape::Box { colour: "#ff00ff".into(), width: 4, from: [0, 0], to: [5, 5] };
-        assert!(Markup { shapes: vec![odd] }.check(100, 50).is_err());
+        let boxed = |colour: &str| Markup { shapes: vec![Shape::Box { colour: colour.into(), width: 4, from: [0, 0], to: [5, 5] }] };
+        assert!(boxed("#ff00ff").check(100, 50).is_ok());
+        for odd in ["purple", "ff00ff", "#ff00f", "#ff00ffa", "#gg0000", "#FF00FF", "#ff00ff ", "#ff 0ff", ""] {
+            assert!(boxed(odd).check(100, 50).is_err(), "{odd:?}");
+        }
         let control = Shape::Text { colour: "red".into(), size: 20, at: [0, 0], text: "a\nb".into() };
         assert!(Markup { shapes: vec![control] }.check(100, 50).is_err());
     }
@@ -246,5 +256,13 @@ mod tests {
         let black = args.iter().position(|a| a == "rectangle 1,1 5,5").unwrap();
         assert!(text < black, "{args:?}");
         assert_eq!(args[text + 1], "+2+3");
+    }
+
+    #[test]
+    fn a_colour_code_is_drawn_as_given() {
+        let markup = Markup { shapes: vec![Shape::Box { colour: "#12ab9f".into(), width: 3, from: [1, 1], to: [4, 4] }] };
+        let args = draw_args(&markup, None).unwrap();
+        let stroke = args.iter().position(|a| a == "-stroke").unwrap();
+        assert_eq!(args[stroke + 1], "#12ab9f");
     }
 }
