@@ -150,6 +150,7 @@ timeline.addEventListener('pointerdown', (event) => {
   const grip = event.target.dataset.end;
   if (grip) {
     drag = { which: grip };
+    lastEnd = grip;
   } else if (event.target === keep) {
     drag = { which: 'move', from: at, start, end };
   } else {
@@ -213,6 +214,14 @@ $('cancel').addEventListener('click', cancel);
 
 // Esc cancels, Enter trims and Space plays (outside the time boxes and buttons); on a
 // focused end the arrow keys move it a tenth of a second, a second with Shift.
+// The end the arrow keys move when neither end has the focus (a button may): the one used last.
+let lastEnd = 'start';
+for (const grip of document.querySelectorAll('.grip')) {
+  grip.addEventListener('focus', () => {
+    lastEnd = grip.dataset.end;
+  });
+}
+
 document.addEventListener('keydown', (event) => {
   const typing = document.activeElement instanceof HTMLInputElement;
   const onButton = document.activeElement instanceof HTMLButtonElement;
@@ -225,12 +234,12 @@ document.addEventListener('keydown', (event) => {
   } else if (event.key === ' ' && !typing && !onButton) {
     event.preventDefault();
     toggle();
-  } else if (session && document.activeElement?.classList.contains('grip')) {
+  } else if (session && !typing) {
     const step = event.shiftKey ? 1000 : 100;
     const by = { ArrowLeft: -step, ArrowRight: step }[event.key];
     if (by) {
       event.preventDefault();
-      const which = document.activeElement.dataset.end;
+      const which = document.activeElement?.dataset.end ?? lastEnd;
       setEnd(which, (which === 'start' ? start : end) + by);
     }
   }

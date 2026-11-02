@@ -47,6 +47,12 @@ function cancel() {
 }
 
 for (const id of SLIDERS) $(id).addEventListener('input', show);
+let lastSlider = SLIDERS[0];
+for (const id of SLIDERS) {
+  $(id).addEventListener('focus', () => {
+    lastSlider = id;
+  });
+}
 $('reset').addEventListener('click', () => {
   for (const id of SLIDERS) $(id).value = '100';
   show();
@@ -60,6 +66,22 @@ document.addEventListener('keydown', (event) => {
   } else if (event.key === 'Enter' && !(document.activeElement instanceof HTMLButtonElement)) {
     event.preventDefault();
     adjustIt();
+  } else if (event.key.startsWith('Arrow')) {
+    // Up and Down go between the sliders; Left and Right change the slider (the one
+    // used last when a button holds the focus).
+    const on = SLIDERS.indexOf(document.activeElement?.id);
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      const at = on < 0 ? SLIDERS.indexOf(lastSlider) : on + (event.key === 'ArrowDown' ? 1 : -1);
+      if (at >= 0 && at < SLIDERS.length) $(SLIDERS[at]).focus();
+    } else if (on < 0) {
+      event.preventDefault();
+      const slider = $(lastSlider);
+      slider.focus();
+      if (event.key === 'ArrowRight') slider.stepUp();
+      else slider.stepDown();
+      show();
+    }
   }
 });
 

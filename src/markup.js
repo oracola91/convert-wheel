@@ -257,6 +257,22 @@ document.addEventListener('keydown', (event) => {
   } else if (event.key === 'Enter' && document.activeElement !== words && !(document.activeElement instanceof HTMLButtonElement)) {
     event.preventDefault();
     save();
+  } else if (document.activeElement !== words && event.key.startsWith('Arrow')) {
+    // Left and Right pick the tool, Up and Down the colour (not while typing words).
+    const across = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+    const list = across ? [...document.querySelectorAll('[data-tool]')] : [...$('colours').children];
+    const now = list.findIndex((button) => button.getAttribute('aria-pressed') === 'true');
+    const next = list[now + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1)];
+    if (next) {
+      event.preventDefault();
+      if (across) {
+        tool = next.dataset.tool;
+        press(next.closest('.group'), 'data-tool', tool);
+      } else {
+        colour = next.dataset.colour;
+        press($('colours'), 'data-colour', colour);
+      }
+    }
   }
 });
 
