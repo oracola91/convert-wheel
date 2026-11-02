@@ -298,6 +298,12 @@ fn wheel_cancel(app: AppHandle) {
     trigger::hide_wheel(&app, false, None);
 }
 
+/// The wheel's page: the cursor rested on More, so show the next set of items.
+#[tauri::command]
+fn wheel_more(app: AppHandle) {
+    trigger::next_page(&app);
+}
+
 /// The page drew a wheel and measured its words: on macOS the glass gets a frosted
 /// patch behind each. Boxes that don't fit the window are dropped.
 #[tauri::command]
@@ -684,7 +690,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_order, editor::editor_info, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, wheel_more, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_order, editor::editor_info, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {

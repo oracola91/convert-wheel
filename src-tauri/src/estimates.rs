@@ -104,6 +104,8 @@ pub fn ask(app: &AppHandle) {
         [path] if which != Which::Actions => path.clone(),
         _ => return,
     };
-    let targets = wheel::lock(&state.formats).clone();
+    let mut targets = wheel::lock(&state.formats).clone();
+    // More is no format: nothing to estimate.
+    targets.retain(|t| *t != wheel::MORE);
     let _ = app.state::<Estimates>().0.send(Ask { path, targets });
 }
