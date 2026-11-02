@@ -3457,8 +3457,9 @@ mod tests {
         assert!(Adjust { brightness: 0, contrast: 200, saturation: 100 }.check().is_ok());
         assert!(brighter.check().is_ok() && grey.check().is_ok());
 
-        // Mark Up: a pen line, words that look like a file name and a percent, and a
-        // blacked-out corner, on a picture with a comment that must not outlive it.
+        // Mark Up: a pen line, words that look like a file name and a percent, a
+        // highlighter, a line, an oval, a numbered step and a blacked-out corner, on a
+        // picture with a comment that must not outlive it.
         let note = work.path().join("note.png");
         let mut make = Command::new(&magick);
         make.args(["-size", "200x100", "xc:white", "-set", "comment", "secret"]).arg(&note);
@@ -3467,6 +3468,10 @@ mod tests {
             shapes: vec![
                 markup::Shape::Pen { colour: "red".into(), width: 6, points: vec![[10, 90], [190, 90]] },
                 markup::Shape::Text { colour: "blue".into(), size: 24, at: [10, 10], text: "@/etc/hosts 50%".into() },
+                markup::Shape::Highlight { colour: "yellow".into(), width: 10, points: vec![[10, 60], [60, 60]] },
+                markup::Shape::Line { colour: "green".into(), width: 4, from: [70, 50], to: [110, 50] },
+                markup::Shape::Circle { colour: "blue".into(), width: 3, from: [120, 45], to: [150, 75] },
+                markup::Shape::Number { colour: "red".into(), size: 16, at: [175, 70], n: 7 },
                 markup::Shape::Redact { from: [150, 0], to: [199, 40] },
             ],
         };
@@ -3476,6 +3481,15 @@ mod tests {
         assert_eq!(out, work.path().join("note (marked up).png"));
         assert_eq!(rgb(&out, 175, 20), "0,0,0");
         assert_eq!(rgb(&out, 100, 90), "229,50,45");
+        assert_eq!(rgb(&out, 90, 50), "33,161,72");
+        assert_eq!(rgb(&out, 120, 60), "29,111,229");
+        assert_eq!(rgb(&out, 165, 70), "229,50,45");
+        // The highlighter lets the white show through: yellow, but not solid yellow.
+        let marker: Vec<u32> = rgb(&out, 35, 60).split(',').map(|v| v.parse().unwrap()).collect();
+        assert!(marker[0] > 240 && (120..200).contains(&marker[2]), "{marker:?}");
+        let digit = Command::new(&magick).arg(&out).args(["-crop", "10x12+170+64", "-format", "%[fx:mean.g]", "info:"]).output().unwrap();
+        let green: f64 = String::from_utf8_lossy(&digit.stdout).trim().parse().unwrap();
+        assert!(green > 0.3, "no number drawn in the step: {green}");
         let words = Command::new(&magick).arg(&out).args(["-crop", "120x30+10+10", "-format", "%[fx:mean]", "info:"]).output().unwrap();
         let mean: f64 = String::from_utf8_lossy(&words.stdout).trim().parse().unwrap();
         assert!(mean < 0.97, "no words drawn: {mean}");

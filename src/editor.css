@@ -505,6 +505,44 @@ footer.rows {
   display: none !important;
 }
 
+/* The shapes share one button: the shape in use, and a menu of the others. */
+.split {
+  display: flex;
+  gap: 1px;
+}
+
+#shapeTool {
+  border-radius: 999px 0 0 999px;
+  padding-right: 9px;
+}
+
+#shapeOpen {
+  border-radius: 0 999px 999px 0;
+  padding: 4px 9px 4px 7px;
+  font-size: 1.15em;
+  line-height: 1;
+}
+
+#shapeList {
+  display: grid;
+  min-width: 96px;
+}
+
+#shapeList button {
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+
+#shapeList button:hover {
+  background: var(--button-hover);
+}
+
+#shapeList button[aria-current="true"] {
+  color: var(--pressed-text);
+  background: var(--pressed);
+}
+
 #sizes {
   display: grid;
   max-height: 260px;
