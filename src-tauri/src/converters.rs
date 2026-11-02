@@ -202,6 +202,10 @@ fn install_one(pm: &Path, c: &Converter) -> Result<(), String> {
     if status.success() {
         return Err(format!("{PACKAGE_MANAGER} finished, but Convert Wheel still can't find {}. Show Log has the details.", c.name));
     }
+    // winget's "already installed, and no newer version" (APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE).
+    if cfg!(windows) && status.code() == Some(0x8A15_002B_u32 as i32) {
+        return Err(format!("{PACKAGE_MANAGER} says {} is already installed, but Convert Wheel can't find it. Show Log has the details.", c.name));
+    }
     let code = match status.code() {
         // winget's codes are Windows error numbers, which are written in hex.
         Some(code) if cfg!(windows) => format!(" with code {:#010X}", code as u32),

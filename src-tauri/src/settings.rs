@@ -99,6 +99,97 @@ pub struct Settings {
     /// Formats left off the wheel, as "kind:format" (for example "image:avif").
     pub hidden: BTreeSet<String>,
     pub quality: Quality,
+    /// The shelf at the top of the screen is switched off (it is on unless chosen so).
+    pub shelf_off: bool,
+    pub highlight: Highlight,
+    /// The wheel is a plain solid disc instead of Liquid Glass (macOS).
+    pub no_liquid_glass: bool,
+    /// How see-through the Liquid Glass wheel is (macOS), from the menu's slider.
+    pub transparency: Transparency,
+}
+
+/// The colour the segment under the cursor lights up in. src/wheel.css has each one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Highlight {
+    #[default]
+    Orange,
+    Red,
+    Pink,
+    Purple,
+    Blue,
+    Teal,
+    Green,
+    Graphite,
+}
+
+impl Highlight {
+    pub const ALL: [Highlight; 8] = [
+        Highlight::Orange,
+        Highlight::Red,
+        Highlight::Pink,
+        Highlight::Purple,
+        Highlight::Blue,
+        Highlight::Teal,
+        Highlight::Green,
+        Highlight::Graphite,
+    ];
+
+    /// The name the page and the settings file use.
+    pub fn key(self) -> &'static str {
+        match self {
+            Highlight::Orange => "orange",
+            Highlight::Red => "red",
+            Highlight::Pink => "pink",
+            Highlight::Purple => "purple",
+            Highlight::Blue => "blue",
+            Highlight::Teal => "teal",
+            Highlight::Green => "green",
+            Highlight::Graphite => "graphite",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Highlight::Orange => "Orange",
+            Highlight::Red => "Red",
+            Highlight::Pink => "Pink",
+            Highlight::Purple => "Purple",
+            Highlight::Blue => "Blue",
+            Highlight::Teal => "Teal",
+            Highlight::Green => "Green",
+            Highlight::Graphite => "Graphite",
+        }
+    }
+}
+
+/// How see-through the Liquid Glass wheel is: 0 is frosted (the frosted material at
+/// full strength behind it and the most white on the segments), 100 is clear (no
+/// blur and next to no white; only the patches behind the words stay frosted).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Transparency(pub u8);
+
+impl Default for Transparency {
+    fn default() -> Self {
+        Transparency(50)
+    }
+}
+
+impl Transparency {
+    fn share(self) -> f64 {
+        f64::from(self.0.min(100)) / 100.0
+    }
+
+    /// How strongly the frosted material shows behind the wheel, 0 to 1.
+    pub fn blur(self) -> f64 {
+        1.0 - self.share()
+    }
+
+    /// How much white the segments carry.
+    pub fn paint(self) -> f64 {
+        0.40 - 0.34 * self.share()
+    }
 }
 
 pub fn key(kind: Kind, format: &str) -> String {
@@ -202,6 +293,53 @@ mod tests {
         let back: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(back.quality.get("audio"), Some(Level::Best));
         assert_eq!(Level::Smaller.pick(1, 2, 3), 1);
+    }
+
+    #[test]
+    fn the_shelf_is_on_unless_switched_off() {
+        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
+        assert!(!old.shelf_off);
+        let off = Settings { shelf_off: true, ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(back.shelf_off);
+    }
+
+    #[test]
+    fn the_highlight_is_orange_unless_chosen_and_the_page_knows_every_colour() {
+        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
+        assert_eq!(old.highlight, Highlight::Orange);
+        let blue = Settings { highlight: Highlight::Blue, ..Settings::default() };
+        let text = serde_json::to_string(&blue).unwrap();
+        assert!(text.contains(r#""highlight":"blue""#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap().highlight, Highlight::Blue);
+        // The page accepts each colour and the stylesheet draws each one but the default.
+        let js = include_str!("../../src/wheel.js");
+        let css = include_str!("../../src/wheel.css");
+        for h in Highlight::ALL {
+            assert!(js.contains(&format!("'{}'", h.key())), "wheel.js lacks {}", h.key());
+            if h != Highlight::default() {
+                assert!(css.contains(&format!("[data-highlight=\"{}\"]", h.key())), "wheel.css lacks {}", h.key());
+            }
+        }
+    }
+
+    #[test]
+    fn liquid_glass_is_on_at_half_transparency_unless_chosen() {
+        // Older settings, also ones with the "glass" choice of earlier test builds.
+        for old in [r#"{"save_to":"downloads","hidden":[]}"#, r#"{"glass":"medium"}"#] {
+            let s: Settings = serde_json::from_str(old).unwrap();
+            assert!(!s.no_liquid_glass);
+            assert_eq!(s.transparency, Transparency(50));
+        }
+        let set = Settings { no_liquid_glass: true, transparency: Transparency(80), ..Settings::default() };
+        let text = serde_json::to_string(&set).unwrap();
+        assert!(text.contains(r#""transparency":80"#), "{text}");
+        assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), set);
+        // From frosted to clear: less blur and paint; never past 100.
+        let (frosted, clear) = (Transparency(0), Transparency(100));
+        assert_eq!((frosted.blur(), clear.blur()), (1.0, 0.0));
+        assert!(frosted.paint() > Transparency(50).paint() && Transparency(50).paint() > clear.paint());
+        assert_eq!(Transparency(250).blur(), 0.0);
     }
 
     #[test]

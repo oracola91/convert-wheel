@@ -35,7 +35,7 @@ Or install only the ones you need, when you need them: when a drop needs a missi
 xattr -dr com.apple.quarantine "/Applications/Convert Wheel.app"
 ```
 
-**4. Use it:** a ring icon appears in the menu bar (top right); there is no Dock icon. Hold Shift while dragging a file in Finder and the wheel opens; hold Option+Shift for the Tools wheel (pictures: compress, half size, remove metadata, rotate, one PDF; PDFs: merge, split, smaller; video: compress, remove metadata, first frame; audio: remove metadata, loudness, mono); start a drag and then hold Control+Shift for the Actions wheel (copy path, show in folder, terminal, AirDrop, make a ZIP / TAR.GZ / TAR, unpack). Allow notifications when macOS asks. Open at Login is in the ring icon's menu.
+**4. Use it:** a ring icon appears in the menu bar (top right); there is no Dock icon. Hold Shift while dragging a file in Finder and the wheel opens; hold Option+Shift for the Tools wheel (pictures: compress, half size, remove metadata, rotate, read a QR code, crop, compress to a size, one PDF; PDFs: merge, split, smaller; video: compress, remove metadata, trim, first frame, join; audio: compress, remove metadata, trim, join, loudness, mono); start a drag and then hold Control+Shift for the Actions wheel (copy path, show in folder, terminal, AirDrop, make a ZIP / TAR.GZ / TAR, unpack). The keys can change the wheel during the drag, without letting go of the file. Allow notifications when macOS asks. Open at Login is in the ring icon's menu.
 
 **From the source instead:** `./scripts/install-macos.sh` builds the app on this Mac, installs it in Applications and starts it. A local build needs no Gatekeeper step.
 
@@ -88,6 +88,12 @@ The steps it takes, by hand:
 
 ```sh
 sudo apt install ffmpeg imagemagick libreoffice mupdf-tools libarchive-tools
+```
+
+On Ubuntu 24.04 and later, iPhone photos (HEIC) also need libheif's HEVC add-ons, which ImageMagick doesn't bring:
+
+```sh
+sudo apt install libheif-plugin-libde265 libheif-plugin-x265
 ```
 
 pandoc comes from [pandoc's own releases](https://github.com/jgm/pandoc/releases), not from Ubuntu or Debian. The app runs pandoc in its sandbox, which needs 2.15 or newer (Ubuntu 22.04 has 2.9), and Ubuntu's and Debian's builds can't write Word files there because they keep pandoc's data files outside the program:
