@@ -298,7 +298,8 @@ footer label {
   color: var(--muted);
 }
 
-footer input {
+footer input,
+.pop input {
   width: 84px;
   font: inherit;
   font-variant-numeric: tabular-nums;
@@ -311,7 +312,8 @@ footer input {
   user-select: text;
 }
 
-footer input:focus-visible {
+footer input:focus-visible,
+.pop input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -425,7 +427,8 @@ footer input:focus-visible {
   color: var(--text);
 }
 
-/* Mark Up: a round swatch for each colour, and room for the words. */
+/* Mark Up: a round swatch for each colour, a Word-like size box, and the words typed
+   straight onto the picture. */
 .swatch {
   width: 24px;
   height: 24px;
@@ -439,8 +442,113 @@ footer input:focus-visible {
   outline-offset: 2px;
 }
 
-#words {
-  width: 160px;
+/* More colours: a rainbow swatch that opens the palette. */
+.swatch.more {
+  background: conic-gradient(#e5322d, #f5c400, #21a148, #1fb5c9, #1d6fe5, #9b4dde, #e5322d);
+}
+
+.combo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.combo label {
+  margin-right: 2px;
+}
+
+#sizeValue {
+  width: 44px;
+  text-align: right;
+}
+
+#sizeOpen {
+  padding: 6px 9px;
+}
+
+#sizeValue:disabled,
+#sizeOpen:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The size list and the colour palette open above the bar. */
+.pop {
+  position: fixed;
+  z-index: 10;
+  padding: 6px;
+  color: var(--text);
+  background: var(--bar);
+  border: 1px solid var(--field-edge);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+
+.pop[hidden] {
+  display: none;
+}
+
+#sizes {
+  display: grid;
+  max-height: 260px;
+  overflow-y: auto;
+  min-width: 64px;
+}
+
+#sizes button {
+  border-radius: 6px;
+  background: transparent;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#sizes button:hover {
+  background: var(--button-hover);
+}
+
+#sizes button[aria-selected="true"] {
+  color: var(--pressed-text);
+  background: var(--pressed);
+}
+
+#grid {
+  display: grid;
+  grid-template-columns: repeat(10, 22px);
+  gap: 4px;
+}
+
+#grid .swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+}
+
+.pop .code {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.pop input[aria-invalid="true"] {
+  border-color: #e5322d;
+}
+
+/* The words being typed, where they will land, in their own colour and size. */
+.typing {
+  position: absolute;
+  box-sizing: content-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  outline: 1px dashed rgba(255, 255, 255, 0.9);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.25);
+  caret-color: currentColor;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Reorder: the pages in rows on the stage, scrolling when there are many. The picked
