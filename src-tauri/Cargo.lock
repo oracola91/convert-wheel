@@ -515,6 +515,7 @@ dependencies = [
  "objc2-service-management",
  "objc2-user-notifications",
  "qrcode",
+ "rfd",
  "rqrr",
  "serde",
  "serde_json",
