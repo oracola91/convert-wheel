@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use std::thread;
 
 use tauri::AppHandle;
+#[cfg(not(target_os = "macos"))]
 use tauri_plugin_dialog::DialogExt;
 
 use crate::log;
@@ -31,22 +32,52 @@ pub fn start(app: &AppHandle, moving: bool, files: Vec<PathBuf>) {
         .filter(|dir| dir.is_dir())
         .or_else(|| first.parent().map(Path::to_path_buf));
     let title = if moving { "Move to" } else { "Copy to" };
-    let mut picker = app.dialog().file().set_title(title).set_can_create_directories(true);
+    bring_forward(app);
+    let chosen = {
+        let app = app.clone();
+        move |folder: Option<PathBuf>| {
+            let Some(dir) = folder else {
+                return;
+            };
+            *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.clone());
+            thread::spawn(move || {
+                let (done, failed) = transfer(&files, &dir, moving);
+                report(&app, moving, &dir, done, failed);
+            });
+        }
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        thread::spawn(move || chosen(pick_folder_macos(&app, title, start)));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut picker = app.dialog().file().set_title(title).set_can_create_directories(true);
+        if let Some(dir) = start {
+            picker = picker.set_directory(dir);
+        }
+        picker.pick_folder(move |folder| chosen(folder.and_then(|f| f.into_path().ok())));
+    }
+}
+
+/// The folder picker as a window of its own, in front. The dialog plugin's picker
+/// on macOS is a sheet on the app's first window, which here is the wheel: hidden
+/// after the drop, it took the sheet out of sight with it, and each later picker
+/// queued behind that one. Called off the main thread: the picker runs there, after
+/// the wheel's hiding and `bring_forward`, which were queued first.
+#[cfg(target_os = "macos")]
+fn pick_folder_macos(app: &AppHandle, title: &str, start: Option<PathBuf>) -> Option<PathBuf> {
+    let (queued, ran) = std::sync::mpsc::channel();
+    let _ = app.run_on_main_thread(move || {
+        let _ = queued.send(());
+    });
+    let _ = ran.recv();
+    let mut picker = rfd::FileDialog::new().set_title(title).set_can_create_directories(true);
     if let Some(dir) = start {
         picker = picker.set_directory(dir);
     }
-    bring_forward(app);
-    let app = app.clone();
-    picker.pick_folder(move |folder| {
-        let Some(dir) = folder.and_then(|f| f.into_path().ok()) else {
-            return;
-        };
-        *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.clone());
-        thread::spawn(move || {
-            let (done, failed) = transfer(&files, &dir, moving);
-            report(&app, moving, &dir, done, failed);
-        });
-    });
+    picker.pick_folder()
 }
 
 /// The app has no window of its own in front: without this, macOS opens the picker

@@ -28,6 +28,8 @@ serde_json = "1"
 tauri-plugin-dialog = "=2.8.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The folder picker as its own window (transfer.rs); the version the dialog plugin uses.
+rfd = { version = "=0.16.0", default-features = false }
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSURL", "NSGeometry", "NSNotification", "NSOperation", "block2"] }
