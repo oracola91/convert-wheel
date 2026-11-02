@@ -90,10 +90,35 @@ impl KeyFollower {
     }
 }
 
+/// The segment that shows a full wheel's next set of items when the cursor rests on it.
+pub const MORE: &str = "more";
+
+/// How many sets of `len` items a wheel of at most `max` segments shows.
+pub fn pages(len: usize, max: usize) -> usize {
+    if len <= max { 1 } else { len.div_ceil(max - 1) }
+}
+
+/// The segments for set `page` of `all`: every item when they fit, otherwise an even
+/// share of them with More last (sets differ by one item at most). `page` wraps.
+pub fn page_of(all: &[&'static str], page: usize, max: usize) -> Vec<&'static str> {
+    let pages = pages(all.len(), max);
+    if pages == 1 {
+        return all.to_vec();
+    }
+    let per = all.len().div_ceil(pages);
+    let mut items: Vec<_> = all.iter().copied().skip((page % pages) * per).take(per).collect();
+    items.push(MORE);
+    items
+}
+
 #[derive(Default)]
 pub struct WheelState {
-    /// Formats, or tools ("tool:half"), on the wheel right now, in drawing order.
+    /// Formats, or tools ("tool:half"), on the wheel right now, in drawing order. A
+    /// full wheel shows one set of `all` at a time, with More last.
     pub formats: Mutex<Vec<&'static str>>,
+    /// Everything the open wheel offers, and the set of it on show.
+    pub all: Mutex<Vec<&'static str>>,
+    pub page: Mutex<usize>,
     /// The wheel that is open, or was last.
     pub which: Mutex<Which>,
     /// The dragged files, once known: a switch to another wheel needs them again.
@@ -325,6 +350,24 @@ mod tests {
         assert_eq!(follow(Which::Actions, &[shift, shift]), [None, Some(Which::Formats)]);
         // The keys the open wheel already has ask for nothing.
         assert_eq!(follow(Which::Tools, &[option_shift, option_shift, option_shift]), [None, None, None]);
+    }
+
+    #[test]
+    fn a_full_wheel_shows_its_items_a_set_at_a_time() {
+        let all: Vec<&'static str> = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"].to_vec();
+        // Ten fit: no More.
+        assert_eq!(page_of(&all[..10], 0, 10), &all[..10]);
+        assert_eq!(pages(10, 10), 1);
+        // Eleven: two even sets of six and five, each with More, and back to the first.
+        assert_eq!(pages(11, 10), 2);
+        assert_eq!(page_of(&all, 0, 10), ["a", "b", "c", "d", "e", "f", MORE]);
+        assert_eq!(page_of(&all, 1, 10), ["g", "h", "i", "j", "k", MORE]);
+        assert_eq!(page_of(&all, 2, 10), page_of(&all, 0, 10));
+        // Nineteen: three sets, none with more than ten segments.
+        let many: Vec<&'static str> = (0..19).map(|i| ["x"; 19][i]).collect();
+        assert_eq!(pages(19, 10), 3);
+        assert!((0..3).all(|p| page_of(&many, p, 10).len() <= 10));
+        assert_eq!((0..3).map(|p| page_of(&many, p, 10).len() - 1).sum::<usize>(), 19);
     }
 
     #[test]

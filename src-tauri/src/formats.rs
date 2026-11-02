@@ -194,7 +194,6 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
                 && (*id != "tool:join" || exts.iter().all(|e| kind_of(e) == kind_of(&exts[0])))
         })
         .map(|(id, _)| *id)
-        .take(MAX_SEGMENTS)
         .collect()
 }
 
@@ -236,7 +235,8 @@ pub fn all() -> impl Iterator<Item = (Kind, &'static [&'static str])> {
     KINDS.iter().map(|(kind, _, outs)| (*kind, *outs))
 }
 
-/// Most segments the wheel draws, so labels stay readable. Pictures need all ten.
+/// Most segments the wheel draws, so labels stay readable. A wheel with more to offer
+/// shows them a set at a time, with More last (wheel::page_of).
 pub const MAX_SEGMENTS: usize = 10;
 
 pub fn extension(path: &Path) -> Option<String> {
@@ -287,7 +287,6 @@ pub fn formats_for(paths: &[String], shows: impl Fn(Kind, &str) -> bool) -> Vec<
     if exts.iter().all(|e| canonical(e) == first) {
         common.retain(|f| *f != first);
     }
-    common.truncate(MAX_SEGMENTS);
     common
 }
 
@@ -412,7 +411,8 @@ mod tests {
                         .filter(|(id, _)| tool_takes(id, ext))
                         .filter(|(id, _)| if files == 1 { !combines(id) } else { !opens_editor(id) })
                         .count();
-                    assert!(offered <= MAX_SEGMENTS, "{files} x .{ext}: {offered} tools");
+                    // More than ten would come in sets, with More (wheel::page_of).
+                    assert!(offered <= 2 * (MAX_SEGMENTS - 1), "{files} x .{ext}: {offered} tools");
                 }
             }
         }
@@ -427,9 +427,7 @@ mod tests {
         assert!(actions.ends_with(&["act:zip", "act:tgz", "act:tar"]));
         let archives = actions_for(&v(&["/tmp/a.zip", "/tmp/b.tar.gz"]));
         assert!(archives.ends_with(&["act:tar", "act:unpack"]));
-        // The most an Actions wheel holds (archives, on a Mac) still fits.
-        assert!(archives.len() <= MAX_SEGMENTS);
-        assert!(actions.len() <= MAX_SEGMENTS && actions.iter().all(|a| is_action(a) && !is_tool(a)));
+        assert!(actions.iter().all(|a| is_action(a) && !is_tool(a)));
     }
 
     #[test]

@@ -66,6 +66,7 @@ const TOOLS = {
   'act:tgz': ['TAR.GZ', 'Make a TAR.GZ'],
   'act:tar': ['TAR', 'Make a TAR'],
   'act:unpack': ['Unpack', 'Unpack here'],
+  more: ['More', 'Rest here for more'],
 };
 
 const svg = document.getElementById('wheel');
@@ -77,6 +78,10 @@ let paths = [];
 let formats = [];
 // "formats", "tools" or "actions".
 let wheel = 'formats';
+// More: how long the cursor rests on it before the next set shows, and the timer.
+const MORE_REST_MS = 450;
+let moreTimer = null;
+let moreReady = true;
 // Windows and Linux learn which files are dragged only when they reach the wheel.
 let pending = false;
 // Opened from the keyboard shortcut (Linux): waits for a file instead of a mouse-up.
@@ -362,6 +367,9 @@ function nameWheel() {
 const HIGHLIGHTS = ['orange', 'red', 'pink', 'purple', 'blue', 'teal', 'green', 'graphite'];
 
 listen('wheel-show', (event) => {
+  clearTimeout(moreTimer);
+  moreTimer = null;
+  moreReady = true;
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   nameWheel();
   pinned = event.payload?.pinned === true;
@@ -407,14 +415,37 @@ listen('wheel-estimates', (event) => {
   if (open) show(lastHover);
 });
 
+// A full wheel shows its items a set at a time, with More last: resting on More for
+// a moment asks for the next set. To go on again, move off More and back.
+
+function watchMore(hover) {
+  const onMore = Number.isInteger(hover?.segment) && formats[hover.segment] === 'more';
+  if (!onMore) {
+    clearTimeout(moreTimer);
+    moreTimer = null;
+    moreReady = true;
+    return;
+  }
+  if (!moreReady || moreTimer) return;
+  moreTimer = setTimeout(() => {
+    moreTimer = null;
+    moreReady = false;
+    if (open) invoke('wheel_more').catch((e) => console.error('wheel_more failed', e));
+  }, MORE_REST_MS);
+}
+
 listen('wheel-hover', (event) => {
-  if (open) show(event.payload);
+  if (!open) return;
+  show(event.payload);
+  watchMore(event.payload);
 });
 
 // A chosen segment stays lit while the wheel shrinks back to where it opened. If
 // nothing was chosen, nothing stays lit.
 listen('wheel-close', (event) => {
   open = false;
+  clearTimeout(moreTimer);
+  moreTimer = null;
   if (event.payload !== true) show({ segment: null, hub: false });
   restart('closing');
   // Once the window is gone, empty the page, so the next wheel never shows this one
