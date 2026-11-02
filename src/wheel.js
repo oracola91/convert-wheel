@@ -80,8 +80,9 @@ let formats = [];
 let wheel = 'formats';
 // More: how long the cursor rests on it before the next set shows, and the timer.
 const MORE_REST_MS = 450;
+// While it stays there, how often it goes on to the set after.
+const MORE_REPEAT_MS = 700;
 let moreTimer = null;
-let moreReady = true;
 // Windows and Linux learn which files are dragged only when they reach the wheel.
 let pending = false;
 // Opened from the keyboard shortcut (Linux): waits for a file instead of a mouse-up.
@@ -367,9 +368,7 @@ function nameWheel() {
 const HIGHLIGHTS = ['orange', 'red', 'pink', 'purple', 'blue', 'teal', 'green', 'graphite'];
 
 listen('wheel-show', (event) => {
-  clearTimeout(moreTimer);
-  moreTimer = null;
-  moreReady = true;
+  stopMore();
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   nameWheel();
   pinned = event.payload?.pinned === true;
@@ -393,8 +392,12 @@ listen('wheel-show', (event) => {
 // cursor moves or a key changes.
 listen('wheel-formats', (event) => {
   if (!open) return;
-  const keep = lastHover;
+  let keep = lastHover;
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
+  // Going round with More: More (always last) stays lit under the resting cursor
+  // until the native side reports the new wheel's segment there.
+  if (moreTimer && formats[formats.length - 1] === 'more') keep = { segment: formats.length - 1, hub: false };
+  else stopMore();
   nameWheel();
   // No fade-in: in the wheel's window macOS can hold an animation at its first
   // frame, which left a switched-to wheel with invisible segments.
@@ -416,22 +419,26 @@ listen('wheel-estimates', (event) => {
 });
 
 // A full wheel shows its items a set at a time, with More last: resting on More for
-// a moment asks for the next set. To go on again, move off More and back.
+// a moment asks for the next set, and staying there goes on round the sets. Moving
+// off More stops it, on whichever set is showing.
+function stopMore() {
+  clearTimeout(moreTimer);
+  moreTimer = null;
+}
 
 function watchMore(hover) {
   const onMore = Number.isInteger(hover?.segment) && formats[hover.segment] === 'more';
-  if (!onMore) {
-    clearTimeout(moreTimer);
+  if (!onMore) stopMore();
+  else if (!moreTimer) moreTimer = setTimeout(nextSet, MORE_REST_MS);
+}
+
+function nextSet() {
+  if (!open) {
     moreTimer = null;
-    moreReady = true;
     return;
   }
-  if (!moreReady || moreTimer) return;
-  moreTimer = setTimeout(() => {
-    moreTimer = null;
-    moreReady = false;
-    if (open) invoke('wheel_more').catch((e) => console.error('wheel_more failed', e));
-  }, MORE_REST_MS);
+  invoke('wheel_more').catch((e) => console.error('wheel_more failed', e));
+  moreTimer = setTimeout(nextSet, MORE_REPEAT_MS);
 }
 
 listen('wheel-hover', (event) => {
@@ -444,8 +451,7 @@ listen('wheel-hover', (event) => {
 // nothing was chosen, nothing stays lit.
 listen('wheel-close', (event) => {
   open = false;
-  clearTimeout(moreTimer);
-  moreTimer = null;
+  stopMore();
   if (event.payload !== true) show({ segment: null, hub: false });
   restart('closing');
   // Once the window is gone, empty the page, so the next wheel never shows this one
