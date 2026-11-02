@@ -708,12 +708,12 @@ fn reduce_motion() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
 
-fn symbol(name: &str, description: &str) -> Option<Retained<NSImage>> {
+pub(crate) fn symbol(name: &str, description: &str) -> Option<Retained<NSImage>> {
     NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), Some(&NSString::from_str(description)))
 }
 
 /// A black rounded rectangle that stretches to any size, for the glass's mask.
-fn rounded(r: f64) -> Retained<NSImage> {
+pub(crate) fn rounded(r: f64) -> Retained<NSImage> {
     let side = 2.0 * r + 1.0;
     let draw = RcBlock::new(move |rect: NSRect| -> Bool {
         NSColor::blackColor().set();

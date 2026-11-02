@@ -91,6 +91,7 @@ Hold Control+Shift while dragging and a third wheel opens: what can be done with
 - **Copy path**: the full path on the clipboard, one per line for several files.
 - **Show**: opens the folder with the files selected.
 - **Copy to** and **Move to**: the system's folder picker opens (where the last one went), and the files and folders go into the folder chosen. Nothing there is replaced: a name that is taken gets a number ("photo 2.jpg"). Move renames on the same disk; onto another disk it copies, and removes the original only once the copy is complete. Links are copied as links, never followed.
+- **Float** (macOS): the files go on a small card that floats above every window, next to the pointer, to drag out later into any app or folder. Finder decides move or copy as it does for its own drags; after a copy the card stays for the next place, and once the files have moved elsewhere it goes by itself. The × puts it away. Each Float makes its own card. Windows and Linux come later.
 - **Terminal**: a terminal in the file's folder (in a dragged folder itself): Terminal on macOS, PowerShell on Windows, GNOME Terminal, Console, Konsole or the system's default on Linux. The folder is handed over as the starting folder, never inside a command line.
 - **AirDrop** (macOS): the AirDrop window for the files.
 
