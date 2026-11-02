@@ -81,7 +81,7 @@ let wheel = 'formats';
 // More: how long the cursor rests on it before the next set shows, and the timer.
 const MORE_REST_MS = 450;
 // While it stays there, how often it goes on to the set after.
-const MORE_REPEAT_MS = 700;
+const MORE_REPEAT_MS = 1200;
 let moreTimer = null;
 // Windows and Linux learn which files are dragged only when they reach the wheel.
 let pending = false;
