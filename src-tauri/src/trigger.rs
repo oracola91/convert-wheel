@@ -1,5 +1,6 @@
 //! Watches for a file drag with Shift held and shows the wheel under the cursor: the
-//! formats, with Option (Alt) held too the tools, with Control the actions.
+//! formats, with Option (Alt) held too the tools, with Control the actions. While the
+//! wheel is open the keys keep choosing, so one drag can move between the wheels.
 //!
 //! macOS has no "drag started" notification for other apps, so this polls three
 //! things the window server shares with everyone: the drag pasteboard's change
@@ -13,10 +14,13 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::formats;
-use crate::wheel::{self, Hover, WheelState, Which};
+use crate::wheel::{self, Hover, KeyFollower, WheelState, Which};
 
 #[cfg(target_os = "macos")]
 const POLL: Duration = Duration::from_millis(30);
+/// Polls between checks that a showing shelf still sits right, after screens changed.
+#[cfg(target_os = "macos")]
+const SHELF_REFRESH: u32 = 66;
 /// Polls Shift must be held before the wheel opens, so Option (Alt) or Control pressed
 /// a moment after it still picks the Tools or Actions wheel.
 pub(crate) const KEYS_SETTLE: u8 = 2;
@@ -46,6 +50,37 @@ struct WheelShow {
     /// "formats", "tools" or "actions": for the Tools wheel `formats` holds tool ids
     /// ("tool:half"), for the Actions wheel action ids ("act:path").
     wheel: Which,
+    /// The dragged files' total size, shown in the middle; None when a folder is
+    /// among them or a size can't be read.
+    bytes: Option<u64>,
+    /// The menu's highlight colour ("blue"). Only on wheel-show: a switch keeps it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    highlight: Option<&'static str>,
+    /// How the wheel looks, from the menu's Wheel Glass. Only on wheel-show: a switch
+    /// keeps it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    look: Option<Look>,
+}
+
+/// Wheel Glass for the page: a plain solid disc, or Liquid Glass with this much white
+/// on the segments. The frosted patches behind the words are native (wheel_window.rs).
+#[derive(Clone, Copy, Serialize)]
+struct Look {
+    plain: bool,
+    seg: f64,
+}
+
+fn look(app: &AppHandle) -> Look {
+    let settings = app.state::<crate::settings::Store>().get();
+    Look { plain: settings.no_liquid_glass, seg: settings.transparency.paint() }
+}
+
+/// The total size of `paths`, or None with a folder among them.
+fn total_bytes(paths: &[String]) -> Option<u64> {
+    paths.iter().try_fold(0u64, |sum, p| {
+        let meta = std::fs::metadata(p).ok()?;
+        meta.is_file().then(|| sum.saturating_add(meta.len()))
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -57,6 +92,12 @@ pub fn start(app: AppHandle) {
         let mut shown = false;
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
+        let mut keys = KeyFollower::default();
+        // This drag carries files, so the shelf follows it (until the wheel opens), and
+        // whether that was checked yet.
+        let mut shelf_drag = false;
+        let mut checked = false;
+        let mut idle: u32 = 0;
         loop {
             thread::sleep(POLL);
             // AppKit hands back autoreleased objects; without a pool on this thread
@@ -67,15 +108,29 @@ pub fn start(app: AppHandle) {
                 if count != last_count {
                     last_count = count;
                     dragging = button_down;
+                    checked = false;
                 }
                 if !button_down {
                     if shown {
                         released(&app);
                     }
+                    if shelf_drag {
+                        crate::shelf_window::drag_ended_soon(&app);
+                    }
                     dragging = false;
                     shown = false;
                     held = 0;
+                    keys = KeyFollower::default();
+                    shelf_drag = false;
+                    idle = (idle + 1) % SHELF_REFRESH;
+                    if idle == 0 {
+                        crate::shelf_window::refresh_soon(&app);
+                    }
                     return;
+                }
+                if dragging && !checked {
+                    checked = true;
+                    shelf_drag = !macos::dragged_files().is_empty();
                 }
                 held = if macos::shift_down() { held.saturating_add(1) } else { 0 };
                 if dragging && !shown && held >= KEYS_SETTLE {
@@ -87,6 +142,16 @@ pub fn start(app: AppHandle) {
                     }
                     show_wheel(&app, paths, Which::from_keys(macos::option_down(), macos::control_down()));
                     shown = true;
+                    // The wheel has this drag now: the shelf steps aside.
+                    if shelf_drag {
+                        shelf_drag = false;
+                        crate::shelf_window::drag_ended_soon(&app);
+                    }
+                } else if shown {
+                    follow_keys(&app, &mut keys, macos::shift_down(), macos::option_down(), macos::control_down());
+                }
+                if shelf_drag && dragging {
+                    crate::shelf_window::dragging_soon(&app);
                 }
             });
         }
@@ -148,17 +213,61 @@ fn close_later(app: &AppHandle, generation: u64, delay: Duration, only_if_waitin
     });
 }
 
+/// Puts on the wheel what `which` (or, with None, the wheel already chosen) offers for
+/// `paths`. All under the `which` lock, so a switch and the files arriving (Windows,
+/// Linux) can't leave one wheel's items on another.
+fn fill(app: &AppHandle, paths: &[String], which: Option<Which>) -> (Which, Vec<&'static str>) {
+    let state = app.state::<WheelState>();
+    let mut current = wheel::lock(&state.which);
+    if let Some(which) = which {
+        *current = which;
+    }
+    let formats = items_for(app, paths, *current);
+    *wheel::lock(&state.formats) = formats.clone();
+    *wheel::lock(&state.paths) = paths.to_vec();
+    (*current, formats)
+}
+
+/// One poll of the keys while the wheel is open: switches it when they ask for another.
+pub(crate) fn follow_keys(app: &AppHandle, keys: &mut KeyFollower, shift: bool, option: bool, control: bool) {
+    let current = *wheel::lock(&app.state::<WheelState>().which);
+    if let Some(which) = keys.poll(current, KEYS_SETTLE, shift, option, control) {
+        switch_wheel(app, which);
+    }
+}
+
+/// The wheel is open on this one file.
+pub(crate) fn showing(app: &AppHandle, path: &str) -> bool {
+    let state = app.state::<WheelState>();
+    state.is_open() && matches!(wheel::lock(&state.paths).as_slice(), [p] if p == path)
+}
+
+/// Shows another wheel for the same drag, without closing the window.
+fn switch_wheel(app: &AppHandle, which: Which) {
+    let state = app.state::<WheelState>();
+    if !state.is_open() {
+        return;
+    }
+    let paths = wheel::lock(&state.paths).clone();
+    let (which, formats) = fill(app, &paths, Some(which));
+    let pending = paths.is_empty();
+    let bytes = total_bytes(&paths);
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
+    crate::estimates::ask(app);
+}
+
 /// Opens the wheel and returns its generation.
 fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -> u64 {
-    let formats = items_for(app, &paths, which);
+    let (_, formats) = fill(app, &paths, Some(which));
     let state = app.state::<WheelState>();
-    *wheel::lock(&state.formats) = formats.clone();
-    *wheel::lock(&state.which) = which;
     let pending = paths.is_empty();
     let generation = state.open(pending);
     let first = paths.first().cloned();
     let glass = cfg!(target_os = "macos");
-    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which });
+    let bytes = total_bytes(&paths);
+    let highlight = app.state::<crate::settings::Store>().get().highlight.key();
+    let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which, bytes, highlight: Some(highlight), look: Some(look(app)) });
+    crate::estimates::ask(app);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -176,12 +285,11 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
 /// were being dragged: work out their formats (or tools) and redraw the wheel.
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
-    let state = app.state::<WheelState>();
-    let which = *wheel::lock(&state.which);
-    let formats = items_for(app, &paths, which);
-    *wheel::lock(&state.formats) = formats.clone();
-    state.files_known();
-    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which });
+    let (which, formats) = fill(app, &paths, None);
+    app.state::<WheelState>().files_known();
+    let bytes = total_bytes(&paths);
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
+    crate::estimates::ask(app);
 }
 
 /// A drop on the wheel. Converts (or runs the tool) when it landed on a segment and
@@ -191,6 +299,12 @@ pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -
         .segment
         .and_then(|i| wheel::lock(&app.state::<WheelState>().formats).get(i).copied());
     match format {
+        // Crop first opens its window; the job is queued from there.
+        Some(tool) if !paths.is_empty() && formats::opens_editor(tool) => {
+            hide_wheel(app, true, None);
+            crate::editor::open(app, tool, paths);
+            true
+        }
         // Actions are quick and convert nothing: they skip the conversion queue.
         Some(action) if !paths.is_empty() && formats::is_action(action) => {
             hide_wheel(app, true, None);

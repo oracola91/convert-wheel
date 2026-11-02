@@ -38,7 +38,7 @@ The wheel only shows formats that every dragged file can become. The new file la
 
 A PDF with several pages becomes a folder of pictures next to it, `report (PNG)` holding `report 1.png`, `report 2.png` and so on, at 150 dpi; at most the first 100 pages, and the folder name says so when there were more. Text is taken from PDFs of up to 2000 pages. As text or a Word file, a PDF keeps its words and paragraphs but not its layout, tables or pictures. A scanned PDF has no text to take out. A PDF that needs a password to open is refused with a note to save a copy without it. For a Word file that keeps the layout, open the PDF in Word itself.
 
-A notification says when a drop is done or why it failed. A click on it opens the folder with the new files selected (on Windows only while the notification is on screen, not from the Action Center; on macOS also later from Notification Center). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
+A notification says when a drop is done or why it failed, and how the size changed ("2.2 MB → 410 KB · photo (compressed).jpg"; not for folders, such as a split PDF). A click on it opens the folder with the new files selected (on Windows only while the notification is on screen, not from the Action Center; on macOS also later from Notification Center). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
 
 ## The Tools wheel
 
@@ -48,6 +48,8 @@ Hold Option as well as Shift while dragging (Alt+Shift on Windows and on Linux w
 - **Half size**: half the width and height.
 - **Remove metadata**: takes out EXIF (camera, date, location), XMP, IPTC and comments, and keeps the colour profile. The picture is turned upright first, so it looks the same without the EXIF turn.
 - **Rotate**: a quarter turn clockwise.
+- **QR code** (GIFs too, their first frame): reads every QR code in the picture. The text is saved next to it ("photo (QR code).txt"), copied to the clipboard and shown in the notification; a link in it is never opened. Read by [rqrr](https://github.com/WanzenBug/rqrr), in the app itself.
+- **Crop** (one picture at a time): opens a window with the picture and a box to drag by its middle, corners and sides. Free, the picture's own shape, square, 4:3, 3:2 or 16:9; turn it left or right; Enter crops, Esc cancels. The result is "photo (cropped).jpg". The window only sends the box back: which file it applies to stays in the app.
 
 The other tools keep the metadata. Every tool saves the picture again: JPEG at its own quality, HEIC, WebP and AVIF at 80.
 
@@ -66,8 +68,12 @@ For video and audio (with ffmpeg):
 - **First frame** (video): the first frame as a JPEG: "clip (first frame).jpg".
 - **Loudness** (audio): evened out to -16 LUFS with peaks at most -1.5 dB (ffmpeg's loudnorm), at the file's own sample rate, tags kept.
 - **Mono** (audio): both channels mixed into one.
+- **Compress** (MP3, M4A, AAC, Ogg, Opus, WMA, FLAC): the same format at a lower bit rate (MP3, M4A and WMA 96k, Ogg and Opus 64k), tags kept; FLAC stays lossless at its strongest packing. Not saved if it isn't smaller. WAV and AIFF have nothing to compress with.
+- **To a size** (JPEG, HEIC, WebP, AVIF pictures; MP4, MOV, M4V, MKV, WebM videos; MP3, M4A, AAC, Ogg, Opus, WMA sound; one file at a time): a small window asks for a size ("2 MB", or Half, Quarter, 25 MB, 10 MB, ...) and the result comes in at that or under: "photo (under 2 MB).jpg". Pictures get the highest quality that fits (found by halving 25 to 92), and are made smaller only if even the lowest is too big. Video gets the bit rate the size allows over its length, in two passes, with a smaller picture as the rate drops (1920, 1280, 854); sound gets the bit rate that fits. The window says how small a long file can go.
+- **Join** (two or more sound files, or two or more videos): one after another, in the order dropped, as one file in the first one's format: "clip (joined).mp4". Every part is encoded again, so different formats, sizes and rates fit: videos take the first one's size (the others fitted in, with bars) and frame rate, and a video without sound gets silence for its length. Up to 50 files.
+- **Trim** (audio and video, one file at a time): opens a window with the sound's loudness along its length, a video's frames above it, and the part to keep between two ends to drag (or times to type, "1:23.4"). Play plays that part first (files up to 20 minutes). Enter trims, Esc cancels, Space plays. The cut is exact, not at the nearest keyframe: the part is encoded again in the file's own format at the menu's quality. The result is "clip (trimmed).mp4".
 
-Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland the keyboard shortcut opens only the Formats wheel for now.
+Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland, Shift+drag (with Option or Control for these wheels) needs GNOME and its helper extension (see Linux below); the keyboard shortcut opens only the Formats wheel.
 
 ## The Actions wheel
 
@@ -83,7 +89,24 @@ Hold Control+Shift while dragging and a third wheel opens: what can be done with
 
 Archives go through bsdtar (libarchive): built into macOS and into Windows 10 and later (tar.exe), `libarchive-tools` on Linux (the setup script installs it). It refuses names with ".." and strips a leading "/", so nothing lands outside the new folder; an archive that does try is refused as a whole and leaves nothing behind. Unpacking may write at most 1 GB plus twenty times the archive's size, so a "zip bomb" is stopped. Unpacking first goes into a hidden folder next to the archive, so a half-done unpack is never mistaken for a finished one. A password-protected archive is refused. A plain .gz (one file, not a TAR) is unpacked by the app itself, within the same budget.
 
-On a Mac, start the drag first and then press Control+Shift: Control held before the click turns it into a right-click. Copying and moving files, sharing on Windows and a shelf for files come later ([ROADMAP](ROADMAP.md), stage 3).
+On a Mac, start the drag first and then press Control+Shift: Control held before the click turns it into a right-click. Copying and moving files and sharing on Windows come later ([ROADMAP](ROADMAP.md), stage 3). For moving files by hand there is the shelf.
+
+## The shelf (macOS)
+
+Drag files toward the top of the screen and the shelf opens to take them: out of the notch on a MacBook, under the ring icon on other screens (in the top right corner when the icon can't be seen). Drop them there, go to the folder where they belong, and drag them out of the shelf again.
+
+- Holding files only remembers where they are. Nothing is copied or moved until they are dragged out, and the drag's source is told it was a copy, so it never removes the originals.
+- Dragged out, Finder does what it does with its own drags: moves them on the same disk, copies them to another one, and Option makes a copy. Files that landed somewhere leave the shelf. The shelf itself never moves or deletes anything.
+- While it holds files a small sign stays: the newest file's icon and how many, beside the notch or in a pill under the ring icon. Point at it to see them, click to show them in Finder, and the × lets go of them all.
+- What it holds survives a restart (`shelf.json` next to the settings, the paths only). A file that was moved, renamed or deleted in the meantime is dropped from the shelf, never guessed at.
+- With Shift held the drag belongs to the wheel and the shelf steps aside.
+- To keep it away, untick **Shelf at the Top of the Screen** in the menu.
+
+Windows (above the clock) and Linux follow.
+
+### Switching wheels in one drag
+
+Once a wheel is open, the keys keep choosing: add Option (Alt) and it becomes the Tools wheel, press Control instead and it becomes the Actions wheel, keep only Shift and it is the formats again. With no keys held the wheel stays as it is, so they can be let go on the way to a segment. On Linux this works with X11; the Wayland shortcut opens the formats wheel only.
 
 ## On Windows and Linux
 
@@ -101,6 +124,7 @@ Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS
 
 - **X11:** like Windows. A drag that starts in a file manager (Files/Nautilus, Nemo, Caja, Thunar, Dolphin, PCManFM) or on the desktop, with Shift held, opens the wheel at the cursor.
 - **Wayland:** apps can't watch the pointer, so the wheel opens from a keyboard shortcut running `convert-wheel --show`, which reaches the running app over a socket in `XDG_RUNTIME_DIR`. That wheel waits for a file; Esc, a click in the middle or 20 seconds close it.
+- **Wayland on GNOME:** GNOME Shell can see drags, so the app installs a small GNOME Shell extension of its own (`src-tauri/gnome-shell/`, `src-tauri/src/gnome_shell.rs`) into `~/.local/share/gnome-shell/extensions` and turns it on the first time. While a drag goes on, the extension sends the app which app the drag started in and the keys held, over the same socket every 30 ms, and moves the wheel the app opens under the pointer (a Wayland app can't place its own windows). The app opens and switches the wheel from that as it does on X11. GNOME Shell loads a new or updated extension at the next login; the app says so once.
 - **Drop target:** our own GTK handlers instead of WebKit's. They answer "copy" over a format and nothing elsewhere, never "move" even with Shift held, and never ask the file manager to delete the original.
 - **Menu bar icon:** shown through AppIndicator.
 - **Open at Login:** an entry in `~/.config/autostart`.
@@ -125,6 +149,7 @@ On Windows the update runs the installer in passive mode (a progress bar, no que
 The ring icon in the menu bar opens:
 
 - **Open at Login**: adds or removes Convert Wheel in System Settings > General > Login Items. Only works for the installed app.
+- **Shelf at the Top of the Screen** (macOS): on unless unticked.
 - **Save Converted Files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
 - **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
 - **Quality**: Smaller Files, Balanced (the default, what the app always did) or Best Quality, for Pictures, Video and Audio separately. It holds for a whole drop, from when it starts.
@@ -142,6 +167,8 @@ The ring icon in the menu bar opens:
   | WMA | 128 kbit/s | 192 | 256 |
 
   Lossless formats (PNG, TIFF, WAV, FLAC, AIFF) and documents have no quality to choose. The Tools wheel's Compress keeps its own, lower settings.
+- **Highlight Color**: what colour the segment under the cursor lights up in: Orange (the default), Red, Pink, Purple, Blue, Teal, Green or Graphite. The next wheel opens in it.
+- **Wheel Glass** (macOS): Liquid Glass (the default) or No Liquid Glass, a plain solid wheel. With Liquid Glass, the Transparency slider under them sets how see-through it is, from frosted (left: the frosted material behind it and more white on the segments, easiest to read) to clear (right: no blur; the glass stays frosted only right behind each word, so the words still read). Saved when the knob is let go; the next wheel opens with it.
 - **Last: …**: how the last drop went, for when notifications are off. A click on it opens the folder with the new files selected, like a click on the notification. While a drop converts, the line shows how far it is: "Converting 3 of 10 to PNG…", with a percent for audio and video, or the time so far for a tool that doesn't report one.
 - **Stop Converting**: ends the drop being converted now. Files already done stay; the one in progress leaves nothing behind. Drops queued after it still run.
 - **Install ffmpeg…** (macOS and Windows): appears when a drop needed a converter that isn't installed, and the notification points to it. It runs `brew install` on macOS or `winget install` on Windows for that converter (several in a row: "Install ffmpeg and MuPDF…"), checks the app can now find it, and says so; then drop the files again. Without Homebrew it opens brew.sh; without winget it says to get App Installer from the Microsoft Store. On Windows, choosing it accepts the package's terms as typing the command would, and packages that install for all users, such as LibreOffice, still ask for admin rights. The package manager's last lines go to the log. On Linux the notification still names the `apt` command (it needs an admin password); the setup script installs everything at once.
@@ -188,9 +215,12 @@ The same converter runs from the command line. It prints the path of each new fi
 
 1. Start it from Terminal as above.
 2. Drag a file in Finder and hold Shift while dragging. The wheel appears under the cursor.
-3. Over the wheel, the dragged file shrinks to a small icon so its name doesn't cover the wheel. Move over the segments. The one under the cursor turns orange, moves out toward the cursor, and the middle says what it will become ("To PDF"). On a Force Touch trackpad each new segment gives a light tick. Over the middle it says "Cancel".
+3. Over the wheel, the dragged file shrinks to a small icon so its name doesn't cover the wheel. Move over the segments. The one under the cursor turns orange, moves out toward the cursor, and the middle says what it will become ("To PDF"). For one file it says roughly how big it will be instead, once the app has worked that out ("2.2 MB → ~410 KB"): for pictures (a piece of the middle converted and scaled up), sound (its length at the bit rate used; MP3's rate follows the music, so that one is rougher) and video that is only copied into another container. Video that is encoded again, documents and PDFs have no estimate. On a Force Touch trackpad each new segment gives a light tick. Over the middle it says "Cancel".
 4. Drop on a segment. The new file appears next to the original and a notification confirms it. Click the notification: Finder opens with the new file selected.
 5. Drop in the middle. The file slides back and nothing happens. Outside the wheel the drop works as usual in macOS: it slides back, or Finder moves the file if you let go over a folder.
+
+6. Drag a file without Shift toward the top of the screen. The shelf opens ("Drop to hold here"); drop it there. The file stays where it was, and a small sign stays at the top.
+7. Open another folder on the same disk, point at the sign and drag the shelf out into that folder. The file moves there and the shelf empties. With Option held it is copied instead.
 
 Also worth trying: several files at once, a file with no extension, text dragged from a browser (no wheel should appear), a second screen, and LibreOffice open at the same time.
 
@@ -220,13 +250,14 @@ Word's default font since 2023, Aptos, ships inside Word only, and its licence l
 ## How it works
 
 - **Trigger** (`src-tauri/src/trigger.rs`): every 30 ms it reads the drag pasteboard's change count, the mouse buttons and the Shift key. These are shared by the window server, so no permission prompt is needed.
-- **Wheel window** (`src-tauri/src/wheel_window.rs`): the native parts. Frosted glass behind the ring (the system material, so it follows light/dark mode and Reduce Transparency), the dragged file's icon in the middle, placement at the cursor kept inside the screen, and the fade in and out.
+- **Wheel window** (`src-tauri/src/wheel_window.rs`): the native parts. Glass behind the ring: Apple's Liquid Glass on macOS 26 and later, the frosted material before (both follow light/dark mode and Reduce Transparency), the dragged file's icon in the middle, placement at the cursor kept inside the screen, and the fade in and out.
 - **Drop target** (`src-tauri/src/drop_view.rs`): a transparent native view on top of the wheel takes the drop. It shrinks the dragged file to a small icon, tells the page which segment to light up, and queues the conversion.
 - **Formats** (`src-tauri/src/formats.rs`): what each kind of file can become, and which tools the Tools wheel offers for it.
 - **Converter** (`src-tauri/src/convert.rs`): picks the tool and its settings, then places the result safely.
 - **Queue** (`src-tauri/src/main.rs`): one worker converts drops in order, keeps the menu's progress line current, then posts the notification.
 - **Installing converters** (`src-tauri/src/converters.rs`): remembers the converters drops found missing, offers them in the menu, and runs `brew install` or `winget install` with fixed package names, never a shell line.
 - **Showing results** (`src-tauri/src/reveal.rs`): opens Finder, Explorer or the Linux file manager with the new files selected, through each system's own call rather than a command line.
+- **Shelf** (`src-tauri/src/shelf.rs`, `shelf_window.rs`): the held paths and where the shelf goes (the notch, under the menu bar icon, or the corner), and on macOS a native panel above the menu bar that takes drops and starts the drag out. The trigger tells it when a file drag comes near.
 - **Wheel** (`src/`): plain HTML, CSS and JavaScript in a transparent window. No frontend framework and no npm runtime packages. It opens and closes along the same path with no bounce, and follows Reduce Motion, Increase Contrast and dark mode.
 
 ## Layout
@@ -249,9 +280,13 @@ SECURITY.md                how to report a security problem
   src/settings.rs          saved choices (where files go, hidden formats)
   src/login.rs             Open at Login on each system
   src/drop_view.rs         macOS: the drop target over the wheel
+  src/shelf.rs             the shelf: held files, where it goes
+  src/shelf_window.rs      macOS: the shelf panel, drop in and drag out
   src/wheel_window.rs      macOS: glass, hub icon, placement, fades
   src/win32.rs             Windows: trigger, placement, drop target
-  src/linux.rs             Linux: X11 trigger, Wayland shortcut, placement, drop target
+  src/linux.rs             Linux: X11 trigger, Wayland shortcut and drags, placement, drop target
+  src/gnome_shell.rs       Linux: installs the GNOME Shell extension, reads its drag reports
+  gnome-shell/             the GNOME Shell extension (Shift+drag on Wayland)
   tauri.conf.json          window and bundle settings
   tauri.windows.conf.json  Windows window settings and installer types
   tauri.linux.conf.json    Linux window settings and package types

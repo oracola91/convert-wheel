@@ -1,6 +1,6 @@
 //! The menu bar icon and its menu: how the last conversion went, converters to
-//! install, updates, Open at Login, where converted files go, which formats the wheel
-//! offers, and the quality per kind of file.
+//! install, updates, Open at Login, the shelf (macOS), where converted files go, which
+//! formats the wheel offers, and the quality per kind of file.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -16,6 +16,8 @@ use crate::{converters, formats, login, reveal, update};
 const SAVE_NEXT: &str = "save:next";
 const SAVE_DOWNLOADS: &str = "save:downloads";
 const LOGIN: &str = "login";
+#[cfg(target_os = "macos")]
+const SHELF: &str = "shelf";
 const LAST: &str = "last";
 const STOP: &str = "stop";
 const INSTALL: &str = "install";
@@ -32,6 +34,11 @@ const FORMAT: &str = "fmt:";
 /// Quality choices are "quality:" followed by the kind and the level, e.g.
 /// "quality:video:best".
 const QUALITY: &str = "quality:";
+/// Highlight colours are "color:" followed by the colour, e.g. "color:blue".
+const COLOR: &str = "color:";
+/// Wheel Glass: "glass:on" (Liquid Glass) and "glass:off" (No Liquid Glass), macOS.
+#[cfg(target_os = "macos")]
+const GLASS: &str = "glass:";
 
 pub struct TrayMenu(Menu<Wry>);
 
@@ -90,12 +97,43 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let level_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = levels.iter().map(|k| k as _).collect();
     let quality = Submenu::with_items(app, "Quality", true, &level_refs)?;
 
+    let colors = settings::Highlight::ALL
+        .iter()
+        .map(|h| CheckMenuItem::with_id(app, format!("{COLOR}{}", h.key()), h.label(), true, current.highlight == *h, None::<&str>))
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let color_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = colors.iter().map(|c| c as _).collect();
+    let highlight = Submenu::with_items(app, "Highlight Color", true, &color_refs)?;
+
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
-    let menu = Menu::with_items(
-        app,
-        &[&title, &hint, &last, &stop, &sep()?, &update, &login, &save, &shown, &quality, &sep()?, &show_log, &quit],
-    )?;
+    let (separator, separator2) = (sep()?, sep()?);
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&title, &hint, &last, &stop, &separator, &update, &login];
+    // Only macOS has the shelf so far.
+    #[cfg(target_os = "macos")]
+    let shelf = CheckMenuItem::with_id(app, SHELF, "Shelf at the Top of the Screen", true, !current.shelf_off, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    items.push(&shelf);
+    let middle: [&dyn tauri::menu::IsMenuItem<Wry>; 4] = [&save, &shown, &quality, &highlight];
+    items.extend(middle);
+    // Only macOS has a choice of glass.
+    #[cfg(target_os = "macos")]
+    let liquid = CheckMenuItem::with_id(app, format!("{GLASS}on"), "Liquid Glass", true, !current.no_liquid_glass, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    let plain = CheckMenuItem::with_id(app, format!("{GLASS}off"), "No Liquid Glass", true, current.no_liquid_glass, None::<&str>)?;
+    // glass_slider.rs puts the slider under this line when the menu opens.
+    #[cfg(target_os = "macos")]
+    let slider_label = MenuItem::with_id(app, format!("{GLASS}label"), "Transparency", false, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    let glass_sep = sep()?;
+    #[cfg(target_os = "macos")]
+    let kind_items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&plain, &liquid, &glass_sep, &slider_label];
+    #[cfg(target_os = "macos")]
+    let glass = Submenu::with_items(app, "Wheel Glass", true, &kind_items)?;
+    #[cfg(target_os = "macos")]
+    items.push(&glass);
+    let rest: [&dyn tauri::menu::IsMenuItem<Wry>; 3] = [&separator2, &show_log, &quit];
+    items.extend(rest);
+    let menu = Menu::with_items(app, &items)?;
 
     // macOS: a template icon it tints to match the menu bar, light or dark. Windows'
     // tray can be light or dark too, so it gets the coloured app icon instead.
@@ -276,6 +314,14 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             }
             set_check(app, LOGIN, login::is_enabled());
         }
+        #[cfg(target_os = "macos")]
+        SHELF => {
+            if let Err(e) = store.update(|s| s.shelf_off = !s.shelf_off) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            set_check(app, SHELF, !store.get().shelf_off);
+            crate::shelf_window::setting_changed(app);
+        }
         SAVE_NEXT | SAVE_DOWNLOADS => {
             let wanted = if id == SAVE_NEXT { SaveTo::NextToOriginal } else { SaveTo::Downloads };
             if let Err(e) = store.update(|s| s.save_to = wanted) {
@@ -285,6 +331,31 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             let save_to = store.get().save_to;
             set_check(app, SAVE_NEXT, save_to == SaveTo::NextToOriginal);
             set_check(app, SAVE_DOWNLOADS, save_to == SaveTo::Downloads);
+        }
+        #[cfg(target_os = "macos")]
+        _ if id.starts_with(GLASS) => {
+            let plain = &id[GLASS.len()..] == "off";
+            if let Err(e) = store.update(|s| s.no_liquid_glass = plain) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            // Two choices, one ticked, matching what is saved.
+            let saved = store.get().no_liquid_glass;
+            set_check(app, &format!("{GLASS}on"), !saved);
+            set_check(app, &format!("{GLASS}off"), saved);
+        }
+        _ if id.starts_with(COLOR) => {
+            let wanted = &id[COLOR.len()..];
+            let Some(color) = settings::Highlight::ALL.into_iter().find(|h| h.key() == wanted) else {
+                return;
+            };
+            if let Err(e) = store.update(|s| s.highlight = color) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            // One colour ticked, the one saved; the next wheel opens in it.
+            let saved = store.get().highlight;
+            for h in settings::Highlight::ALL {
+                set_check(app, &format!("{COLOR}{}", h.key()), saved == h);
+            }
         }
         _ if id.starts_with(QUALITY) => {
             let Some((kind, wanted)) = id[QUALITY.len()..].split_once(':') else {

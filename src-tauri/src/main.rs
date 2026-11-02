@@ -6,7 +6,15 @@ mod convert;
 mod converters;
 #[cfg(target_os = "macos")]
 mod drop_view;
+mod editor;
+mod estimates;
 mod formats;
+#[cfg(target_os = "macos")]
+mod glass_slider;
+// Tested everywhere; used on Linux only.
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod gnome_shell;
 #[cfg(target_os = "linux")]
 mod linux;
 mod log;
@@ -16,6 +24,9 @@ mod mac_notification;
 mod menu;
 mod reveal;
 mod settings;
+mod shelf;
+#[cfg(target_os = "macos")]
+mod shelf_window;
 mod trigger;
 mod update;
 mod wheel;
@@ -24,6 +35,7 @@ mod wheel_window;
 #[cfg(windows)]
 mod win32;
 
+use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
@@ -45,6 +57,8 @@ pub(crate) fn busy_jobs() -> usize {
 struct Job {
     paths: Vec<String>,
     format: String,
+    /// What the editor chose, for Crop and Trim.
+    edit: Option<convert::Edit>,
 }
 
 /// How the menu and the notifications speak of a drop: converting it to a format, or
@@ -120,6 +134,24 @@ impl Words {
                 "Stopped evening out the loudness",
             ),
             "tool:mono" => tool("Mixing {} down to mono", "Made mono", "Made {} files mono", "mix down", "Stopped mixing down"),
+            "tool:qr" => tool(
+                "Reading the QR code in {}",
+                "Read the QR code",
+                "Read the QR codes in {} files",
+                "read the QR code in",
+                "Stopped reading QR codes",
+            ),
+            "tool:crop" => tool("Cropping {}", "Cropped", "Cropped {} files", "crop", "Stopped cropping"),
+            "tool:trim" => tool("Trimming {}", "Trimmed", "Trimmed {} files", "trim", "Stopped trimming"),
+            "tool:target" => tool(
+                "Compressing {} to a size",
+                "Compressed to a size",
+                "Compressed {} files to a size",
+                "compress",
+                "Stopped compressing",
+            ),
+            // Join makes one file of the whole drop: "{}" is "3 files".
+            "tool:join" => tool("Joining {}", "Joined into one file", "Joined {} files", "join", "Stopped joining"),
             "act:zip" => tool("Making a ZIP of {}", "Made a ZIP", "Made a ZIP of {} files", "zip", "Stopped making the ZIP"),
             "act:tgz" => tool("Making a TAR.GZ of {}", "Made a TAR.GZ", "Made a TAR.GZ of {} files", "pack", "Stopped packing"),
             "act:tar" => tool("Making a TAR of {}", "Made a TAR", "Made a TAR of {} files", "pack", "Stopped packing"),
@@ -152,10 +184,10 @@ struct Running {
 impl Running {
     #[cfg(test)]
     fn new(target: &str, paths: &[String]) -> Self {
-        Self::with_quality(target, paths, settings::Quality::default())
+        Self::with_quality(target, paths, settings::Quality::default(), None)
     }
 
-    fn with_quality(target: &str, paths: &[String], quality: settings::Quality) -> Self {
+    fn with_quality(target: &str, paths: &[String], quality: settings::Quality, edit: Option<convert::Edit>) -> Self {
         // A tool that makes one file of the whole drop works on it as one thing.
         let (count, first) = if formats::combines(target) {
             let what = match paths {
@@ -167,7 +199,7 @@ impl Running {
             (paths.len(), paths.first().map(|p| file_name(Path::new(p))).unwrap_or_default())
         };
         Running {
-            control: convert::Control::with_quality(quality),
+            control: convert::Control::with_edit(quality, edit),
             target: target.to_string(),
             words: Words::new(target),
             count,
@@ -188,6 +220,9 @@ impl Running {
 /// Longer file names are cut in the progress line, so the percent after them still
 /// fits in the menu.
 const NAME_MAX_CHARS: usize = 32;
+
+/// How much of a QR code's text the notification shows; all of it is copied.
+const QR_SHOWN: usize = 120;
 
 /// The menu's progress line: "Converting holiday.mov to MP4… 42%", or for a batch
 /// "Converting 3 of 10 to PNG…". A tool that doesn't say how far it is gets the time
@@ -235,10 +270,33 @@ fn wheel_cancel(app: AppHandle) {
     trigger::hide_wheel(&app, false, None);
 }
 
+/// The page drew a wheel and measured its words: on macOS the glass gets a frosted
+/// patch behind each. Boxes that don't fit the window are dropped.
+#[tauri::command]
+fn wheel_words(app: AppHandle, words: Vec<wheel::WordBox>) {
+    #[cfg(target_os = "macos")]
+    {
+        let words: Vec<_> = words.into_iter().filter(wheel::WordBox::valid).take(formats::MAX_SEGMENTS).collect();
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || wheel_window::set_words(&handle, words));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, words);
+}
+
 /// Queues a drop on the wheel for conversion.
 pub(crate) fn enqueue(app: &AppHandle, paths: Vec<String>, format: String) {
+    send_job(app, Job { paths, format, edit: None });
+}
+
+/// Queues a file the editor was used on (Crop, Trim), with what it chose.
+pub(crate) fn enqueue_edit(app: &AppHandle, path: String, format: &str, edit: convert::Edit) {
+    send_job(app, Job { paths: vec![path], format: format.into(), edit: Some(edit) });
+}
+
+fn send_job(app: &AppHandle, job: Job) {
     JOBS.fetch_add(1, Ordering::SeqCst);
-    if app.state::<Sender<Job>>().send(Job { paths, format }).is_err() {
+    if app.state::<Sender<Job>>().send(job).is_err() {
         JOBS.fetch_sub(1, Ordering::SeqCst);
         log::line("conversion worker is gone; drop not converted");
         notify(app, "Convert Wheel stopped converting", "Quit Convert Wheel and open it again.");
@@ -252,7 +310,7 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
         for job in rx {
             // The quality chosen in the menu when the drop starts holds for all of it.
             let quality = app.state::<settings::Store>().get().quality;
-            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality));
+            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality, job.edit));
             app.state::<NowConverting>().set(Some(Arc::clone(&running)));
             menu::show_progress(&app, &running.line());
             let (finished, done_signal) = mpsc::channel::<()>();
@@ -300,7 +358,7 @@ fn keep_progress_shown(app: &AppHandle, running: &Running, finished: Receiver<()
 fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Vec<PathBuf>) {
     let words = &running.words;
     // Converting or compressing video is slow; the video tools that copy are quick.
-    let encodes = !formats::is_tool(&job.format) || job.format == "tool:compress";
+    let encodes = !formats::is_tool(&job.format) || matches!(job.format.as_str(), "tool:compress" | "tool:trim" | "tool:join" | "tool:target");
     let slow = encodes
         && job.paths.iter().any(|p| {
             formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
@@ -372,8 +430,26 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
         return (words.stopped.clone(), body, done);
     }
     let (title, mut body) = summary(words, &done, &failed);
+    // How big the files were and are now, first so the menu's short line keeps it.
+    if let (true, false, Some(change)) = (failed.is_empty(), job.format == "tool:qr", size_change(&job.paths, &done)) {
+        body = format!("{change} · {body}");
+    }
     if moved {
         body.push_str(" (saved in Downloads: the original's folder is read-only)");
+    }
+    // A few words from the tool for one file, such as how small a picture had to get.
+    if let (Some(note), [_], []) = (running.control.take_note(), done.as_slice(), failed.as_slice()) {
+        body.push_str(&format!(" ({note})"));
+    }
+    // A QR code's text is what was wanted: it goes on the clipboard, and the
+    // notification shows it (the start of it, if long) instead of a file name.
+    if job.format == "tool:qr" && failed.is_empty() && !done.is_empty() {
+        let text = done.iter().filter_map(|f| fs::read_to_string(f).ok()).collect::<String>();
+        let text = text.trim().to_string();
+        let shown: String = text.chars().take(QR_SHOWN).collect();
+        let more = if text.chars().count() > QR_SHOWN { "…" } else { "" };
+        body = format!("{shown}{more} (copied)");
+        actions::copy_text(app, text);
     }
     (title, body, done)
 }
@@ -394,6 +470,23 @@ fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, downloads: &P
     } else {
         convert::combine(srcs, target, save_in, downloads)
     }
+}
+
+/// "2.2 MB → 410 KB": the files of a drop and what they became. None when a folder is
+/// on either side (unpacked archives, split PDFs), or a size can't be read.
+fn size_change(paths: &[String], done: &[PathBuf]) -> Option<String> {
+    let total = |files: Vec<&Path>| {
+        files.into_iter().try_fold(0u64, |sum, f| {
+            let meta = fs::metadata(f).ok()?;
+            meta.is_file().then(|| sum.saturating_add(meta.len()))
+        })
+    };
+    if done.is_empty() {
+        return None;
+    }
+    let before = total(paths.iter().map(Path::new).collect())?;
+    let after = total(done.iter().map(PathBuf::as_path).collect())?;
+    Some(format!("{} → {}", convert::size_text(before), convert::size_text(after)))
 }
 
 fn file_name(p: &Path) -> String {
@@ -495,6 +588,13 @@ fn cli(args: &[String]) -> i32 {
 }
 
 fn main() {
+    // WebKitGTK's DMA-BUF renderer makes the wheel stutter with some Linux graphics;
+    // drawing through shared memory is the usual way round it. Set before any thread
+    // starts; a value the user set still wins.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     // Panics anywhere (trigger threads, the worker, update tasks) leave a trace.
     panic::set_hook(Box::new(|info| {
         let place = info.location().map(|l| format!(" at {}:{}", l.file(), l.line())).unwrap_or_default();
@@ -549,7 +649,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
@@ -578,6 +678,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(reveal::Results::default());
     app.manage(NowConverting::default());
     app.manage(converters::Missing::default());
+    app.manage(editor::Editing::default());
+    app.manage(shelf::Shelf::load(app.path().app_config_dir()?.join("shelf.json")));
     // Before any notification: the ones shown earlier never report a click.
     #[cfg(target_os = "macos")]
     mac_notification::install(app.handle());
@@ -591,12 +693,15 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     })?;
     menu::build(app)?;
     app.manage(start_worker(app.handle().clone()));
+    app.manage(estimates::start(app.handle().clone()));
     app.manage(wheel::WheelState::default());
     #[cfg(target_os = "macos")]
     {
         let mtm = objc2::MainThreadMarker::new().ok_or("setup isn't on the main thread")?;
         wheel_window::install(app.handle(), mtm)?;
+        glass_slider::install(app.handle(), mtm);
         drop_view::install(app.handle())?;
+        shelf_window::install(app.handle(), mtm);
     }
     #[cfg(windows)]
     win32::install(app.handle());
@@ -661,5 +766,18 @@ mod tests {
     fn the_first_line_already_names_the_file() {
         let running = Running::new("png", &["/tmp/photo.heic".to_string()]);
         assert_eq!(running.line(), "Converting photo.heic to PNG…");
+    }
+
+    #[test]
+    fn the_notification_says_how_the_size_changed() {
+        let work = tempfile::tempdir().unwrap();
+        let (photo, small) = (work.path().join("photo.jpg"), work.path().join("photo (compressed).jpg"));
+        fs::write(&photo, vec![0u8; 2_200_000]).unwrap();
+        fs::write(&small, vec![0u8; 410_000]).unwrap();
+        let paths = [photo.to_string_lossy().into_owned()];
+        assert_eq!(size_change(&paths, &[small.clone()]).as_deref(), Some("2.2 MB → 410 KB"));
+        // A split PDF or an unpacked archive is a folder: no sizes.
+        assert_eq!(size_change(&paths, &[work.path().to_path_buf()]), None);
+        assert_eq!(size_change(&paths, &[]), None);
     }
 }

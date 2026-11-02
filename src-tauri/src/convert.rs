@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use crate::formats::{self, Kind};
-use crate::settings::Quality;
+use crate::settings::{Level, Quality};
+
+pub mod estimate;
 
 /// How long each tool may run before it is stopped. Generous: a stuck tool should not
 /// block every later conversion, but a long video must still finish.
@@ -96,7 +98,14 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         .and_then(|s| s.to_str())
         .ok_or("the file name is not valid text")?;
     let (stem, out_ext) = match tool {
-        Some(t) => (format!("{base} ({})", tool_suffix(t)), tool_out_ext(t, &ext)),
+        Some(t) => {
+            // Compress to a Size names the size: "photo (under 2 MB).jpg".
+            let suffix = match (t, control().and_then(|c| c.edit)) {
+                ("tool:target", Some(Edit::Size(bytes))) => format!("under {}", size_text(bytes)),
+                _ => tool_suffix(t).to_string(),
+            };
+            (format!("{base} ({suffix})"), tool_out_ext(t, &ext))
+        }
         None => (base.to_string(), target.to_string()),
     };
     // Not a folder, a device or a pipe (a pipe would block the read below forever).
@@ -138,6 +147,11 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
 
     let file = |done: Result<(), String>| done.map(|()| Output::File);
     let converted = match (tool, kind) {
+        (Some("tool:qr"), Kind::Image) => file(read_qr(&input, &out, work.path())),
+        (Some("tool:target"), Kind::Image) => file(size_limit().and_then(|limit| image_to_size(&input, &out, limit))),
+        (Some("tool:target"), Kind::Audio | Kind::Video) => {
+            file(size_limit().and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
+        }
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
@@ -255,26 +269,8 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     let mut cmd = Command::new(magick()?);
     cmd.args(IMAGE_LIMITS);
     cmd.arg(format!("{coder}:{}{frame}", src.display())).arg("-auto-orient");
-    if target == "jpg" {
-        // JPEG has no transparency; without this, transparent areas turn black.
-        cmd.args(["-background", "white", "-alpha", "remove", "-alpha", "off"]);
-    }
-    let level = quality().pictures;
-    if matches!(target, "jpg" | "webp") {
-        cmd.args(["-quality", level.pick("75", "90", "97")]);
-    }
-    // ImageMagick's own default for these (libheif's 50) is Balanced.
-    if let (true, Some(q)) = (matches!(target, "heic" | "avif"), level.pick(Some("40"), None, Some("85"))) {
-        cmd.args(["-quality", q]);
-    }
-    if target == "ico" {
-        // Icons are square, 256 at most, and hold several sizes. A picture that isn't
-        // square is fitted in and padded with transparency rather than stretched.
-        cmd.args(["-resize", "256x256", "-background", "none", "-gravity", "center", "-extent", "256x256"]);
-        cmd.args(["-define", "icon:auto-resize=256,128,64,48,32,16"]);
-    }
-    let out_coder = if target == "jpg" { "jpeg" } else { target };
-    cmd.arg(format!("{out_coder}:{}", out.display()));
+    cmd.args(image_options(target, quality().pictures));
+    cmd.arg(format!("{}:{}", out_coder(target), out.display()));
     run(cmd, QUICK).map_err(|e| {
         if target == "pdf" && e.contains("not authorized") {
             "this computer's ImageMagick security policy doesn't allow writing PDF (common on Ubuntu)".to_string()
@@ -282,6 +278,34 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
             e
         }
     })
+}
+
+/// What ImageMagick is told to write a picture as `target` at `level`.
+fn image_options(target: &str, level: Level) -> Vec<&'static str> {
+    let mut args = Vec::new();
+    if target == "jpg" {
+        // JPEG has no transparency; without this, transparent areas turn black.
+        args.extend(["-background", "white", "-alpha", "remove", "-alpha", "off"]);
+    }
+    if matches!(target, "jpg" | "webp") {
+        args.extend(["-quality", level.pick("75", "90", "97")]);
+    }
+    // ImageMagick's own default for these (libheif's 50) is Balanced.
+    if let (true, Some(q)) = (matches!(target, "heic" | "avif"), level.pick(Some("40"), None, Some("85"))) {
+        args.extend(["-quality", q]);
+    }
+    if target == "ico" {
+        // Icons are square, 256 at most, and hold several sizes. A picture that isn't
+        // square is fitted in and padded with transparency rather than stretched.
+        args.extend(["-resize", "256x256", "-background", "none", "-gravity", "center", "-extent", "256x256"]);
+        args.extend(["-define", "icon:auto-resize=256,128,64,48,32,16"]);
+    }
+    args
+}
+
+/// ImageMagick's name for the format a wheel `target` writes.
+fn out_coder(target: &str) -> &str {
+    if target == "jpg" { "jpeg" } else { target }
 }
 
 /// Caps for a small file that claims to be a huge picture, before it is decoded.
@@ -304,6 +328,11 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:still" => "first frame",
         "tool:loudness" => "even loudness",
         "tool:mono" => "mono",
+        "tool:qr" => "QR code",
+        "tool:crop" => "cropped",
+        "tool:trim" => "trimmed",
+        "tool:join" => "joined",
+        "tool:target" => "compressed",
         _ => "changed",
     }
 }
@@ -322,14 +351,21 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:still" => "turned into a picture",
         "tool:loudness" => "evened out",
         "tool:mono" => "mixed down to mono",
+        "tool:qr" => "read for QR codes",
+        "tool:crop" => "cropped",
+        "tool:trim" => "trimmed",
+        "tool:join" => "joined",
+        "tool:target" => "compressed to a size",
         _ => "changed",
     }
 }
 
-/// The format a tool's result is in: the file's own, except First Frame's picture.
+/// The format a tool's result is in: the file's own, except First Frame's picture and
+/// a QR code's text.
 fn tool_out_ext(tool_id: &str, ext: &str) -> String {
     match tool_id {
         "tool:still" => "jpg".into(),
+        "tool:qr" => "txt".into(),
         _ => formats::canonical(ext).into(),
     }
 }
@@ -353,6 +389,12 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             args.extend(["-map_metadata", "-1", "-map_chapters", "-1", "-c", "copy", "-fflags", "+bitexact"]);
             ffmpeg(src, &args, out, AUDIO)
         }
+        "tool:compress" if !video => {
+            let codec = sound_compress_codec(own).ok_or_else(|| format!("{} files can't be compressed", own.to_uppercase()))?;
+            let mut args = vec!["-map", "0:a:0", "-map_metadata", "0"];
+            args.extend(codec);
+            ffmpeg(src, &args, out, AUDIO)
+        }
         "tool:compress" => {
             let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT_HD];
             if own == "webm" {
@@ -368,6 +410,24 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             ffmpeg(src, &args, out, VIDEO)
         }
         "tool:still" => ffmpeg(src, &["-map", "0:v:0", "-frames:v", "1", "-q:v", "2", "-update", "1"], out, QUICK),
+        // The part chosen in the editor, cut exactly where asked: read from the start and
+        // encoded again (in the file's own format, at the menu's quality), rather than
+        // copied, which could only cut at the nearest keyframe.
+        "tool:trim" => {
+            let Some(Edit::Trim(trim)) = control().and_then(|c| c.edit) else {
+                return Err("Trim opens its window from the wheel".into());
+            };
+            let seconds = |ms: u64| format!("{}.{:03}", ms / 1000, ms % 1000);
+            let (from, to) = (seconds(trim.start_ms), seconds(trim.end_ms));
+            let mut args = vec!["-ss", from.as_str(), "-to", to.as_str(), "-map_metadata", "0"];
+            if video {
+                args.extend(video_encode(own).ok_or_else(|| format!("{} files can't be trimmed", own.to_uppercase()))?);
+            } else {
+                args.extend(["-map", "0:a:0"]);
+                args.extend(audio_args(own));
+            }
+            ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
+        }
         "tool:loudness" | "tool:mono" => {
             let mut args = vec!["-map", "0:a:0", "-map_metadata", "0"];
             let rate;
@@ -383,6 +443,19 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+/// Compress for sound: its own format at a lower bit rate than even the menu's
+/// Smaller Files; FLAC, being lossless, only at its strongest packing.
+fn sound_compress_codec(own: &str) -> Option<&'static [&'static str]> {
+    Some(match own {
+        "mp3" => &["-c:a", "libmp3lame", "-b:a", "96k"],
+        "m4a" | "aac" => &["-c:a", "aac", "-b:a", "96k"],
+        "ogg" | "opus" => &["-c:a", "libopus", "-b:a", "64k"],
+        "wma" => &["-c:a", "wmav2", "-b:a", "96k"],
+        "flac" => &["-c:a", "flac", "-compression_level", "12"],
+        _ => return None,
+    })
 }
 
 /// The sample rate of a file's first audio stream, from ffprobe, locked down like
@@ -423,6 +496,15 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
         // IPTC), and comments.
         "tool:clean" => cmd.args(["+profile", "!icc,*", "+set", "comment"]),
         "tool:rotate" => cmd.args(["-rotate", "90"]),
+        "tool:crop" => {
+            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit) else {
+                return Err("Crop opens its window from the wheel".into());
+            };
+            if crop.turns > 0 {
+                cmd.args(["-rotate", &(90 * u32::from(crop.turns)).to_string()]);
+            }
+            cmd.args(["-crop", &format!("{}x{}+{}+{}", crop.width, crop.height, crop.x, crop.y), "+repage"])
+        }
         other => return Err(format!("unknown tool {other}")),
     };
     // Written again, a lossy picture should look and weigh about the same. JPEG keeps
@@ -441,10 +523,14 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
     run(cmd, QUICK)
 }
 
-/// The encoder for an audio format, at the menu's audio quality. WAV, FLAC and AIFF
-/// are lossless and have none.
+/// The encoder for an audio format, at the menu's audio quality.
 fn audio_args(target: &str) -> Vec<&'static str> {
-    let level = quality().audio;
+    audio_args_at(target, quality().audio)
+}
+
+/// The encoder for an audio format at `level`. WAV, FLAC and AIFF are lossless and
+/// take no level.
+fn audio_args_at(target: &str, level: Level) -> Vec<&'static str> {
     match target {
         // VBR: about 130, 190 and 245 kbit/s.
         "mp3" => vec!["-c:a", "libmp3lame", "-q:a", level.pick("5", "2", "0")],
@@ -564,62 +650,57 @@ fn copy_streams(src: &Path, extra: &[&str], out: &Path) -> bool {
     false
 }
 
-fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
-    // H.264 in yuv420p needs even width and height; phone and screen recordings often
-    // aren't, so round down by a pixel where needed.
+/// What ffmpeg encodes a video into, by format, at the menu's video quality: H.264 with
+/// AAC (MP4, MOV, M4V, and MKV without MP4's own "+faststart"), VP9 with Opus (WebM),
+/// and for older players MPEG-4 Part 2, what Xvid makes, with MP3 (AVI) or Windows
+/// Media 8 with WMA (WMV), at most 1920 wide. H.264 in yuv420p needs even width and
+/// height; phone and screen recordings often aren't, so round down by a pixel there.
+fn video_encode(target: &str) -> Option<Vec<&'static str>> {
+    let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND];
+    match target {
+        "mp4" | "mov" | "m4v" | "mkv" => args.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]),
+        "avi" | "wmv" => args.extend(["-vf", FIT_HD]),
+        _ => {}
+    }
+    args.extend(video_codec(target)?);
+    Some(args)
+}
+
+/// The encoders of `video_encode`, without the streams and the picture's fit: for
+/// Join, which builds those itself.
+fn video_codec(target: &str) -> Option<Vec<&'static str>> {
     let level = quality().video;
-    let h264: Vec<&str> = vec![
-        "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264",
-        "-preset", "medium", "-crf", level.pick("26", "20", "17"), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart",
-    ];
     // MPEG-4 Part 2 and Windows Media 8 take a fixed quantiser: lower is better.
     let quantiser = level.pick("5", "3", "2");
+    Some(match target {
+        "mp4" | "mov" | "m4v" | "mkv" => {
+            let mut args = vec!["-c:v", "libx264", "-preset", "medium", "-crf", level.pick("26", "20", "17")];
+            args.extend(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
+            if target != "mkv" {
+                args.extend(["-movflags", "+faststart"]);
+            }
+            args
+        }
+        "webm" => vec![
+            "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0", "-deadline", "good", "-cpu-used", "4",
+            "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
+        ],
+        "avi" => vec!["-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4"],
+        "wmv" => vec!["-c:v", "wmv2", "-q:v", quantiser, "-c:a", "wmav2", "-b:a", "192k"],
+        _ => return None,
+    })
+}
+
+fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
     match target {
-        "mp4" | "mov" => {
-            // MP4, MOV and M4V usually hold the same streams: try a fast copy first.
-            if matches!(ext, "mp4" | "mov" | "m4v") && copy_streams(src, &["-movflags", "+faststart"], out) {
-                return Ok(());
-            }
-            ffmpeg(src, &h264, out, VIDEO)
+        // MP4, MOV and M4V usually hold the same streams, and Matroska nearly any: a fast
+        // copy first.
+        "mp4" | "mov" if matches!(ext, "mp4" | "mov" | "m4v") && copy_streams(src, &["-movflags", "+faststart"], out) => Ok(()),
+        "mkv" if copy_streams(src, &[], out) => Ok(()),
+        "mp4" | "mov" | "mkv" | "webm" | "avi" | "wmv" => {
+            let args = video_encode(target).ok_or_else(|| format!("video can't become .{target}"))?;
+            ffmpeg(src, &args, out, VIDEO)
         }
-        "webm" => ffmpeg(
-            src,
-            &[
-                "-map", "0:v:0", "-map", FIRST_SOUND, "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0",
-                "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
-            ],
-            out,
-            VIDEO,
-        ),
-        "mkv" => {
-            // Matroska holds nearly any streams: a fast copy first, as for MP4.
-            if copy_streams(src, &[], out) {
-                return Ok(());
-            }
-            // H.264 without MP4's own "+faststart".
-            ffmpeg(src, &h264[..h264.len() - 2], out, VIDEO)
-        }
-        // For older players: MPEG-4 Part 2 (what Xvid makes) with MP3, and Windows
-        // Media 8 with WMA.
-        "avi" => ffmpeg(
-            src,
-            &[
-                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT_HD, "-c:v", "mpeg4", "-vtag", "xvid",
-                "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4",
-            ],
-            out,
-            VIDEO,
-        ),
-        "wmv" => ffmpeg(
-            src,
-            &[
-                "-map", "0:v:0", "-map", FIRST_SOUND, "-vf", FIT_HD, "-c:v", "wmv2", "-q:v", quantiser,
-                "-c:a", "wmav2", "-b:a", "192k",
-            ],
-            out,
-            VIDEO,
-        ),
         "gif" => ffmpeg(
             src,
             &[
@@ -874,6 +955,7 @@ fn combine_words(tool_id: &str) -> Option<(&'static str, &'static str)> {
     match tool_id {
         "tool:merge" => Some(("Merge needs two PDFs or more", "only PDFs can be merged")),
         "tool:onepdf" => Some(("One PDF needs two pictures or more", "only pictures can go into one PDF")),
+        "tool:join" => Some(("Join needs two files or more", "only sound files, or only video files, can be joined")),
         _ => None,
     }
 }
@@ -888,6 +970,9 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
     let [first, _, ..] = srcs else {
         return Err(too_few.into());
     };
+    if target == "tool:join" {
+        return join_media(srcs, only, save_in, fallback);
+    }
     let pictures = target == "tool:onepdf";
     if pictures && srcs.len() > MAX_PICTURES {
         return Err(format!("One PDF takes up to {MAX_PICTURES} pictures"));
@@ -942,17 +1027,374 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
         let what = if pictures { "pictures" } else { "PDFs" };
         return Err(format!("MuPDF couldn't read one of the {what}"));
     }
+    place_combined(&out, first, target, "pdf", save_in, fallback)
+}
+
+/// Puts the one result of a drop next to its first file, named after it ("report
+/// (merged).pdf"), or in Downloads when that folder can't be written to.
+fn place_combined(out: &Path, first: &Path, target: &str, ext: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
     let stem = first.file_stem().and_then(|s| s.to_str()).ok_or("the file name is not valid text")?;
     let stem = format!("{stem} ({})", tool_suffix(target));
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
         None => first.parent().ok_or("the file has no folder")?.to_path_buf(),
     };
-    let placed = match place(&out, &dir, &stem, "pdf") {
-        Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| place(&out, fallback, &stem, "pdf")),
+    let placed = match place(out, &dir, &stem, ext) {
+        Err(e) if save_in.is_none() && is_no_write(&e) => fs::create_dir_all(fallback).and_then(|_| place(out, fallback, &stem, ext)),
         other => other,
     };
     placed.map_err(|e| format!("can't save the result: {e}"))
+}
+
+/// Adds a few words to the notification of the drop being converted.
+fn note(text: String) {
+    if let Some(c) = control() {
+        *c.note.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+    }
+}
+
+/// The size Compress to a Size aims under, from the editor.
+fn size_limit() -> Result<u64, String> {
+    match control().and_then(|c| c.edit) {
+        Some(Edit::Size(bytes)) => Ok(bytes),
+        _ => Err("Compress to a Size opens its window from the wheel".into()),
+    }
+}
+
+/// Compress to a Size for a picture: the highest quality (25 to 92) that comes in at
+/// `limit` bytes or under, found by halving the range. If even the lowest is too big,
+/// the picture is made smaller by about as much as that needs, and the search runs
+/// again, and the notification says how big it came out. Metadata stays, as with
+/// Compress.
+fn image_to_size(src: &Path, out: &Path, limit: u64) -> Result<(), String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    if !matches!(coder, "jpeg" | "heic" | "webp" | "avif") {
+        return Err("only JPEG, HEIC, WebP and AVIF pictures can be compressed to a size".into());
+    }
+    let magick = magick()?;
+    let write = |percent: u32, quality: u32| -> Result<u64, String> {
+        let mut cmd = Command::new(&magick);
+        cmd.args(IMAGE_LIMITS).arg(format!("{coder}:{}[0]", src.display())).arg("-auto-orient");
+        if percent < 100 {
+            cmd.args(["-resize", &format!("{percent}%")]);
+        }
+        cmd.args(["-quality", &quality.to_string()]).arg(format!("{coder}:{}", out.display()));
+        run(cmd, QUICK)?;
+        fs::metadata(out).map(|m| m.len()).map_err(|e| format!("work file: {e}"))
+    };
+    let mut percent = 100;
+    loop {
+        let lowest = write(percent, 25)?;
+        if lowest <= limit {
+            let (mut low, mut high, mut best) = (26, 92, 25);
+            while low <= high {
+                let middle = (low + high) / 2;
+                if write(percent, middle)? <= limit {
+                    best = middle;
+                    low = middle + 1;
+                } else {
+                    high = middle - 1;
+                }
+            }
+            write(percent, best)?;
+            if percent < 100 {
+                if let Some((w, h)) = pixel_size(out, coder) {
+                    note(format!("made smaller to fit: {w} × {h} pixels"));
+                }
+            }
+            return Ok(());
+        }
+        let next = (f64::from(percent) * (limit as f64 / lowest as f64).sqrt() * 0.9) as u32;
+        if next < 5 || next >= percent {
+            return Err(format!("this picture can't be made {} or smaller", size_text(limit)));
+        }
+        percent = next;
+    }
+}
+
+/// For the Compress to a Size window: under the first size a picture will probably have
+/// to get smaller to fit, under the second it comes out small and blurry. Rough guides
+/// from its pixels, for a warning, not a limit. None for anything but the pictures it
+/// takes, or when ImageMagick can't say how big the picture is.
+pub fn picture_warnings(src: &Path) -> Option<(u64, u64)> {
+    let coder = sniff_image(&read_head(src).ok()?)?;
+    if !matches!(coder, "jpeg" | "heic" | "webp" | "avif") {
+        return None;
+    }
+    let (w, h) = pixel_size(src, coder)?;
+    Some(warning_sizes(f64::from(w) * f64::from(h), coder))
+}
+
+/// Roughly the bytes a pixel of an everyday photo takes at quality 25, the lowest
+/// Compress to a Size tries.
+fn least_bytes_per_pixel(coder: &str) -> f64 {
+    match coder {
+        "jpeg" => 0.04,
+        "webp" => 0.03,
+        _ => 0.02,
+    }
+}
+
+/// Fewer pixels than this (800 × 600) and a photo looks small and blurry on screen.
+const BLURRY_PIXELS: f64 = 480_000.0;
+
+fn warning_sizes(pixels: f64, coder: &str) -> (u64, u64) {
+    let per_pixel = least_bytes_per_pixel(coder);
+    ((pixels * per_pixel) as u64, (BLURRY_PIXELS.min(pixels / 4.0) * per_pixel) as u64)
+}
+
+/// A picture's size upright, in pixels, read without decoding all of it.
+fn pixel_size(src: &Path, coder: &str) -> Option<(u32, u32)> {
+    let work = tempfile::tempdir().ok()?;
+    let info = work.path().join("size.txt");
+    let mut cmd = Command::new(magick().ok()?);
+    cmd.args(IMAGE_LIMITS)
+        .arg("-ping")
+        .arg(format!("{coder}:{}[0]", src.display()))
+        .args(["-format", "%w %h %[orientation]"])
+        .arg(format!("info:{}", info.display()));
+    run(cmd, QUICK).ok()?;
+    let text = fs::read_to_string(&info).ok()?;
+    let mut words = text.split_whitespace();
+    let (w, h) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
+    // A quarter turn in its EXIF orientation: it shows the other way round.
+    let turned = matches!(words.next(), Some("LeftTop" | "RightTop" | "RightBottom" | "LeftBottom"));
+    Some(if turned { (h, w) } else { (w, h) })
+}
+
+/// The least a sound or video file can be compressed to, from its length: what the
+/// lowest rates below give, with the container's share. None for anything else.
+pub fn smallest_size(src: &Path) -> Option<u64> {
+    let ext = formats::extension(src)?;
+    let rate = match formats::kind_of(&ext)? {
+        Kind::Video => LEAST_PICTURE + LEAST_VIDEO_SOUND,
+        Kind::Audio => f64::from(sound_codec(formats::canonical(&ext))?.1) * 1000.0,
+        _ => return None,
+    };
+    let work = tempfile::tempdir().ok()?;
+    let length = media_length(src, &work.path().join("probe"))?.as_secs_f64();
+    Some((rate * length / 8.0 / CONTAINER_SHARE).ceil() as u64)
+}
+
+/// The share of a file its streams get; the rest is the container's.
+const CONTAINER_SHARE: f64 = 0.96;
+/// The lowest picture rate worth making, and the sound beside it, in bits a second.
+const LEAST_PICTURE: f64 = 100_000.0;
+const LEAST_VIDEO_SOUND: f64 = 48_000.0;
+
+/// A sound format's encoder and the bit rates it takes, in kbit/s.
+fn sound_codec(own: &str) -> Option<(&'static str, u32, u32)> {
+    match own {
+        "mp3" => Some(("libmp3lame", 32, 320)),
+        "m4a" | "aac" => Some(("aac", 24, 320)),
+        "ogg" | "opus" => Some(("libopus", 8, 256)),
+        "wma" => Some(("wmav2", 32, 192)),
+        _ => None,
+    }
+}
+
+/// Compress to a Size for sound and video: the bit rate the size allows over the file's
+/// length. A result still over the size (rare, two passes aim well) is made again at a
+/// lower rate, once.
+fn media_to_size(src: &Path, ext: &str, out: &Path, work: &Path, limit: u64) -> Result<(), String> {
+    let own = formats::canonical(ext);
+    let video = formats::kind_of(ext) == Some(Kind::Video);
+    let length = media_length(src, out).ok_or("ffprobe couldn't tell how long this file is")?.as_secs_f64();
+    let too_small = || format!("it can't be made {} or smaller: it is too long for that", size_text(limit));
+    let mut rate = limit as f64 * 8.0 * CONTAINER_SHARE / length;
+    for _ in 0..2 {
+        let _ = fs::remove_file(out);
+        if video {
+            video_at_rate(src, own, out, work, rate).ok_or_else(too_small)??;
+        } else {
+            let (codec, least, most) = sound_codec(own).ok_or_else(|| format!("{} files can't be compressed to a size", own.to_uppercase()))?;
+            let kbps = (rate / 1000.0) as u32;
+            if kbps < least {
+                return Err(too_small());
+            }
+            let kbps = format!("{}k", kbps.min(most));
+            ffmpeg(src, &["-map", "0:a:0", "-map_metadata", "0", "-c:a", codec, "-b:a", &kbps], out, AUDIO)?;
+        }
+        let size = fs::metadata(out).map(|m| m.len()).map_err(|e| format!("work file: {e}"))?;
+        if size <= limit {
+            return Ok(());
+        }
+        rate *= 0.92 * limit as f64 / size as f64;
+    }
+    Err(format!("this file can't be made {} or smaller", size_text(limit)))
+}
+
+/// A video at `rate` bits a second in all, in two passes: the first only to learn where
+/// the bits are needed. 96k sound (48k when tight); the picture fitted to 1920, 1280 or
+/// 854 on the long side as the rate drops. None when the rate is too low for a picture.
+fn video_at_rate(src: &Path, own: &str, out: &Path, work: &Path, rate: f64) -> Option<Result<(), String>> {
+    let sound = if rate > 400_000.0 { 96_000.0 } else { LEAST_VIDEO_SOUND };
+    let picture = rate - sound;
+    if picture < LEAST_PICTURE {
+        return None;
+    }
+    let long = if picture < 600_000.0 {
+        854
+    } else if picture < 1_500_000.0 {
+        1280
+    } else {
+        1920
+    };
+    let fit = format!(
+        "scale=w='if(gte(iw,ih),min({long},iw),-2)':h='if(gte(iw,ih),-2,min({long},ih))',scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    );
+    let (v, a) = (format!("{}k", (picture / 1000.0) as u32), format!("{}k", (sound / 1000.0) as u32));
+    let log = work.join("passes").to_string_lossy().into_owned();
+    let (codec, sound_codec): (&[&str], &str) = match own {
+        "mp4" | "mov" | "m4v" | "mkv" => (&["-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p"], "aac"),
+        "webm" => (&["-c:v", "libvpx-vp9", "-deadline", "good", "-cpu-used", "4", "-row-mt", "1"], "libopus"),
+        other => return Some(Err(format!("{} files can't be compressed to a size", other.to_uppercase()))),
+    };
+    let mut first = vec!["-map", "0:v:0", "-vf", &fit];
+    first.extend(codec);
+    first.extend(["-b:v", &v, "-pass", "1", "-passlogfile", &log, "-an", "-f", "null"]);
+    if let Err(e) = ffmpeg(src, &first, &work.join("pass1.null"), VIDEO) {
+        return Some(Err(e));
+    }
+    let mut second = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-map_metadata", "0", "-vf", &fit];
+    second.extend(codec);
+    second.extend(["-b:v", &v, "-pass", "2", "-passlogfile", &log, "-c:a", sound_codec, "-b:a", &a]);
+    if !matches!(own, "mkv" | "webm") {
+        second.extend(["-movflags", "+faststart"]);
+    }
+    Some(ffmpeg(src, &second, out, VIDEO))
+}
+
+/// Join takes at most this many files.
+const MAX_JOIN: usize = 50;
+
+/// The Tools wheel's Join: sound files, or video files, one after another in the order
+/// dropped, as one file in the first one's format: "clip (joined).mp4". Every part is
+/// read and encoded again, so different formats, sizes and rates fit together: videos
+/// take the first one's size (the others fitted inside it, with bars) and frame rate,
+/// sound becomes 48 kHz stereo, and a video without sound gets silence for its length.
+fn join_media(srcs: &[PathBuf], only: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
+    let first = &srcs[0];
+    let own = formats::canonical(&formats::extension(first).unwrap_or_default()).to_string();
+    let video = formats::kind_of(&own) == Some(Kind::Video);
+    if srcs.len() > MAX_JOIN {
+        return Err(format!("Join takes up to {MAX_JOIN} files"));
+    }
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let (width, height, rate) = if video {
+        let (w, h, rate) = video_facts(first, work.path()).ok_or("ffprobe couldn't read the first video")?;
+        let (w, h) = join_size(w, h, &own);
+        (w, h, rate)
+    } else {
+        (0, 0, 0.0)
+    };
+    let mut graph = String::new();
+    let mut parts = String::new();
+    for (i, src) in srcs.iter().enumerate() {
+        let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let fail = |e: &str| format!("{name}: {e}");
+        let ext = formats::extension(src).unwrap_or_default();
+        if !formats::tool_takes("tool:join", &ext) || (formats::kind_of(&ext) == Some(Kind::Video)) != video {
+            return Err(fail(only));
+        }
+        if !fs::metadata(src).is_ok_and(|m| m.is_file()) {
+            return Err(fail("this is not a regular file"));
+        }
+        let sound = format!("aresample=48000,aformat=channel_layouts=stereo[a{i}];");
+        if video {
+            graph += &format!(
+                "[{i}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,\
+                 pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={rate:.3},format=yuv420p[v{i}];"
+            );
+            if has_sound(src, work.path()) {
+                graph += &format!("[{i}:a:0]{sound}");
+            } else {
+                let length = media_length(src, &work.path().join("probe")).ok_or_else(|| fail("ffprobe couldn't tell how long this file is"))?;
+                graph += &format!("anullsrc=r=48000:cl=stereo,atrim=duration={:.3},{sound}", length.as_secs_f64());
+            }
+            parts += &format!("[v{i}][a{i}]");
+        } else {
+            graph += &format!("[{i}:a:0]{sound}");
+            parts += &format!("[a{i}]");
+        }
+    }
+    let joined = if video { "[v][a]" } else { "[a]" };
+    graph += &format!("{parts}concat=n={}:v={}:a=1{joined}", srcs.len(), u8::from(video));
+    let out = work.path().join(format!("joined.{own}"));
+    let mut args = vec!["-filter_complex", graph.as_str()];
+    if video {
+        args.extend(["-map", "[v]", "-map", "[a]"]);
+        args.extend(video_codec(&own).ok_or_else(|| format!("{} files can't be joined", own.to_uppercase()))?);
+    } else {
+        args.extend(["-map", "[a]"]);
+        args.extend(audio_args(&own));
+    }
+    ffmpeg_many(srcs, &args, &out, if video { VIDEO } else { AUDIO }).map_err(|e| redact(&e, first, work.path()))?;
+    place_combined(&out, first, "tool:join", &own, save_in, fallback)
+}
+
+/// Join's picture size: the first video's, in even numbers, and for AVI and WMV at most
+/// 1920 on the long side, like their conversions.
+fn join_size(width: u32, height: u32, target: &str) -> (u32, u32) {
+    let long = width.max(height).max(1);
+    let scale = if matches!(target, "avi" | "wmv") && long > 1920 { 1920.0 / f64::from(long) } else { 1.0 };
+    let even = |n: u32| ((f64::from(n) * scale) as u32 / 2 * 2).max(2);
+    (even(width), even(height))
+}
+
+/// The first video stream's size as it is shown (turned by its rotation) and its frame
+/// rate (30 when it can't be told).
+fn video_facts(src: &Path, work: &Path) -> Option<(u32, u32, f64)> {
+    let answer = work.join("video.txt");
+    let mut cmd = Command::new(tool("ffprobe").ok()?);
+    cmd.args(["-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-select_streams", "v:0"])
+        .args(["-show_entries", "stream=width,height,avg_frame_rate:stream_side_data=rotation"])
+        .args(["-of", "default=noprint_wrappers=1", "-o"])
+        .arg(format!("file:{}", answer.display()))
+        .arg(format!("file:{}", src.display()));
+    run(cmd, QUICK).ok()?;
+    let text = fs::read_to_string(&answer).ok()?;
+    let value = |key: &str| text.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('='));
+    let (width, height): (u32, u32) = (value("width")?.parse().ok()?, value("height")?.parse().ok()?);
+    let turned = value("rotation").and_then(|r| r.parse::<i32>().ok()).is_some_and(|r| r.rem_euclid(180) == 90);
+    let rate = value("avg_frame_rate")
+        .and_then(|r| {
+            let (n, d) = r.split_once('/')?;
+            let (n, d): (f64, f64) = (n.parse().ok()?, d.parse().ok()?);
+            (d > 0.0).then(|| n / d)
+        })
+        .filter(|r| r.is_finite() && *r > 0.0 && *r <= 240.0)
+        .unwrap_or(30.0);
+    Some(if turned { (height, width, rate) } else { (width, height, rate) })
+}
+
+/// Whether a file has a sound track.
+fn has_sound(src: &Path, work: &Path) -> bool {
+    let answer = work.join("sound.txt");
+    let Ok(ffprobe) = tool("ffprobe") else {
+        return false;
+    };
+    let mut cmd = Command::new(ffprobe);
+    cmd.args(["-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-select_streams", "a"])
+        .args(["-show_entries", "stream=index", "-of", "csv=p=0", "-o"])
+        .arg(format!("file:{}", answer.display()))
+        .arg(format!("file:{}", src.display()));
+    run(cmd, QUICK).is_ok() && fs::read_to_string(&answer).is_ok_and(|text| !text.trim().is_empty())
+}
+
+/// ffmpeg with several inputs, each locked down like `ffmpeg`'s one.
+fn ffmpeg_many(srcs: &[PathBuf], args: &[&str], out: &Path, limit: Duration) -> Result<(), String> {
+    let mut cmd = Command::new(tool("ffmpeg")?);
+    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
+    for src in srcs {
+        cmd.args(["-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-i"])
+            .arg(format!("file:{}", src.display()));
+    }
+    cmd.args(args).arg(out);
+    run(cmd, limit)
 }
 
 /// A picture as page `n` of One PDF, in `work`: upright, on white where it was see-through,
@@ -1109,6 +1551,80 @@ pub struct Control {
     percent: AtomicU8,
     /// The quality levels chosen in the menu when the drop started.
     quality: Quality,
+    /// What was chosen in the editor, for Crop and Trim.
+    edit: Option<Edit>,
+    /// A few words for the notification from the tool that ran, such as how small a
+    /// picture had to get to fit.
+    note: Mutex<Option<String>>,
+}
+
+/// What a tool that opens the editor was given there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edit {
+    Crop(Crop),
+    Trim(Trim),
+    /// Compress to a Size: at most this many bytes.
+    Size(u64),
+}
+
+/// "2 MB", "1.5 MB", "500 KB", the way Finder counts (1000 bytes to a kilobyte).
+pub fn size_text(bytes: u64) -> String {
+    let (value, unit) = match bytes {
+        0..=999 => return format!("{bytes} bytes"),
+        1_000..=999_999 => (bytes as f64 / 1e3, "KB"),
+        1_000_000..=999_999_999 => (bytes as f64 / 1e6, "MB"),
+        _ => (bytes as f64 / 1e9, "GB"),
+    };
+    let text = if value < 10.0 { format!("{value:.1}") } else { format!("{value:.0}") };
+    format!("{} {unit}", text.trim_end_matches(".0"))
+}
+
+/// A trim chosen in the editor: the part of the file from `start_ms` to `end_ms`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Trim {
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+impl Trim {
+    /// At least a tenth of a second, inside a file `length_ms` long (with a little slack
+    /// at the end, where lengths are rounded).
+    pub fn check(&self, length_ms: u64) -> Result<(), String> {
+        let long_enough = self.end_ms.checked_sub(self.start_ms).is_some_and(|ms| ms >= 100);
+        if long_enough && self.end_ms <= length_ms.saturating_add(50) {
+            Ok(())
+        } else {
+            Err("the part to keep is outside the file".into())
+        }
+    }
+}
+
+/// A crop chosen in the editor: the picture, upright, is turned `turns` quarter turns
+/// clockwise, then cut to the box, given in pixels of the turned picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Crop {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub turns: u8,
+}
+
+impl Crop {
+    /// The box lies inside a picture of `width` x `height` (upright) once it is turned.
+    pub fn check(&self, width: u32, height: u32) -> Result<(), String> {
+        let (w, h) = if self.turns % 2 == 1 { (height, width) } else { (width, height) };
+        let inside = self.turns < 4
+            && self.width > 0
+            && self.height > 0
+            && self.x.checked_add(self.width).is_some_and(|right| right <= w)
+            && self.y.checked_add(self.height).is_some_and(|bottom| bottom <= h);
+        if inside {
+            Ok(())
+        } else {
+            Err("the crop box is outside the picture".into())
+        }
+    }
 }
 
 const NO_PERCENT: u8 = u8::MAX;
@@ -1116,11 +1632,17 @@ const NO_PERCENT: u8 = u8::MAX;
 impl Control {
     #[cfg(test)]
     pub fn new() -> Arc<Self> {
-        Self::with_quality(Quality::default())
+        Self::with_edit(Quality::default(), None)
     }
 
-    pub fn with_quality(quality: Quality) -> Arc<Self> {
-        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT), quality })
+    /// A drop's control: the menu's quality, and for Crop and Trim what the editor chose.
+    pub fn with_edit(quality: Quality, edit: Option<Edit>) -> Arc<Self> {
+        Arc::new(Control { stop: AtomicBool::new(false), percent: AtomicU8::new(NO_PERCENT), quality, edit, note: Mutex::new(None) })
+    }
+
+    /// What the tool that ran wants added to the notification, once.
+    pub fn take_note(&self) -> Option<String> {
+        self.note.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     /// Ends the tool running now, with everything it started, and keeps the drop from
@@ -1224,7 +1746,50 @@ fn run_tool(mut cmd: Command, limit: Duration) -> Result<(), Failure> {
     running().push(id);
     let result = wait(&mut child, &name, limit, &mut errors);
     running().retain(|&p| p != id);
-    result
+    result.map_err(|mut f| {
+        if let Some(hint) = heic_hint(&f.output) {
+            f.message = hint;
+        }
+        f
+    })
+}
+
+/// libheif reads and writes HEIC through plugins, and Ubuntu (24.04 on) ships the HEVC
+/// ones as packages of their own that ImageMagick doesn't bring. When ImageMagick's
+/// HEIC coder fails and one of them is missing, the message says how to add it.
+fn heic_hint(output: &str) -> Option<String> {
+    if !cfg!(target_os = "linux") || !output.contains("heic.c") {
+        return None;
+    }
+    let missing = heic_plugins_missing(Path::new("/usr/lib"));
+    (!missing.is_empty()).then(|| format!("HEIC needs add-ons that aren't installed: sudo apt install {}", missing.join(" ")))
+}
+
+/// The HEVC plugins libheif lacks under `lib` (in <arch>/libheif/plugins), as package
+/// names. None where libheif has no plugin folder: older libheif has HEVC built in.
+fn heic_plugins_missing(lib: &Path) -> Vec<&'static str> {
+    let folders: Vec<PathBuf> = fs::read_dir(lib)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|arch| arch.path().join("libheif/plugins"))
+        .filter(|f| f.is_dir())
+        .collect();
+    if folders.is_empty() {
+        return Vec::new();
+    }
+    let plugins: Vec<String> = folders
+        .iter()
+        .filter_map(|f| fs::read_dir(f).ok())
+        .flatten()
+        .flatten()
+        .map(|p| p.file_name().to_string_lossy().into_owned())
+        .collect();
+    [("de265", "libheif-plugin-libde265"), ("x265", "libheif-plugin-x265")]
+        .into_iter()
+        .filter(|(part, _)| !plugins.iter().any(|p| p.contains(part)))
+        .map(|(_, package)| package)
+        .collect()
 }
 
 /// Tools running right now, so quitting can stop them instead of leaving them behind.
@@ -1420,7 +1985,9 @@ fn extra_tool_dirs() -> Vec<PathBuf> {
 }
 
 /// winget puts ffmpeg behind a link folder, pandoc in the user's AppData and
-/// ImageMagick in a versioned Program Files folder.
+/// ImageMagick in a versioned Program Files folder. The PATH saved in the registry
+/// counts too: what an installer adds to it reaches the app's own PATH only after the
+/// next sign-in, so ffmpeg just installed with winget was not found until then.
 #[cfg(windows)]
 fn extra_tool_dirs() -> Vec<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default();
@@ -1434,7 +2001,32 @@ fn extra_tool_dirs() -> Vec<PathBuf> {
                 .map(|e| e.path()),
         );
     }
+    dirs.extend(saved_path());
     dirs
+}
+
+/// The PATH folders saved for this user and for the computer, as a newly started
+/// program gets them, with %VARIABLES% filled in.
+#[cfg(windows)]
+fn saved_path() -> Vec<PathBuf> {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    // A variable holds at most 32767 characters. Asking for REG_SZ also takes the usual
+    // REG_EXPAND_SZ and fills in its variables.
+    let read = |key: HKEY, sub: PCWSTR| {
+        let mut buf = vec![0u16; 32768];
+        let mut size = (buf.len() * 2) as u32;
+        let found = unsafe { RegGetValueW(key, sub, w!("Path"), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut size)) };
+        found.is_ok().then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).saturating_sub(1).min(buf.len())]))
+    };
+    let user = read(HKEY_CURRENT_USER, w!("Environment"));
+    let machine = read(HKEY_LOCAL_MACHINE, w!("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"));
+    [user, machine]
+        .into_iter()
+        .flatten()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .filter(|dir| dir.is_absolute())
+        .collect()
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -1444,6 +2036,138 @@ fn extra_tool_dirs() -> Vec<PathBuf> {
 
 /// ImageMagick 7 is `magick`. Linux distributions that still ship ImageMagick 6 call
 /// it `convert`, with the same options. (On Windows `convert` is a disk tool, so no.)
+/// The text of every QR code in a picture, one per line, into a text file. ImageMagick
+/// reads the picture, whatever its format, into plain grey levels at most 2400 pixels
+/// across; rqrr finds and decodes the codes. The text is only saved, never opened.
+fn read_qr(src: &Path, out: &Path, work: &Path) -> Result<(), String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    let grey = work.join("grey.pgm");
+    let mut cmd = Command::new(magick()?);
+    cmd.args(IMAGE_LIMITS)
+        .arg(format!("{coder}:{}[0]", src.display()))
+        .args(["-auto-orient", "-colorspace", "Gray", "-resize", "2400x2400>", "-depth", "8"])
+        .arg(format!("pgm:{}", grey.display()));
+    run(cmd, QUICK)?;
+    let data = fs::read(&grey).map_err(|e| format!("work file: {e}"))?;
+    let (width, height, pixels) = read_pgm(&data).ok_or("ImageMagick wrote no picture to read")?;
+    let mut image = rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| pixels[y * width + x]);
+    let texts: Vec<String> = image.detect_grids().iter().filter_map(|grid| grid.decode().ok()).map(|(_, text)| text).collect();
+    if texts.is_empty() {
+        return Err("no QR code found in this picture".into());
+    }
+    fs::write(out, texts.join("\n") + "\n").map_err(|e| format!("couldn't save the text: {e}"))
+}
+
+/// Width, height and grey levels of a binary PGM ("P5", 8 bits), as ImageMagick
+/// writes it: four header fields, with comments allowed, then one white-space byte.
+fn read_pgm(data: &[u8]) -> Option<(usize, usize, &[u8])> {
+    let mut fields = Vec::new();
+    let mut i = 0;
+    while fields.len() < 4 {
+        while i < data.len() && (data[i].is_ascii_whitespace() || data[i] == b'#') {
+            if data[i] == b'#' {
+                while i < data.len() && data[i] != b'\n' {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        let start = i;
+        while i < data.len() && !data[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        fields.push(std::str::from_utf8(&data[start..i]).ok()?);
+    }
+    let (width, height, max): (usize, usize, usize) = (fields[1].parse().ok()?, fields[2].parse().ok()?, fields[3].parse().ok()?);
+    let body = data.get(i + 1..)?;
+    let size = width.checked_mul(height)?;
+    (fields[0] == "P5" && max <= 255 && size > 0 && body.len() >= size).then(|| (width, height, &body[..size]))
+}
+
+/// How many loudness values the editor draws a sound along.
+pub const PEAKS: usize = 600;
+
+/// What the editor shows of a sound or video file.
+pub struct MediaPreview {
+    pub length_ms: u64,
+    /// The loudest moment in each of `PEAKS` equal parts, 0 to 255.
+    pub peaks: Vec<u8>,
+    /// For a video: eight frames along it, side by side, as one JPEG.
+    pub strip: Option<Vec<u8>>,
+    /// The sound as a small MP3, to play in the editor (files up to 20 minutes).
+    pub sound: Option<Vec<u8>>,
+}
+
+/// For the editor: a sound or video file's length, loudness along it, frames and sound.
+pub fn media_preview(src: &Path) -> Result<MediaPreview, String> {
+    let ext = formats::extension(src).unwrap_or_default();
+    let video = formats::kind_of(&ext) == Some(Kind::Video);
+    let work = tempfile::tempdir().map_err(|e| format!("work folder: {e}"))?;
+    let at = |name: &str| work.path().join(name);
+    let length = media_length(src, &at("probe")).ok_or("ffprobe couldn't tell how long this file is")?;
+    // Mono at 2000 samples a second is plenty to draw loudness by.
+    let raw = at("sound.raw");
+    let sound_track = ffmpeg(src, &["-map", "0:a:0", "-ac", "1", "-ar", "2000", "-f", "s16le"], &raw, AUDIO).is_ok();
+    let peaks = if sound_track { peaks_of(&fs::read(&raw).unwrap_or_default(), PEAKS) } else { vec![0; PEAKS] };
+    let strip = video
+        .then(|| {
+            let frames = format!(
+                "fps=8/{:.3},scale=160:90:force_original_aspect_ratio=increase,crop=160:90,tile=8x1",
+                length.as_secs_f64().max(0.1)
+            );
+            let jpeg = at("strip.jpg");
+            ffmpeg(src, &["-map", "0:v:0", "-vf", &frames, "-frames:v", "1", "-q:v", "4"], &jpeg, QUICK).ok()?;
+            fs::read(&jpeg).ok()
+        })
+        .flatten();
+    let sound = (sound_track && length <= Duration::from_secs(20 * 60))
+        .then(|| {
+            let mp3 = at("sound.mp3");
+            ffmpeg(src, &["-map", "0:a:0", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "48k"], &mp3, AUDIO).ok()?;
+            fs::read(&mp3).ok()
+        })
+        .flatten();
+    Ok(MediaPreview { length_ms: u64::try_from(length.as_millis()).unwrap_or(u64::MAX), peaks, strip, sound })
+}
+
+/// The loudest sample in each of `n` equal parts of 16-bit mono sound, 0 to 255.
+fn peaks_of(raw: &[u8], n: usize) -> Vec<u8> {
+    let samples: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b).unsigned_abs()).collect();
+    if samples.is_empty() || n == 0 {
+        return vec![0; n];
+    }
+    let mut peaks: Vec<u8> = samples
+        .chunks(samples.len().div_ceil(n))
+        .map(|part| (u32::from(part.iter().copied().max().unwrap_or(0)) * 255 / 32768) as u8)
+        .collect();
+    peaks.resize(n, 0);
+    peaks
+}
+
+/// For the editor: the picture's size upright, in pixels, and a JPEG of it, upright
+/// too, at most 1400 pixels across and on white where it is see-through.
+pub fn preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    let work = tempfile::tempdir().map_err(|e| format!("work folder: {e}"))?;
+    let (jpeg, size) = (work.path().join("preview.jpg"), work.path().join("size.txt"));
+    let mut cmd = Command::new(magick()?);
+    cmd.args(IMAGE_LIMITS)
+        .arg(format!("{coder}:{}[0]", src.display()))
+        .args(["-auto-orient", "-format", "%w %h", "-write"])
+        .arg(format!("info:{}", size.display()))
+        .args(["-background", "white", "-flatten", "-resize", "1400x1400>", "-quality", "85"])
+        .arg(format!("jpeg:{}", jpeg.display()));
+    run(cmd, QUICK)?;
+    let size = fs::read_to_string(&size).unwrap_or_default();
+    let mut numbers = size.split_whitespace().map(|n| n.parse::<u32>().ok());
+    let (Some(Some(width)), Some(Some(height))) = (numbers.next(), numbers.next()) else {
+        return Err("ImageMagick didn't say how big the picture is".into());
+    };
+    let bytes = fs::read(&jpeg).map_err(|e| format!("work file: {e}"))?;
+    Ok((width, height, bytes))
+}
+
 fn magick() -> Result<PathBuf, String> {
     tool("magick").or_else(|e| if cfg!(target_os = "linux") { tool("convert").map_err(|_| e) } else { Err(e) })
 }
@@ -1713,6 +2437,31 @@ fn file_url(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn the_saved_path_is_read_from_the_registry() {
+        // Every Windows account has a saved PATH (at least the system folders).
+        let dirs = saved_path();
+        assert!(!dirs.is_empty());
+        assert!(dirs.iter().all(|d| d.is_absolute() && !d.to_string_lossy().contains('%')), "{dirs:?}");
+    }
+
+    #[test]
+    fn missing_heic_plugins_are_named() {
+        let lib = tempfile::tempdir().unwrap();
+        // Older libheif, with HEVC built in: no plugin folder, nothing to add.
+        assert!(heic_plugins_missing(lib.path()).is_empty());
+        // Ubuntu 26.04 out of the box: only the AV1 plugins.
+        let plugins = lib.path().join("x86_64-linux-gnu/libheif/plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        fs::write(plugins.join("libheif-aomdec.so"), "").unwrap();
+        assert_eq!(heic_plugins_missing(lib.path()), ["libheif-plugin-libde265", "libheif-plugin-x265"]);
+        fs::write(plugins.join("libheif-libde265.so"), "").unwrap();
+        assert_eq!(heic_plugins_missing(lib.path()), ["libheif-plugin-x265"]);
+        fs::write(plugins.join("libheif-x265.so"), "").unwrap();
+        assert!(heic_plugins_missing(lib.path()).is_empty());
+    }
 
     #[test]
     fn place_never_overwrites() {
@@ -2021,6 +2770,161 @@ mod tests {
     }
 
     #[test]
+    fn pgm_headers_are_read_with_comments_and_rejected_when_short() {
+        let pgm = b"P5\n# made here\n3 2\n255\n\x00\x10\x20\x30\x40\x50";
+        assert_eq!(read_pgm(pgm), Some((3, 2, &pgm[pgm.len() - 6..])));
+        assert_eq!(read_pgm(b"P5\n3 2\n255\n\x00\x10"), None, "too few pixels");
+        assert_eq!(read_pgm(b"P6\n1 1\n255\n\x00\x00\x00"), None, "colour, not grey");
+        assert_eq!(read_pgm(b""), None);
+    }
+
+    /// Needs ImageMagick. A QR code made here is read back from a PNG; a picture
+    /// without one says so.
+    #[test]
+    fn a_qr_code_is_read_from_a_picture() {
+        let Ok(magick) = magick() else {
+            eprintln!("ImageMagick isn't installed: QR codes not tested");
+            return;
+        };
+        let work = tempfile::tempdir().unwrap();
+        let code = qrcode::QrCode::new(b"https://example.com/convert-wheel").unwrap();
+        let colors = code.to_colors();
+        let (n, scale, quiet) = (code.width(), 8, 4);
+        let side = (n + 2 * quiet) * scale;
+        let mut pgm = format!("P5\n{side} {side}\n255\n").into_bytes();
+        for y in 0..side {
+            for x in 0..side {
+                let (cx, cy) = ((x / scale).checked_sub(quiet), (y / scale).checked_sub(quiet));
+                let dark = matches!((cx, cy), (Some(cx), Some(cy)) if cx < n && cy < n && colors[cy * n + cx] == qrcode::Color::Dark);
+                pgm.push(if dark { 0 } else { 255 });
+            }
+        }
+        let raw = work.path().join("code.pgm");
+        fs::write(&raw, &pgm).unwrap();
+        let png = work.path().join("code.png");
+        let mut make = Command::new(&magick);
+        make.arg(&raw).arg(&png);
+        run(make, QUICK).unwrap();
+        let text = convert(&png, "tool:qr", None, work.path()).unwrap();
+        assert_eq!(text, work.path().join("code (QR code).txt"));
+        assert_eq!(fs::read_to_string(&text).unwrap(), "https://example.com/convert-wheel\n");
+
+        let blank = work.path().join("blank.png");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "200x200", "xc:white"]).arg(&blank);
+        run(make, QUICK).unwrap();
+        assert_eq!(convert(&blank, "tool:qr", None, work.path()).unwrap_err(), "no QR code found in this picture");
+    }
+
+    #[test]
+    fn sizes_read_the_way_finder_counts() {
+        assert_eq!(size_text(999), "999 bytes");
+        assert_eq!(size_text(500_000), "500 KB");
+        assert_eq!(size_text(1_500_000), "1.5 MB");
+        assert_eq!(size_text(2_000_000), "2 MB");
+        assert_eq!(size_text(25_000_000), "25 MB");
+        assert_eq!(size_text(1_200_000_000), "1.2 GB");
+    }
+
+    /// Needs ImageMagick. A noisy picture comes in under the size, named after it.
+    #[test]
+    fn a_picture_comes_in_under_the_size() {
+        let Ok(magick) = magick() else {
+            eprintln!("ImageMagick isn't installed: compress to a size not tested");
+            return;
+        };
+        let work = tempfile::tempdir().unwrap();
+        let photo = work.path().join("noise.jpg");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "800x600", "plasma:", "-quality", "95"]).arg(&photo);
+        run(make, QUICK).unwrap();
+        let limit = fs::metadata(&photo).unwrap().len() / 4;
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(limit)));
+        let out = under(&control, || convert(&photo, "tool:target", None, work.path())).unwrap();
+        assert_eq!(out, work.path().join(format!("noise (under {}).jpg", size_text(limit))));
+        assert!(fs::metadata(&out).unwrap().len() <= limit);
+        assert_eq!(control.take_note(), None, "the quality alone was enough");
+        assert_eq!(pixel_size(&photo, "jpeg"), Some((800, 600)));
+        assert!(picture_warnings(&photo).is_some());
+        // Far too small for any quality: smaller pictures until it fits, and the
+        // notification says how small.
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(3_000)));
+        let tiny = under(&control, || convert(&photo, "tool:target", None, work.path())).unwrap();
+        assert!(fs::metadata(&tiny).unwrap().len() <= 3_000);
+        let (w, h) = pixel_size(&tiny, "jpeg").unwrap();
+        assert!(w < 800 && h < 600, "{w} × {h}");
+        assert_eq!(control.take_note(), Some(format!("made smaller to fit: {w} × {h} pixels")));
+        assert_eq!(control.take_note(), None, "once");
+    }
+
+    #[test]
+    fn pictures_warn_long_before_they_turn_to_mush() {
+        // A 12 megapixel phone photo: smaller under about 480 KB, blurry under about 19 KB.
+        assert_eq!(warning_sizes(12_000_000.0, "jpeg"), (480_000, 19_200));
+        // HEIC packs more into each byte.
+        let (smaller, blurry) = warning_sizes(12_000_000.0, "heic");
+        assert!(smaller < 480_000 && blurry < 19_200);
+        // A small picture already: blurry once it loses half its width.
+        assert_eq!(warning_sizes(640.0 * 480.0, "jpeg"), (12_288, 3_072));
+    }
+
+    #[test]
+    fn a_trim_must_lie_inside_the_file_and_last_a_tenth_of_a_second() {
+        let trim = |start_ms, end_ms| Trim { start_ms, end_ms };
+        assert!(trim(0, 10_000).check(10_000).is_ok());
+        assert!(trim(0, 10_040).check(10_000).is_ok(), "lengths are rounded");
+        assert!(trim(0, 10_100).check(10_000).is_err());
+        assert!(trim(5_000, 5_050).check(10_000).is_err(), "too short");
+        assert!(trim(6_000, 5_000).check(10_000).is_err(), "backwards");
+    }
+
+    #[test]
+    fn peaks_are_the_loudest_sample_of_each_part() {
+        let raw: Vec<u8> = [0i16, 100, -32768, 50, 16384, 0].iter().flat_map(|s| s.to_le_bytes()).collect();
+        assert_eq!(peaks_of(&raw, 3), [0, 255, 127]);
+        assert_eq!(peaks_of(&[], 4), [0, 0, 0, 0]);
+        // Fewer samples than parts: the rest stay silent.
+        assert_eq!(peaks_of(&raw[..4], 4), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_crop_box_must_lie_inside_the_turned_picture() {
+        let crop = |x, y, width, height, turns| Crop { x, y, width, height, turns };
+        assert!(crop(0, 0, 300, 200, 0).check(300, 200).is_ok());
+        assert!(crop(1, 0, 300, 200, 0).check(300, 200).is_err(), "one pixel too far right");
+        // Turned a quarter, a 300 x 200 picture is 200 x 300.
+        assert!(crop(0, 0, 200, 300, 1).check(300, 200).is_ok());
+        assert!(crop(0, 0, 300, 200, 1).check(300, 200).is_err());
+        assert!(crop(0, 0, 0, 10, 0).check(300, 200).is_err(), "empty");
+        assert!(crop(0, 0, 10, 10, 4).check(300, 200).is_err(), "turns are 0 to 3");
+        assert!(crop(u32::MAX, 0, 10, 10, 0).check(300, 200).is_err(), "no overflow");
+    }
+
+    /// Needs ImageMagick. The editor's box, turned and cut, and its preview's size.
+    #[test]
+    fn crop_turns_then_cuts_the_box() {
+        let Ok(magick) = magick() else {
+            eprintln!("ImageMagick isn't installed: crop not tested");
+            return;
+        };
+        let work = tempfile::tempdir().unwrap();
+        let wide = work.path().join("wide.png");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "300x200", "gradient:red-blue"]).arg(&wide);
+        run(make, QUICK).unwrap();
+        assert_eq!(preview(&wide).map(|(w, h, jpeg)| (w, h, jpeg.starts_with(&[0xFF, 0xD8]))), Ok((300, 200, true)));
+
+        let crop = Crop { x: 10, y: 20, width: 150, height: 120, turns: 1 };
+        let control = Control::with_edit(Quality::default(), Some(Edit::Crop(crop)));
+        let out = under(&control, || convert(&wide, "tool:crop", None, work.path())).unwrap();
+        assert_eq!(out, work.path().join("wide (cropped).png"));
+        // ImageMagick 6 (Ubuntu) has no "magick identify": ask the way the other tests do.
+        assert_eq!(picture_size(&out), "150x120");
+        // Without the editor there is no box to cut.
+        assert_eq!(convert(&wide, "tool:crop", None, work.path()).unwrap_err(), "Crop opens its window from the wheel");
+    }
+
+    #[test]
     fn image_tools_keep_the_format_and_name_the_result() {
         if magick().is_err() {
             eprintln!("ImageMagick isn't installed: image tools not tested");
@@ -2237,6 +3141,41 @@ mod tests {
         assert_eq!(still, work.path().join("clip (first frame).jpg"));
         assert!(fs::read(&still).unwrap().starts_with(&[0xFF, 0xD8]));
 
+        // The editor's view of it, and a trim from 0.5 s to 1.5 s, cut exactly.
+        let preview = media_preview(&clip).unwrap();
+        assert!((1900..=2100).contains(&preview.length_ms), "{}", preview.length_ms);
+        assert_eq!(preview.peaks.len(), PEAKS);
+        assert!(preview.peaks.iter().any(|&p| p > 0), "the tone shows");
+        assert!(preview.strip.as_deref().is_some_and(|jpeg| jpeg.starts_with(&[0xFF, 0xD8])));
+        assert!(preview.sound.as_deref().is_some_and(|mp3| !mp3.is_empty()));
+        let trim = Control::with_edit(Quality::default(), Some(Edit::Trim(Trim { start_ms: 500, end_ms: 1500 })));
+        let cut = under(&trim, || convert(&clip, "tool:trim", None, work.path())).unwrap();
+        assert_eq!(cut, work.path().join("clip (trimmed).mp4"));
+        let length = media_length(&cut, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((0.9..1.1).contains(&length), "{length}");
+        assert_eq!(convert(&clip, "tool:trim", None, work.path()).unwrap_err(), "Trim opens its window from the wheel");
+
+        // Join: a second, smaller video without sound goes after the first, fitted into
+        // its size, with silence; the result is one 4-second MP4 at 320x240 with sound.
+        let quiet = work.path().join("quiet.mov");
+        let mut make = Command::new(tool("ffmpeg").unwrap());
+        make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=2", "-c:v", "libx264"]).arg(&quiet);
+        assert!(make.status().unwrap().success());
+        let joined = combine(&[clip.clone(), quiet], "tool:join", None, work.path()).unwrap();
+        assert_eq!(joined, work.path().join("clip (joined).mp4"));
+        let length = media_length(&joined, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((3.8..4.3).contains(&length), "{length}");
+        assert_eq!(streams(&joined), "h264\naac\n");
+        assert_eq!(video_facts(&joined, work.path()).map(|(w, h, _)| (w, h)), Some((320, 240)));
+
+        // Compress to a Size: the 2-second clip under 120 KB, in two passes; and how
+        // small it could go.
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(120_000)));
+        let sized = under(&control, || convert(&clip, "tool:target", None, work.path())).unwrap();
+        assert_eq!(sized, work.path().join("clip (under 120 KB).mp4"));
+        assert!(fs::metadata(&sized).unwrap().len() <= 120_000);
+        assert!(smallest_size(&clip).is_some_and(|least| (30_000..50_000).contains(&least)), "{:?}", smallest_size(&clip));
+
         let small = convert(&clip, "tool:compress", None, work.path()).unwrap();
         assert_eq!(small, work.path().join("clip (compressed).mp4"));
 
@@ -2251,7 +3190,26 @@ mod tests {
         assert!(probe(&even).contains("Tune"), "loudness keeps the tags");
         let mono = convert(&song, "tool:mono", None, work.path()).unwrap();
         assert!(probe(&mono).contains("channels=1"), "{}", probe(&mono));
+        let small = convert(&song, "tool:compress", None, work.path()).unwrap();
+        assert_eq!(small, work.path().join("song (compressed).mp3"));
+        assert!(fs::metadata(&small).unwrap().len() < fs::metadata(&song).unwrap().len());
+        assert!(probe(&small).contains("Tune"), "compress keeps the tags");
         assert_eq!(convert(&song, "tool:still", None, work.path()).unwrap_err(), ".mp3 files can't be turned into a picture");
+
+        // Compress to a Size for sound: the bit rate that fits.
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(20_000)));
+        let sized = under(&control, || convert(&song, "tool:target", None, work.path())).unwrap();
+        assert!(fs::metadata(&sized).unwrap().len() <= 20_000);
+        let control = Control::with_edit(Quality::default(), Some(Edit::Size(2_000)));
+        assert!(under(&control, || convert(&song, "tool:target", None, work.path())).unwrap_err().contains("too long"));
+
+        // Two sound files joined: one MP3 as long as both. A video can't join them.
+        let joined = combine(&[song.clone(), mono.clone()], "tool:join", None, work.path()).unwrap();
+        assert_eq!(joined, work.path().join("song (joined).mp3"));
+        let length = media_length(&joined, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((3.8..4.3).contains(&length), "{length}");
+        let mixed = combine(&[song.clone(), clip.clone()], "tool:join", None, work.path()).unwrap_err();
+        assert_eq!(mixed, "clip.mp4: only sound files, or only video files, can be joined");
     }
 
     #[test]
@@ -2300,7 +3258,7 @@ mod tests {
         make.args(["-size", "200x200", "-seed", "3", "plasma:fractal"]).arg(&src);
         assert!(make.status().unwrap().success());
         let size_at = |pictures: Level| {
-            let control = Control::with_quality(Quality { pictures, ..Quality::default() });
+            let control = Control::with_edit(Quality { pictures, ..Quality::default() }, None);
             let out = under(&control, || convert(&src, "jpg", None, work.path())).unwrap();
             fs::metadata(out).unwrap().len()
         };

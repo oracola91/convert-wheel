@@ -28,7 +28,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      "csp": "default-src 'self'; img-src 'self' data:; media-src 'self' data:; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {
@@ -46,6 +46,21 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "signingIdentity": "-"
+    },
+    "linux": {
+      "deb": {
+        "recommends": [
+          "ffmpeg",
+          "imagemagick",
+          "libheif-plugin-libde265",
+          "libheif-plugin-x265",
+          "mupdf-tools",
+          "libarchive-tools",
+          "libreoffice-writer",
+          "libreoffice-calc",
+          "libreoffice-impress"
+        ]
+      }
     }
   },
   "plugins": {
