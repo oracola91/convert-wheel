@@ -1,4 +1,5 @@
-//! Mark Up: what the window drew on a picture (pen lines, arrows, boxes and words) and
+//! Mark Up: what the window drew on a picture (pen and highlighter lines, arrows, lines,
+//! boxes, circles, words and numbered steps) and
 //! the parts it blacked out, as shapes in the picture's own pixels, upright. The page
 //! sends only these; here they are checked and turned into ImageMagick's drawing
 //! steps, in colours named from a fixed list or given as a strict `#rrggbb` code, so
@@ -23,16 +24,28 @@ const COLOURS: &[(&str, &str)] = &[
 const MAX_SHAPES: usize = 500;
 const MAX_POINTS: usize = 4000;
 const MAX_WORDS: usize = 200;
+const MAX_STEP: u32 = 99;
+/// How see-through the highlighter is: its colour code gets this alpha (0x66 = 40%).
+const HIGHLIGHT_ALPHA: &str = "66";
 
 /// One thing drawn, in pixels of the upright picture.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Shape {
     Pen { colour: String, width: u32, points: Vec<[i64; 2]> },
+    /// A wide see-through line, like a highlighter pen.
+    Highlight { colour: String, width: u32, points: Vec<[i64; 2]> },
     Arrow { colour: String, width: u32, from: [i64; 2], to: [i64; 2] },
+    /// A straight line, an arrow without the head.
+    Line { colour: String, width: u32, from: [i64; 2], to: [i64; 2] },
     Box { colour: String, width: u32, from: [i64; 2], to: [i64; 2] },
+    /// An oval, inside the box from `from` to `to`.
+    Circle { colour: String, width: u32, from: [i64; 2], to: [i64; 2] },
     /// Words, their top left corner at `at`, `size` pixels tall.
     Text { colour: String, size: u32, at: [i64; 2], text: String },
+    /// A numbered step: `n` in a filled circle centred on `at`, the digits `size`
+    /// pixels tall and the circle 1.6 times that across.
+    Number { colour: String, size: u32, at: [i64; 2], n: u32 },
     /// A part blacked out.
     Redact { from: [i64; 2], to: [i64; 2] },
 }
@@ -58,8 +71,18 @@ impl Markup {
             Shape::Pen { colour, width, points } => {
                 line(colour, *width) && (1..=MAX_POINTS).contains(&points.len()) && points.iter().all(|p| inside(*p))
             }
-            Shape::Arrow { colour, width, from, to } | Shape::Box { colour, width, from, to } => {
-                line(colour, *width) && inside(*from) && inside(*to)
+            Shape::Highlight { colour, width, points } => {
+                hex(colour).is_some()
+                    && (1..=600).contains(width)
+                    && (1..=MAX_POINTS).contains(&points.len())
+                    && points.iter().all(|p| inside(*p))
+            }
+            Shape::Arrow { colour, width, from, to }
+            | Shape::Line { colour, width, from, to }
+            | Shape::Box { colour, width, from, to }
+            | Shape::Circle { colour, width, from, to } => line(colour, *width) && inside(*from) && inside(*to),
+            Shape::Number { colour, size, at, n } => {
+                hex(colour).is_some() && (8..=1000).contains(size) && inside(*at) && (1..=MAX_STEP).contains(n)
             }
             Shape::Text { colour, size, at, text } => {
                 hex(colour).is_some()
@@ -95,11 +118,18 @@ fn hex(colour: &str) -> Option<&str> {
     code.then_some(colour)
 }
 
+/// Whether a `#rrggbb` colour is light, so dark digits read on it (the same test as in
+/// markup.js).
+fn light(hex: &str) -> bool {
+    let part = |at: usize| hex.get(at..at + 2).and_then(|h| u8::from_str_radix(h, 16).ok()).map_or(0.0, f64::from);
+    0.299 * part(1) + 0.587 * part(3) + 0.114 * part(5) > 160.0
+}
+
 /// ImageMagick's steps for the shapes (checked first): the drawn ones in the order
 /// they were drawn, then the blacked-out parts on top of everything. Words are drawn in
 /// `font`; without one, only marks without words can be drawn.
 pub fn draw_args(markup: &Markup, font: Option<&Path>) -> Result<Vec<String>, String> {
-    let has_words = markup.shapes.iter().any(|s| matches!(s, Shape::Text { .. }));
+    let has_words = markup.shapes.iter().any(|s| matches!(s, Shape::Text { .. } | Shape::Number { .. }));
     let font = match (has_words, font) {
         (true, None) => return Err("no font was found to write the words with".into()),
         (_, font) => font.map(|f| f.to_string_lossy().into_owned()),
@@ -109,8 +139,10 @@ pub fn draw_args(markup: &Markup, font: Option<&Path>) -> Result<Vec<String>, St
     let point = |[x, y]: [i64; 2]| format!("{x},{y}");
     for shape in &markup.shapes {
         match shape {
-            Shape::Pen { colour, width, points } => {
-                let colour = hex(colour).unwrap_or("#000000");
+            Shape::Pen { colour, width, points } | Shape::Highlight { colour, width, points } => {
+                let alpha = if matches!(shape, Shape::Highlight { .. }) { HIGHLIGHT_ALPHA } else { "" };
+                let colour = format!("{}{alpha}", hex(colour).unwrap_or("#000000"));
+                let colour = colour.as_str();
                 let (w, r) = (width.to_string(), f64::from(*width) / 2.0);
                 let draw = match points.as_slice() {
                     // A dot: a click without a stroke.
@@ -130,10 +162,36 @@ pub fn draw_args(markup: &Markup, font: Option<&Path>) -> Result<Vec<String>, St
                 push(&["-fill", "none", "-stroke", colour, "-strokewidth", &width.to_string(), "-draw", &shaft]);
                 push(&["-fill", colour, "-stroke", colour, "-strokewidth", "1", "-draw", &format!("polygon {head}")]);
             }
+            Shape::Line { colour, width, from, to } => {
+                let colour = hex(colour).unwrap_or("#000000");
+                let draw = format!("stroke-linecap round stroke-linejoin round line {} {}", point(*from), point(*to));
+                push(&["-fill", "none", "-stroke", colour, "-strokewidth", &width.to_string(), "-draw", &draw]);
+            }
             Shape::Box { colour, width, from, to } => {
                 let colour = hex(colour).unwrap_or("#000000");
                 let rect = rectangle(*from, *to);
                 push(&["-fill", "none", "-stroke", colour, "-strokewidth", &width.to_string(), "-draw", &rect]);
+            }
+            Shape::Circle { colour, width, from, to } => {
+                let colour = hex(colour).unwrap_or("#000000");
+                let half = |a: i64, b: i64| (a + b) as f64 / 2.0;
+                let (cx, cy) = (half(from[0], to[0]), half(from[1], to[1]));
+                let (rx, ry) = ((to[0] - from[0]).abs() as f64 / 2.0, (to[1] - from[1]).abs() as f64 / 2.0);
+                let draw = format!("ellipse {cx},{cy} {rx},{ry} 0,360");
+                push(&["-fill", "none", "-stroke", colour, "-strokewidth", &width.to_string(), "-draw", &draw]);
+            }
+            Shape::Number { colour, size, at, n } => {
+                let fill = hex(colour).unwrap_or("#000000");
+                let [x, y] = *at;
+                let draw = format!("circle {x},{y} {},{y}", x as f64 + f64::from(*size) * 0.8);
+                push(&["-fill", fill, "-stroke", "none", "-draw", &draw]);
+                // The digits centred on the circle: across by the anchor, and down by half
+                // the height of a digit (0.716 of the size in Arial), as the window does.
+                let ink = if light(fill) { "#000000" } else { "#ffffff" };
+                let baseline = y as f64 + f64::from(*size) * 0.358;
+                let font = font.as_deref().unwrap_or_default();
+                let text = format!("text-anchor middle text {x},{baseline} '{n}'");
+                push(&["-font", font, "-fill", ink, "-pointsize", &size.to_string(), "-draw", &text]);
             }
             Shape::Text { colour, size, at, text } => {
                 let colour = hex(colour).unwrap_or("#000000");
@@ -256,6 +314,33 @@ mod tests {
         let black = args.iter().position(|a| a == "rectangle 1,1 5,5").unwrap();
         assert!(text < black, "{args:?}");
         assert_eq!(args[text + 1], "+2+3");
+    }
+
+    #[test]
+    fn the_new_marks_are_checked_and_drawn() {
+        let red = || "red".to_string();
+        let shapes = vec![
+            Shape::Highlight { colour: "yellow".into(), width: 40, points: vec![[1, 1], [90, 40]] },
+            Shape::Line { colour: red(), width: 3, from: [0, 0], to: [10, 10] },
+            Shape::Circle { colour: red(), width: 3, from: [10, 10], to: [31, 20] },
+            Shape::Number { colour: "white".into(), size: 20, at: [50, 25], n: 3 },
+        ];
+        let markup = Markup { shapes };
+        assert!(markup.check(100, 50).is_ok());
+        assert!(draw_args(&markup, None).is_err(), "numbers need a font");
+        let args = draw_args(&markup, Some(Path::new("/fonts/a.ttf"))).unwrap();
+        assert!(args.contains(&"#f5c40066".to_string()), "the highlighter is see-through: {args:?}");
+        assert!(args.contains(&"ellipse 20.5,15 10.5,5 0,360".to_string()), "{args:?}");
+        assert!(args.contains(&"text-anchor middle text 50,32.16 '3'".to_string()), "{args:?}");
+        let ink = args.iter().position(|a| a == "-pointsize").unwrap() - 1;
+        assert_eq!(args[ink], "#000000", "dark digits on white");
+
+        let one = |shape: Shape| Markup { shapes: vec![shape] }.check(100, 50);
+        assert!(one(Shape::Number { colour: red(), size: 20, at: [5, 5], n: 0 }).is_err());
+        assert!(one(Shape::Number { colour: red(), size: 20, at: [5, 5], n: 100 }).is_err());
+        assert!(one(Shape::Number { colour: red(), size: 7, at: [5, 5], n: 1 }).is_err());
+        assert!(one(Shape::Highlight { colour: red(), width: 601, points: vec![[1, 1]] }).is_err());
+        assert!(one(Shape::Circle { colour: red(), width: 3, from: [0, 0], to: [101, 5] }).is_err());
     }
 
     #[test]
