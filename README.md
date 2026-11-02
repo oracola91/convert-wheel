@@ -118,6 +118,8 @@ Windows (above the clock) and Linux follow.
 
 Once a wheel is open, the keys keep choosing: add Option (Alt) and it becomes the Tools wheel, press Control instead and it becomes the Actions wheel, keep only Shift and it is the formats again. With no keys held the wheel stays as it is, so they can be let go on the way to a segment. On Linux this works with X11; the Wayland shortcut opens the formats wheel only.
 
+The menu's **Keys** sets which keys open each wheel: Shift alone, Shift with Option (Alt on Windows and Linux), Shift with Control, or Off. Picking keys another wheel already has swaps the two over, so no two wheels share keys; a wheel that is Off simply doesn't open. The keys that switch an open wheel follow the same choice.
+
 ## On Windows and Linux
 
 Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS:

@@ -1,9 +1,11 @@
 //! Wheel geometry and state, shared by the trigger and the drop target.
 
 use std::f64::consts::TAU;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock};
 
 use serde::{Deserialize, Serialize};
+
+use crate::settings::{Combo, Keys};
 
 /// Window size in points. src/wheel.js draws the rings with the same numbers.
 pub const SIZE: f64 = 340.0;
@@ -28,14 +30,26 @@ pub enum Which {
 }
 
 impl Which {
-    /// The keys held with Shift: Option (Alt) or Control. Control wins when both are.
-    pub fn from_keys(option: bool, control: bool) -> Self {
-        match (option, control) {
-            (_, true) => Which::Actions,
-            (true, false) => Which::Tools,
-            (false, false) => Which::Formats,
-        }
+    pub const ALL: [Which; 3] = [Which::Formats, Which::Tools, Which::Actions];
+
+    /// The wheel the keys held with Shift open (Option or Alt, Control), as the menu's
+    /// Keys has them; None when those keys are switched off.
+    pub fn from_keys(option: bool, control: bool) -> Option<Self> {
+        keys().wheel(Combo::from_keys(option, control))
     }
+}
+
+/// The keys for each wheel, from the settings: set at the start and from the menu.
+static KEYS: RwLock<Keys> = RwLock::new(Keys::STANDARD);
+
+pub fn set_keys(keys: Keys) {
+    if let Ok(mut now) = KEYS.write() {
+        *now = keys;
+    }
+}
+
+pub fn keys() -> Keys {
+    KEYS.read().map(|k| *k).unwrap_or_default()
 }
 
 /// Follows the keys while a wheel is open, so one drag can move between the wheels:
@@ -52,11 +66,14 @@ pub struct KeyFollower {
 impl KeyFollower {
     /// One poll of the keys while wheel `current` is open: the wheel to switch to,
     /// once, when the keys have asked for another for long enough.
-    pub fn poll(&mut self, current: Which, settle: u8, shift: bool, option: bool, control: bool) -> Option<Which> {
+    pub fn poll(&mut self, keys: &Keys, current: Which, settle: u8, shift: bool, option: bool, control: bool) -> Option<Which> {
+        // Keys switched off in the menu ask for nothing, like no keys at all.
         let asked = if option || control {
-            Some(Which::from_keys(option, control))
+            keys.wheel(Combo::from_keys(option, control))
+        } else if shift {
+            keys.wheel(Combo::Shift)
         } else {
-            shift.then_some(Which::Formats)
+            None
         };
         match asked {
             Some(which) if which != current => {
@@ -294,7 +311,7 @@ mod tests {
     /// and returns what each poll asked to switch to.
     fn follow(current: Which, keys: &[(bool, bool, bool)]) -> Vec<Option<Which>> {
         let mut f = KeyFollower::default();
-        keys.iter().map(|&(s, o, c)| f.poll(current, 2, s, o, c)).collect()
+        keys.iter().map(|&(s, o, c)| f.poll(&Keys::STANDARD, current, 2, s, o, c)).collect()
     }
 
     #[test]
@@ -311,6 +328,17 @@ mod tests {
     }
 
     #[test]
+    fn keys_switched_off_ask_for_nothing() {
+        // Tools off, Actions on Shift+Option: Option asks for the actions, Control for nothing.
+        let keys = Keys { formats: Some(Combo::Shift), tools: None, actions: Some(Combo::ShiftOption) };
+        let mut f = KeyFollower::default();
+        let polls: Vec<_> = [(true, true, false), (true, true, false)].iter().map(|&(s, o, c)| f.poll(&keys, Which::Formats, 2, s, o, c)).collect();
+        assert_eq!(polls, [None, Some(Which::Actions)]);
+        let polls: Vec<_> = [(true, false, true), (true, false, true)].iter().map(|&(s, o, c)| f.poll(&keys, Which::Formats, 2, s, o, c)).collect();
+        assert_eq!(polls, [None, None]);
+    }
+
+    #[test]
     fn letting_go_of_the_keys_keeps_the_wheel() {
         let none = (false, false, false);
         assert_eq!(follow(Which::Tools, &[none, none, none]), [None, None, None]);
@@ -321,7 +349,7 @@ mod tests {
     #[test]
     fn a_switch_happens_once() {
         let mut f = KeyFollower::default();
-        let option_shift = |f: &mut KeyFollower, current| f.poll(current, 2, true, true, false);
+        let option_shift = |f: &mut KeyFollower, current| f.poll(&Keys::STANDARD, current, 2, true, true, false);
         assert_eq!(option_shift(&mut f, Which::Formats), None);
         assert_eq!(option_shift(&mut f, Which::Formats), Some(Which::Tools));
         // The wheel is the tools now: holding on asks for nothing more.

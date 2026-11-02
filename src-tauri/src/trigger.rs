@@ -134,18 +134,21 @@ pub fn start(app: AppHandle) {
                 }
                 held = if macos::shift_down() { held.saturating_add(1) } else { 0 };
                 if dragging && !shown && held >= KEYS_SETTLE {
-                    let paths = macos::dragged_files();
-                    // Not a file drag (text, a tab, ...): ignore it until the next drag.
-                    if paths.is_empty() {
-                        dragging = false;
-                        return;
-                    }
-                    show_wheel(&app, paths, Which::from_keys(macos::option_down(), macos::control_down()));
-                    shown = true;
-                    // The wheel has this drag now: the shelf steps aside.
-                    if shelf_drag {
-                        shelf_drag = false;
-                        crate::shelf_window::drag_ended_soon(&app);
+                    // Keys switched off in the menu open no wheel; the drag goes on as usual.
+                    if let Some(which) = Which::from_keys(macos::option_down(), macos::control_down()) {
+                        let paths = macos::dragged_files();
+                        // Not a file drag (text, a tab, ...): ignore it until the next drag.
+                        if paths.is_empty() {
+                            dragging = false;
+                            return;
+                        }
+                        show_wheel(&app, paths, which);
+                        shown = true;
+                        // The wheel has this drag now: the shelf steps aside.
+                        if shelf_drag {
+                            shelf_drag = false;
+                            crate::shelf_window::drag_ended_soon(&app);
+                        }
                     }
                 } else if shown {
                     follow_keys(&app, &mut keys, macos::shift_down(), macos::option_down(), macos::control_down());
@@ -231,7 +234,7 @@ fn fill(app: &AppHandle, paths: &[String], which: Option<Which>) -> (Which, Vec<
 /// One poll of the keys while the wheel is open: switches it when they ask for another.
 pub(crate) fn follow_keys(app: &AppHandle, keys: &mut KeyFollower, shift: bool, option: bool, control: bool) {
     let current = *wheel::lock(&app.state::<WheelState>().which);
-    if let Some(which) = keys.poll(current, KEYS_SETTLE, shift, option, control) {
+    if let Some(which) = keys.poll(&wheel::keys(), current, KEYS_SETTLE, shift, option, control) {
         switch_wheel(app, which);
     }
 }

@@ -10,7 +10,8 @@ use tauri::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, MenuItemKind, Predef
 use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Manager, Wry};
 
-use crate::settings::{self, SaveTo, Store};
+use crate::settings::{self, Combo, Keys, SaveTo, Store};
+use crate::wheel::Which;
 use crate::{converters, formats, login, reveal, update};
 
 const SAVE_NEXT: &str = "save:next";
@@ -36,6 +37,12 @@ const FORMAT: &str = "fmt:";
 const QUALITY: &str = "quality:";
 /// Highlight colours are "color:" followed by the colour, e.g. "color:blue".
 const COLOR: &str = "color:";
+/// The keys for a wheel are "keys:" then the wheel then the keys, e.g.
+/// "keys:tools:shift-option", or "keys:tools:off".
+const KEYS: &str = "keys:";
+/// The wheels in the Keys menu: as the menu ids name them, and as it shows them.
+const WHEELS: [(Which, &str, &str); 3] =
+    [(Which::Formats, "formats", "Formats Wheel"), (Which::Tools, "tools", "Tools Wheel"), (Which::Actions, "actions", "Actions Wheel")];
 /// Wheel Glass: "glass:on" (Liquid Glass) and "glass:off" (No Liquid Glass), macOS.
 #[cfg(target_os = "macos")]
 const GLASS: &str = "glass:";
@@ -104,6 +111,21 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let color_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = colors.iter().map(|c| c as _).collect();
     let highlight = Submenu::with_items(app, "Highlight Color", true, &color_refs)?;
 
+    // Keys: for each wheel, the keys held with Shift that open it, or Off.
+    let mut wheels = Vec::new();
+    for (which, key, label) in WHEELS {
+        let now = current.keys.get(which);
+        let mut choices = Combo::ALL
+            .iter()
+            .map(|c| CheckMenuItem::with_id(app, format!("{KEYS}{key}:{}", c.key()), c.label(), true, now == Some(*c), None::<&str>))
+            .collect::<tauri::Result<Vec<_>>>()?;
+        choices.push(CheckMenuItem::with_id(app, format!("{KEYS}{key}:off"), "Off", true, now.is_none(), None::<&str>)?);
+        let refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = choices.iter().map(|c| c as _).collect();
+        wheels.push(Submenu::with_items(app, label, true, &refs)?);
+    }
+    let wheel_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = wheels.iter().map(|w| w as _).collect();
+    let keys = Submenu::with_items(app, "Keys", true, &wheel_refs)?;
+
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
     let (separator, separator2) = (sep()?, sep()?);
@@ -113,7 +135,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let shelf = CheckMenuItem::with_id(app, SHELF, "Shelf at the Top of the Screen", true, !current.shelf_off, None::<&str>)?;
     #[cfg(target_os = "macos")]
     items.push(&shelf);
-    let middle: [&dyn tauri::menu::IsMenuItem<Wry>; 4] = [&save, &shown, &quality, &highlight];
+    let middle: [&dyn tauri::menu::IsMenuItem<Wry>; 5] = [&save, &shown, &quality, &highlight, &keys];
     items.extend(middle);
     // Only macOS has a choice of glass.
     #[cfg(target_os = "macos")]
@@ -268,6 +290,17 @@ fn quit(app: &AppHandle) {
     app.exit(0);
 }
 
+/// Ticks, for each wheel, the keys it has now (or Off).
+fn show_keys(app: &AppHandle, keys: Keys) {
+    for (which, key, _) in WHEELS {
+        let now = keys.get(which);
+        for c in Combo::ALL {
+            set_check(app, &format!("{KEYS}{key}:{}", c.key()), now == Some(c));
+        }
+        set_check(app, &format!("{KEYS}{key}:off"), now.is_none());
+    }
+}
+
 fn set_check(app: &AppHandle, id: &str, checked: bool) {
     let menu = &app.state::<TrayMenu>().0;
     if let Some(item) = find(menu.items().unwrap_or_default(), id) {
@@ -342,6 +375,26 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             let saved = store.get().no_liquid_glass;
             set_check(app, &format!("{GLASS}on"), !saved);
             set_check(app, &format!("{GLASS}off"), saved);
+        }
+        _ if id.starts_with(KEYS) => {
+            let Some((wheel, wanted)) = id[KEYS.len()..].split_once(':') else {
+                return;
+            };
+            let Some(&(which, _, _)) = WHEELS.iter().find(|w| w.1 == wheel) else {
+                return;
+            };
+            let combo = match Combo::ALL.into_iter().find(|c| c.key() == wanted) {
+                Some(combo) => Some(combo),
+                None if wanted == "off" => None,
+                None => return,
+            };
+            // Keys another wheel had swap over to it, so no two wheels share keys.
+            if let Err(e) = store.update(|s| s.keys.assign(which, combo)) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            let saved = store.get().keys;
+            crate::wheel::set_keys(saved);
+            show_keys(app, saved);
         }
         _ if id.starts_with(COLOR) => {
             let wanted = &id[COLOR.len()..];
