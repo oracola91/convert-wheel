@@ -205,7 +205,8 @@ pub fn opens_editor(id: &str) -> bool {
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
 /// they are. AirDrop is macOS only; Unpack only when every file is an archive.
 const ACTIONS: &[&str] = &[
-    "act:path", "act:show", "act:copyto", "act:moveto", "act:terminal", "act:airdrop", "act:zip", "act:tgz", "act:tar", "act:unpack",
+    "act:path", "act:show", "act:copyto", "act:moveto", "act:float", "act:terminal", "act:airdrop", "act:zip", "act:tgz", "act:tar",
+    "act:unpack",
 ];
 
 /// An Actions wheel id ("act:path").
@@ -223,7 +224,8 @@ pub fn actions_for(paths: &[String]) -> Vec<&'static str> {
         .iter()
         .copied()
         .filter(|a| match *a {
-            "act:airdrop" => cfg!(target_os = "macos"),
+            // Float's card is macOS only so far, like AirDrop.
+            "act:airdrop" | "act:float" => cfg!(target_os = "macos"),
             "act:unpack" => archives,
             _ => true,
         })
@@ -422,8 +424,9 @@ mod tests {
     fn actions_are_offered_for_any_file() {
         assert!(actions_for(&[]).is_empty());
         let actions = actions_for(&v(&["/tmp/a.txt", "/tmp/Photos"]));
-        assert_eq!(actions[..5], ["act:path", "act:show", "act:copyto", "act:moveto", "act:terminal"]);
+        assert_eq!(actions[..4], ["act:path", "act:show", "act:copyto", "act:moveto"]);
         assert_eq!(actions.contains(&"act:airdrop"), cfg!(target_os = "macos"));
+        assert_eq!(actions.contains(&"act:float"), cfg!(target_os = "macos"));
         assert!(actions.ends_with(&["act:zip", "act:tgz", "act:tar"]));
         let archives = actions_for(&v(&["/tmp/a.zip", "/tmp/b.tar.gz"]));
         assert!(archives.ends_with(&["act:tar", "act:unpack"]));

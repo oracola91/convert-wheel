@@ -60,6 +60,7 @@ const TOOLS = {
   'act:show': ['Show', 'Show in folder'],
   'act:copyto': ['Copy to', 'Copy to a folder'],
   'act:moveto': ['Move to', 'Move to a folder'],
+  'act:float': ['Float', 'Keep it on screen'],
   'act:terminal': ['Terminal', 'Open Terminal here'],
   'act:airdrop': ['AirDrop', 'Send with AirDrop'],
   'act:zip': ['ZIP', 'Make a ZIP'],
