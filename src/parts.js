@@ -91,6 +91,23 @@ document.addEventListener('keydown', (event) => {
   } else if (event.key === 'Enter' && !(document.activeElement instanceof HTMLButtonElement)) {
     event.preventDefault();
     split();
+  } else if (session && chosen !== null && event.key.startsWith('Arrow')) {
+    // Left and Right go through all the choices in order, Up and Down to the other row.
+    const rows = ['counts', 'lengths'].map((id) => [...$(id).children]).filter((row) => row.length);
+    const all = rows.flat();
+    const now = all.find((button) => Number(button.dataset.every) === chosen);
+    let next;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      next = all[all.indexOf(now) + (event.key === 'ArrowRight' ? 1 : -1)];
+    } else {
+      const row = rows.findIndex((r) => r.includes(now));
+      const other = rows[row + (event.key === 'ArrowDown' ? 1 : -1)];
+      if (other) next = other[Math.min(rows[row].indexOf(now), other.length - 1)];
+    }
+    if (next) {
+      event.preventDefault();
+      choose(Number(next.dataset.every));
+    }
   }
 });
 
