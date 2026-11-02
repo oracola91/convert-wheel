@@ -13,24 +13,28 @@
       <canvas id="photo" role="img" aria-label="The picture, with what is drawn on it"></canvas>
       <p id="message" hidden></p>
     </div>
-    <footer>
-      <button type="button" id="undo" disabled>Undo</button>
-      <div class="group" role="group" aria-label="Tool">
-        <button type="button" data-tool="pen" aria-pressed="true">Pen</button>
-        <button type="button" data-tool="arrow" aria-pressed="false">Arrow</button>
-        <button type="button" data-tool="box" aria-pressed="false">Box</button>
-        <button type="button" data-tool="text" aria-pressed="false">Text</button>
-        <button type="button" data-tool="redact" aria-pressed="false">Black out</button>
+    <footer class="rows">
+      <div class="row">
+        <button type="button" id="undo" disabled>Undo</button>
+        <div class="group" role="group" aria-label="Tool">
+          <button type="button" data-tool="pen" aria-pressed="true">Pen</button>
+          <button type="button" data-tool="arrow" aria-pressed="false">Arrow</button>
+          <button type="button" data-tool="box" aria-pressed="false">Box</button>
+          <button type="button" data-tool="text" aria-pressed="false">Text</button>
+          <button type="button" data-tool="redact" aria-pressed="false">Black out</button>
+        </div>
+        <div class="end">
+          <button type="button" id="cancel">Cancel</button>
+          <button type="button" id="apply" class="primary" disabled>Save</button>
+        </div>
       </div>
-      <div id="colours" class="group" role="group" aria-label="Colour"></div>
-      <div class="combo">
-        <label for="sizeValue">Size</label>
-        <input id="sizeValue" inputmode="numeric" maxlength="3" autocomplete="off" spellcheck="false">
-        <button type="button" id="sizeOpen" aria-label="Pick a size" aria-haspopup="listbox" aria-expanded="false" aria-controls="sizes">&#9662;</button>
-      </div>
-      <div class="end">
-        <button type="button" id="cancel">Cancel</button>
-        <button type="button" id="apply" class="primary" disabled>Save</button>
+      <div class="row">
+        <div id="colours" class="group" role="group" aria-label="Colour"></div>
+        <div class="combo">
+          <label for="sizeValue">Size</label>
+          <input id="sizeValue" inputmode="numeric" maxlength="3" autocomplete="off" spellcheck="false">
+          <button type="button" id="sizeOpen" aria-label="Pick a size" aria-haspopup="listbox" aria-expanded="false" aria-controls="sizes">&#9662;</button>
+        </div>
       </div>
     </footer>
     <div id="sizes" class="pop" role="listbox" aria-label="Sizes" hidden></div>

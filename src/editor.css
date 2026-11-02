@@ -447,6 +447,20 @@ footer input:focus-visible,
   background: conic-gradient(#e5322d, #f5c400, #21a148, #1fb5c9, #1d6fe5, #9b4dde, #e5322d);
 }
 
+/* Two rows on purpose: what to do on top, how it looks underneath. */
+footer.rows {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
 .combo {
   display: flex;
   align-items: center;
@@ -463,7 +477,9 @@ footer input:focus-visible,
 }
 
 #sizeOpen {
-  padding: 6px 9px;
+  padding: 4px 9px;
+  font-size: 1.15em;
+  line-height: 1;
 }
 
 #sizeValue:disabled,
@@ -484,8 +500,9 @@ footer input:focus-visible,
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
 }
 
+/* !important: the list's own display (an id rule) would win over [hidden]. */
 .pop[hidden] {
-  display: none;
+  display: none !important;
 }
 
 #sizes {

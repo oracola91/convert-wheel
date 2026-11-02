@@ -236,7 +236,7 @@ function styleTyping() {
   box.style.color = hexOf(colour);
   // The canvas puts the top of the letters at `at`; the box centres them in its line.
   box.style.left = `${view.left + at[0] * view.scale}px`;
-  box.style.top = `${view.top + at[1] * view.scale - px * 0.1}px`;
+  box.style.top = `${view.top + at[1] * view.scale - px * 0.16}px`;
   typing.px = px;
   fitTyping();
 }
