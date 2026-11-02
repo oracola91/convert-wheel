@@ -1982,7 +1982,7 @@ pub struct Adjust {
 impl Adjust {
     /// Within the window's sliders, and something changed.
     pub fn check(&self) -> Result<(), String> {
-        let within = (50..=150).contains(&self.brightness) && (50..=150).contains(&self.contrast) && self.saturation <= 200;
+        let within = self.brightness <= 200 && self.contrast <= 200 && self.saturation <= 200;
         if !within {
             return Err("the adjustment is outside what the window offers".into());
         }
@@ -3452,7 +3452,9 @@ mod tests {
         let level = rgb(&out, 2, 0);
         assert!(["137,137,137", "136,136,136"].contains(&level.as_str()), "{level}");
         assert!(Adjust { brightness: 100, contrast: 100, saturation: 100 }.check().is_err());
-        assert!(Adjust { brightness: 151, contrast: 100, saturation: 100 }.check().is_err());
+        assert!(Adjust { brightness: 201, contrast: 100, saturation: 100 }.check().is_err());
+        assert!(Adjust { brightness: 100, contrast: 201, saturation: 100 }.check().is_err());
+        assert!(Adjust { brightness: 0, contrast: 200, saturation: 100 }.check().is_ok());
         assert!(brighter.check().is_ok() && grey.check().is_ok());
 
         // Mark Up: a pen line, words that look like a file name and a percent, and a
