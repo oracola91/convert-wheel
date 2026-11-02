@@ -1,7 +1,8 @@
 //! Float on macOS: the dragged files on a small card that floats above every window,
 //! to drag out again later into any app or folder. Each Float makes a card of its own,
-//! next to the pointer. Its close button puts it away, and so does a drag that moved
-//! the files somewhere else. Everything here runs on the main thread.
+//! next to the pointer. Its icon and name are where the files are taken out; the rest
+//! of the card moves the card. Its close button puts it away, and so does a drag that
+//! moved the files somewhere else. Everything here runs on the main thread.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -43,6 +44,8 @@ pub struct Ivars {
     paths: Vec<String>,
     /// Where the button went down, until the pointer moves far enough for a drag.
     press: Cell<Option<NSPoint>>,
+    /// The icon and the words on it: a drag from there takes the files out.
+    grab: Cell<NSRect>,
 }
 
 define_class!(
@@ -77,9 +80,16 @@ define_class!(
             }
         }
 
+        /// On the icon or the name: the start of taking the files out. On the close
+        /// button: a click. Anywhere else: the card follows the pointer to a new place.
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            self.ivars().press.set(Some(self.local(event)));
+            let p = self.local(event);
+            if contains(self.ivars().grab.get(), p) || contains(grow(close_at(), 6.0), p) {
+                self.ivars().press.set(Some(p));
+            } else if let Some(window) = self.window() {
+                window.performWindowDragWithEvent(event);
+            }
         }
 
         #[unsafe(method(mouseDragged:))]
@@ -88,7 +98,7 @@ define_class!(
                 return;
             };
             let p = self.local(event);
-            if (p.x - start.x).hypot(p.y - start.y) >= DRAG_START {
+            if (p.x - start.x).hypot(p.y - start.y) >= DRAG_START && contains(self.ivars().grab.get(), start) {
                 self.ivars().press.set(None);
                 self.drag_out(event, p);
             }
@@ -105,13 +115,15 @@ define_class!(
 
     unsafe impl NSDraggingSource for CardView {
         /// Out of the app the files may be moved or copied, as Finder picks for its own
-        /// drags (move on the same disk, copy to another, Option for a copy).
+        /// drags (move on the same disk, copy to another, Option for a copy). Within the
+        /// app, onto the wheel (Shift while dragging) or the shelf: a copy, which leaves
+        /// the files where they are for the conversion or the shelf to use.
         #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
         fn source_operations(&self, _session: &NSDraggingSession, context: NSDraggingContext) -> NSDragOperation {
             if context == NSDraggingContext::OutsideApplication {
                 NSDragOperation::Copy | NSDragOperation::Move | NSDragOperation::Generic
             } else {
-                NSDragOperation::None
+                NSDragOperation::Copy
             }
         }
 
@@ -131,7 +143,7 @@ define_class!(
 
 impl CardView {
     fn new(mtm: MainThreadMarker, frame: NSRect, app: AppHandle, paths: Vec<String>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(Ivars { app, paths, press: Cell::new(None) });
+        let this = Self::alloc(mtm).set_ivars(Ivars { app, paths, press: Cell::new(None), grab: Cell::new(NSRect::ZERO) });
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
@@ -258,8 +270,13 @@ fn make(app: &AppHandle, mtm: MainThreadMarker, paths: Vec<String>) {
         view.addSubview(&l);
         l
     };
-    label(&title, 13.0, 13.0, true);
-    label(&detail, 33.0, 11.0, false).setTextColor(Some(&NSColor::secondaryLabelColor()));
+    let name = label(&title, 13.0, 13.0, true);
+    let note = label(&detail, 33.0, 11.0, false);
+    note.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    // The handle for the files: the icon and as far as the words reach.
+    let words = name.intrinsicContentSize().width.max(note.intrinsicContentSize().width).min(width);
+    let top = (HEIGHT - ICON) / 2.0;
+    view.ivars().grab.set(NSRect::new(NSPoint::new(8.0, top), NSSize::new(left - 8.0 + words + 4.0, ICON)));
     content.addSubview(&view);
 
     panel.setContentView(Some(&content));
