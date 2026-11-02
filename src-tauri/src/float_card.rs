@@ -12,9 +12,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSDragOperation, NSDraggingContext, NSDraggingItem, NSDraggingSession, NSDraggingSource,
+    NSBackingStoreType, NSColor, NSCursor, NSDragOperation, NSDraggingContext, NSDraggingItem, NSDraggingSession, NSDraggingSource,
     NSEvent, NSFloatingWindowLevel, NSFont, NSImageScaling, NSImageView, NSLineBreakMode, NSPanel, NSScreen, NSTextField,
-    NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSTrackingArea, NSTrackingAreaOptions, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString, NSURL};
@@ -26,8 +26,9 @@ use crate::shelf_window::{rounded, symbol};
 const WIDTH: f64 = 250.0;
 const HEIGHT: f64 = 64.0;
 const ICON: f64 = 40.0;
-/// The close button, at the top right.
+/// The close button, at the top right, and the move sign under it.
 const CLOSE: f64 = 16.0;
+const MOVE_SIGN: f64 = 13.0;
 const RADIUS: f64 = 12.0;
 /// How far the pointer moves with the button down before it is a drag, not a click.
 const DRAG_START: f64 = 4.0;
@@ -88,6 +89,7 @@ define_class!(
             if contains(self.ivars().grab.get(), p) || contains(grow(close_at(), 6.0), p) {
                 self.ivars().press.set(Some(p));
             } else if let Some(window) = self.window() {
+                NSCursor::closedHandCursor().set();
                 window.performWindowDragWithEvent(event);
             }
         }
@@ -102,6 +104,22 @@ define_class!(
                 self.ivars().press.set(None);
                 self.drag_out(event, p);
             }
+        }
+
+        /// An open hand over the part that moves the card, the arrow elsewhere.
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, event: &NSEvent) {
+            self.show_cursor(self.local(event));
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            self.show_cursor(self.local(event));
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            NSCursor::arrowCursor().set();
         }
 
         /// A click on the close button puts the card away.
@@ -149,6 +167,11 @@ impl CardView {
 
     fn local(&self, event: &NSEvent) -> NSPoint {
         self.convertPoint_fromView(event.locationInWindow(), None)
+    }
+
+    fn show_cursor(&self, p: NSPoint) {
+        let moves = !contains(self.ivars().grab.get(), p) && !contains(grow(close_at(), 6.0), p);
+        if moves { NSCursor::openHandCursor() } else { NSCursor::arrowCursor() }.set();
     }
 
     /// Starts dragging the card's files that are still there, from the pointer.
@@ -257,6 +280,10 @@ fn make(app: &AppHandle, mtm: MainThreadMarker, paths: Vec<String>) {
     let icon = image(NSRect::new(NSPoint::new(12.0, (HEIGHT - ICON) / 2.0), NSSize::new(ICON, ICON)));
     icon.setImage(Some(&NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(&paths[0]))));
     image(close_at()).setImage(symbol("xmark.circle.fill", "Put the card away").as_deref());
+    // The sign for the part that moves the card: the right side, under the close button.
+    let sign = image(NSRect::new(NSPoint::new(WIDTH - 8.0 - (CLOSE + MOVE_SIGN) / 2.0, HEIGHT - 10.0 - MOVE_SIGN), NSSize::new(MOVE_SIGN, MOVE_SIGN)));
+    sign.setImage(symbol("arrow.up.and.down.and.arrow.left.and.right", "Drag here to move the card").as_deref());
+    sign.setContentTintColor(Some(&NSColor::tertiaryLabelColor()));
 
     let (title, detail) = describe(&paths);
     let left = 12.0 + ICON + 10.0;
@@ -277,6 +304,20 @@ fn make(app: &AppHandle, mtm: MainThreadMarker, paths: Vec<String>) {
     let words = name.intrinsicContentSize().width.max(note.intrinsicContentSize().width).min(width);
     let top = (HEIGHT - ICON) / 2.0;
     view.ivars().grab.set(NSRect::new(NSPoint::new(8.0, top), NSSize::new(left - 8.0 + words + 4.0, ICON)));
+    let owner: &AnyObject = &view;
+    let tracking = unsafe {
+        NSTrackingArea::initWithRect_options_owner_userInfo(
+            NSTrackingArea::alloc(),
+            NSRect::ZERO,
+            NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::MouseMoved
+                | NSTrackingAreaOptions::ActiveAlways
+                | NSTrackingAreaOptions::InVisibleRect,
+            Some(owner),
+            None,
+        )
+    };
+    view.addTrackingArea(&tracking);
     content.addSubview(&view);
 
     panel.setContentView(Some(&content));
