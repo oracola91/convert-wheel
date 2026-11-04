@@ -105,6 +105,31 @@ impl Markup {
     pub fn redacts(&self) -> bool {
         self.shapes.iter().any(|s| matches!(s, Shape::Redact { .. }))
     }
+
+    /// Black Out on a video: the boxes to fill black, as x, y, width and height in the
+    /// frame's pixels. Only blacked-out parts are taken, each at least a pixel wide and
+    /// tall (ffmpeg reads a width or height of 0 as the whole frame's), and each grows
+    /// outward to even pixels: video keeps colour at half the resolution, so an edge on
+    /// an odd pixel could keep a trace of the colour under it. Checked like `check`.
+    pub fn video_boxes(&self, width: u32, height: u32) -> Result<Vec<[u32; 4]>, String> {
+        self.check(width, height)?;
+        let mut boxes = Vec::new();
+        for shape in &self.shapes {
+            let Shape::Redact { from, to } = shape else {
+                return Err("only black boxes can go on a video".into());
+            };
+            // Inside the frame (checked above), so these fit in u32.
+            let span = |a: i64, b: i64, most: u32| {
+                let (low, high) = (a.min(b) as u32, a.max(b) as u32);
+                (high > low).then(|| (low & !1, (high + (high & 1)).min(most)))
+            };
+            match (span(from[0], to[0], width), span(from[1], to[1], height)) {
+                (Some((x0, x1)), Some((y0, y1))) => boxes.push([x0, y0, x1 - x0, y1 - y0]),
+                _ => return Err("a black box has no width or no height: draw it again".into()),
+            }
+        }
+        Ok(boxes)
+    }
 }
 
 /// The colour to draw in: one of the names above, or a code of `#` and six of 0-9 and
@@ -271,6 +296,22 @@ fn annotate_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_boxes_are_black_boxes_grown_to_even_pixels() {
+        let boxes = |shapes: Vec<Shape>| Markup { shapes }.video_boxes(320, 241);
+        let redact = |from, to| Shape::Redact { from, to };
+        // Either corner first; odd edges move outward, never past the frame.
+        assert_eq!(boxes(vec![redact([11, 21], [3, 8])]), Ok(vec![[2, 8, 10, 14]]));
+        assert_eq!(boxes(vec![redact([0, 0], [320, 241])]), Ok(vec![[0, 0, 320, 241]]));
+        assert_eq!(boxes(vec![redact([319, 239], [320, 240])]), Ok(vec![[318, 238, 2, 2]]));
+        // A box with no width, anything but a black box, or outside: refused.
+        assert!(boxes(vec![redact([5, 5], [5, 40])]).is_err());
+        let pen = Shape::Pen { colour: "red".into(), width: 3, points: vec![[1, 1]] };
+        assert!(boxes(vec![redact([1, 1], [9, 9]), pen]).is_err());
+        assert!(boxes(vec![redact([1, 1], [321, 9])]).is_err());
+        assert!(boxes(vec![]).is_err());
+    }
 
     fn pen(points: Vec<[i64; 2]>) -> Shape {
         Shape::Pen { colour: "red".into(), width: 4, points }

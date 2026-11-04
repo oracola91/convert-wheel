@@ -48,6 +48,9 @@ const FIT_HD: &str = "scale=w='if(gte(iw,ih),min(1920,iw),-2)':h='if(gte(iw,ih),
 /// The sound a conversion encodes: the first track. Phones add more that ffmpeg can't
 /// decode or other containers can't hold (an iPhone's spatial audio, for one).
 const FIRST_SOUND: &str = "0:a:0?";
+/// The first video track that is a real picture, not a cover or a thumbnail some files
+/// keep as a video track of one frame: Black Out's window and its result use the same.
+const MAIN_PICTURE: &str = "0:V:0";
 
 /// The error of a conversion ended with Stop.
 pub const STOPPED: &str = "stopped";
@@ -365,6 +368,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:crop" => "cropped",
         "tool:adjust" => "adjusted",
         "tool:markup" => "marked up",
+        "tool:blackout" => "blacked out",
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "new speed",
@@ -396,6 +400,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:crop" => "cropped",
         "tool:adjust" => "adjusted",
         "tool:markup" => "marked up",
+        "tool:blackout" => "blacked out",
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "sped up or slowed down",
@@ -474,6 +479,23 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             let codec = video_codec(own).ok_or_else(|| format!("{} files can't be cropped", own.to_uppercase()))?;
             let frames = video_crop_filter(&crop, video_fit(own));
             let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", &frames, "-map_metadata", "0"];
+            args.extend(codec);
+            ffmpeg(src, &args, out, VIDEO)
+        }
+        // The black boxes drawn on a frame in the Black Out window, filled on every frame
+        // (upright, as the window showed it), then encoded again in the file's own
+        // format at the menu's quality. Only the picture and the first sound go in: no
+        // cover picture, subtitles, chapters or other tracks, and no metadata (where it
+        // was recorded, the device), as Mark Up's black boxes do for a picture.
+        "tool:blackout" => {
+            let Some(Edit::Markup(markup)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Black Out opens its window from the wheel".into());
+            };
+            let codec = video_codec(own).ok_or_else(|| format!("{} files can't be blacked out", own.to_uppercase()))?;
+            let (width, height) = video_frame_size(src, out)?;
+            let frames = blackout_filter(&markup.video_boxes(width, height)?, video_fit(own));
+            let mut args = vec!["-map", MAIN_PICTURE, "-map", FIRST_SOUND, "-vf", &frames];
+            args.extend(["-map_metadata", "-1", "-map_chapters", "-1"]);
             args.extend(codec);
             ffmpeg(src, &args, out, VIDEO)
         }
@@ -889,6 +911,46 @@ pub fn video_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     let frame = work.path().join("frame.jpg");
     ffmpeg(src, &["-map", "0:v:0", "-vf", "thumbnail", "-frames:v", "1", "-q:v", "2", "-update", "1"], &frame, QUICK)?;
     preview(&frame)
+}
+
+/// Black Out's window: a typical frame of the video's main picture (MAIN_PICTURE),
+/// upright, with its size, made into the preview the way a picture's is.
+pub fn blackout_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let frame = work.path().join("frame.jpg");
+    ffmpeg(src, &["-map", MAIN_PICTURE, "-vf", "thumbnail", "-frames:v", "1", "-q:v", "2", "-update", "1"], &frame, QUICK)?;
+    preview(&frame)
+}
+
+/// The size of the main picture's frames as Black Out fills them (upright), from its
+/// first frame, so the boxes are checked against the video itself and not only against
+/// what the window was told. `out` names the work folder to use.
+fn video_frame_size(src: &Path, out: &Path) -> Result<(u32, u32), String> {
+    let frame = out.with_file_name("size.png");
+    ffmpeg(src, &["-map", MAIN_PICTURE, "-frames:v", "1", "-update", "1"], &frame, QUICK)?;
+    let mut head = [0u8; 24];
+    let read = fs::File::open(&frame).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head));
+    let _ = fs::remove_file(&frame);
+    read.ok().and_then(|()| png_size(&head)).ok_or_else(|| "can't tell the video's size".to_string())
+}
+
+/// Width and height from a PNG's first bytes (its IHDR chunk comes first).
+fn png_size(head: &[u8]) -> Option<(u32, u32)> {
+    let number = |at: usize| Some(u32::from_be_bytes(head.get(at..at + 4)?.try_into().ok()?));
+    (head.starts_with(b"\x89PNG\r\n\x1a\n") && head.get(12..16) == Some(b"IHDR")).then_some(())?;
+    Some((number(16)?, number(20)?)).filter(|&(w, h)| w > 0 && h > 0)
+}
+
+/// ffmpeg's filters for Black Out: each box filled black (boxes from
+/// markup::Markup::video_boxes, never 0 wide or tall), then the fit the encoder needs.
+fn blackout_filter(boxes: &[[u32; 4]], fit: Option<&str>) -> String {
+    let mut steps: Vec<String> =
+        boxes.iter().map(|[x, y, w, h]| format!("drawbox=x={x}:y={y}:w={w}:h={h}:color=black:t=fill")).collect();
+    steps.extend(fit.map(String::from));
+    steps.join(",")
 }
 
 /// ffmpeg's tempo filter for a speed in percent, in steps of 0.5 to 2, which every
@@ -3718,6 +3780,18 @@ mod tests {
     }
 
     /// A video's picture size, "320x240", from ffprobe.
+    /// One frame of a video at `at` seconds, as RGB bytes.
+    fn frame_rgb(video: &Path, at: &str) -> Vec<u8> {
+        let out = Command::new(tool("ffmpeg").unwrap())
+            .args(["-v", "error", "-ss", at, "-i"])
+            .arg(video)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        out.stdout
+    }
+
     fn video_size(path: &Path) -> String {
         let out = Command::new(tool("ffprobe").unwrap())
             .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x"])
@@ -3950,6 +4024,38 @@ mod tests {
         assert!((1.9..2.1).contains(&length), "{length}");
         assert_eq!(video_size(&bleeped), "320x240");
         assert_eq!(convert(&clip, "tool:bleep", None, work.path()).unwrap_err(), "Bleep opens its window from the wheel");
+
+        // Black Out: the window's frame is the video's size; the box (grown to even
+        // pixels) is black on every frame, the rest is as it was, and the metadata goes.
+        let (width, height, jpeg) = blackout_preview(&clip).unwrap();
+        assert_eq!((width, height), (320, 240));
+        assert!(jpeg.starts_with(&[0xFF, 0xD8]));
+        let boxed = markup::Markup { shapes: vec![markup::Shape::Redact { from: [139, 119], to: [41, 31] }] };
+        let black = Control::with_edit(Quality::default(), Some(Edit::Markup(boxed)));
+        let blacked = under(&black, || convert(&clip, "tool:blackout", None, work.path())).unwrap();
+        assert_eq!(blacked, work.path().join("clip (blacked out).mp4"));
+        assert_eq!(video_size(&blacked), "320x240");
+        let tags = probe(&blacked);
+        assert!(!tags.contains("Holiday") && !tags.contains("48.85"), "{tags}");
+        for at in ["0.1", "1.5"] {
+            let (before, after) = (frame_rgb(&clip, at), frame_rgb(&blacked, at));
+            let px = |frame: &[u8], x: usize, y: usize| frame[(y * 320 + x) * 3..][..3].to_vec();
+            for (x, y) in [(40, 30), (90, 75), (139, 119)] {
+                assert!(px(&after, x, y).iter().all(|&c| c < 24), "{at} s, {x},{y}: {:?}", px(&after, x, y));
+            }
+            // Outside the box, the picture is as it was, give or take the new encoding.
+            let outside: Vec<(usize, usize)> = (150..320).step_by(7).flat_map(|x| (0..240).step_by(7).map(move |y| (x, y))).collect();
+            let off: u32 = outside
+                .iter()
+                .map(|&(x, y)| px(&before, x, y).iter().zip(px(&after, x, y)).map(|(a, b)| u32::from(a.abs_diff(b))).sum::<u32>())
+                .sum();
+            assert!(off / (outside.len() as u32 * 3) < 12, "{at} s: off by {off}");
+        }
+        assert_eq!(convert(&clip, "tool:blackout", None, work.path()).unwrap_err(), "Black Out opens its window from the wheel");
+        // A box past the frame is refused, even though the window would never send one.
+        let past = markup::Markup { shapes: vec![markup::Shape::Redact { from: [300, 200], to: [400, 230] }] };
+        let past = Control::with_edit(Quality::default(), Some(Edit::Markup(past)));
+        assert!(under(&past, || convert(&clip, "tool:blackout", None, work.path())).is_err());
 
         // Split: parts of a second each, in a folder named after the clip.
         let halves = Control::with_edit(Quality::default(), Some(Edit::Parts(1000)));

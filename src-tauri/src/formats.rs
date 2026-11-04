@@ -103,6 +103,9 @@ const TOOLS: &[(&str, &[&str])] = &[
         "tool:crop",
         &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"],
     ),
+    // Black boxes over parts of a video, for the whole of it (Mark Up's window, with
+    // only its Select and Black Out tools).
+    ("tool:blackout", &["mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"]),
     (
         "tool:trim",
         &[
@@ -199,7 +202,7 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 
 /// A tool that first opens the editing window (one file at a time) instead of running.
 pub fn opens_editor(id: &str) -> bool {
-    matches!(id, "tool:crop" | "tool:adjust" | "tool:markup" | "tool:trim" | "tool:bleep" | "tool:speed" | "tool:parts" | "tool:order" | "tool:info" | "tool:target")
+    matches!(id, "tool:crop" | "tool:adjust" | "tool:markup" | "tool:blackout" | "tool:trim" | "tool:bleep" | "tool:speed" | "tool:parts" | "tool:order" | "tool:info" | "tool:target")
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
@@ -377,11 +380,11 @@ mod tests {
         // Trim opens a window for one file.
         assert_eq!(
             tools_for(&v(&["/tmp/a.MOV"])),
-            ["tool:compress", "tool:clean", "tool:crop", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:target", "tool:info"]
+            ["tool:compress", "tool:clean", "tool:crop", "tool:blackout", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:target", "tool:info"]
         );
         assert_eq!(
             tools_for(&v(&["/tmp/a.avi"])),
-            ["tool:clean", "tool:crop", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:info"]
+            ["tool:clean", "tool:crop", "tool:blackout", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:info"]
         );
         assert_eq!(
             tools_for(&v(&["/tmp/a.mp3"])),

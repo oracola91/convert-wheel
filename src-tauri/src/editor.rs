@@ -1,6 +1,7 @@
 //! The editing window some tools open first: Crop (the picture, or a frame of a video,
 //! with a box to drag, turned a quarter at a time), Adjust (sliders for light and
-//! colour), Mark Up (drawing and blacking out on the picture), Trim (a sound's or
+//! colour), Mark Up (drawing and blacking out on the picture; Black Out uses it on a
+//! frame of a video, with black boxes only), Trim (a sound's or
 //! video's loudness and frames, with a start and an end to drag; Bleep uses it too,
 //! for the part to bleep), Speed (a speed to pick), Split for sound and video (how many
 //! parts, or how long each), Compress to a Size (a size to type or pick), Reorder (a
@@ -51,7 +52,9 @@ enum View {
     /// The same picture, for Adjust's sliders.
     Adjust { preview: String },
     /// The same picture and its size, for Mark Up's drawing (sent back in its pixels).
-    Markup { width: u32, height: u32, preview: String },
+    /// With `video`, a frame of a video for Black Out: the window offers only black
+    /// boxes, which cover the same place for the whole video.
+    Markup { width: u32, height: u32, preview: String, video: bool },
     /// The length (the times come back in milliseconds), the loudness along it, and for
     /// a video eight frames; the sound as a small MP3 to play, when not too long.
     /// With `bleep`, the same window picks the part Bleep turns into a tone.
@@ -103,6 +106,7 @@ impl View {
         match self {
             View::Crop { .. } => format!("Crop: {name}"),
             View::Adjust { .. } => format!("Adjust: {name}"),
+            View::Markup { video: true, .. } => format!("Black out: {name}"),
             View::Markup { .. } => format!("Mark up: {name}"),
             View::Trim { bleep: true, .. } => format!("Bleep: {name}"),
             View::Trim { .. } => format!("Trim: {name}"),
@@ -123,7 +127,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Trim, Bleep, Speed, Split, Reorder, Info and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Black Out, Trim, Bleep, Speed, Split, Reorder, Info and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -141,7 +145,10 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
             convert::info::read(&path).map(|i| View::Info { what: i.what, facts: i.facts, fields: i.fields })
         } else if tool == "tool:markup" {
             convert::preview(&path)
-                .map(|(width, height, jpeg)| View::Markup { width, height, preview: data_url("image/jpeg", &jpeg) })
+                .map(|(width, height, jpeg)| View::Markup { width, height, preview: data_url("image/jpeg", &jpeg), video: false })
+        } else if tool == "tool:blackout" {
+            convert::blackout_preview(&path)
+                .map(|(width, height, jpeg)| View::Markup { width, height, preview: data_url("image/jpeg", &jpeg), video: true })
         } else if tool == "tool:adjust" {
             convert::preview(&path).map(|(_, _, jpeg)| View::Adjust { preview: data_url("image/jpeg", &jpeg) })
         } else if tool == "tool:crop" {
@@ -339,8 +346,19 @@ pub fn editor_adjust(app: AppHandle, editing: State<Editing>, adjust: convert::A
 #[tauri::command]
 pub fn editor_markup(app: AppHandle, editing: State<Editing>, markup: convert::markup::Markup) -> Result<(), String> {
     finish(&app, &editing, "tool:markup", |view| match view {
-        View::Markup { width, height, .. } => markup.check(*width, *height).map(|()| Edit::Markup(markup)),
+        View::Markup { width, height, video: false, .. } => markup.check(*width, *height).map(|()| Edit::Markup(markup)),
         _ => Err("this window doesn't mark up".into()),
+    })
+}
+
+/// Black Out: black boxes only, each inside the video's frame, then the job is queued.
+#[tauri::command]
+pub fn editor_blackout(app: AppHandle, editing: State<Editing>, markup: convert::markup::Markup) -> Result<(), String> {
+    finish(&app, &editing, "tool:blackout", |view| match view {
+        View::Markup { width, height, video: true, .. } => {
+            markup.video_boxes(*width, *height).map(|_| Edit::Markup(markup))
+        }
+        _ => Err("this window doesn't black out a video".into()),
     })
 }
 
