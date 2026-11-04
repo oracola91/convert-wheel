@@ -130,7 +130,9 @@ fn pieces_along(length: u32) -> (u32, [u32; 3]) {
 /// one, and scaled up by the picture's pixels. An icon is 256 pixels whatever the
 /// picture, so its pieces are the estimate.
 fn pictures(src: &Path, ext: &str, targets: &[&str], level: Level) -> Vec<(String, u64)> {
-    let wanted: Vec<&str> = targets.iter().copied().filter(|t| formats::outputs_for(ext).contains(t)).collect();
+    // An SVG is traced, not written by ImageMagick: its size can't be measured this way.
+    let wanted: Vec<&str> =
+        targets.iter().copied().filter(|t| *t != "svg" && formats::outputs_for(ext).contains(t)).collect();
     let (Some(coder), Ok(magick), Ok(work)) = (
         read_head(src).ok().and_then(|head| sniff_image(&head)),
         magick(),

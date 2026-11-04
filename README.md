@@ -23,7 +23,7 @@ This is our own build, written from scratch. The idea comes from what the paid T
 
 | Files | Can become | Done by |
 |---|---|---|
-| Images: JPG, PNG, HEIC, WebP, TIFF, BMP, GIF, AVIF | JPG, PNG, HEIC, WebP, TIFF, GIF, AVIF, BMP, ICO, PDF | ImageMagick |
+| Images: JPG, PNG, HEIC, WebP, TIFF, BMP, GIF, AVIF | JPG, PNG, HEIC, WebP, TIFF, GIF, AVIF, BMP, ICO, PDF, SVG | ImageMagick; SVG traced by [vtracer](https://github.com/visioncortex/vtracer), in the app |
 | Audio: MP3, WAV, M4A, AAC, FLAC, AIFF, OGG, Opus, WMA | MP3, M4A, WAV, FLAC, AIFF, OGG, Opus, WMA | ffmpeg |
 | Video: MP4, MOV, M4V, MKV, WebM, AVI, WMV | MP4, MOV, WebM, MKV, AVI, WMV, GIF, MP3 (sound only) | ffmpeg |
 | Documents: DOCX, DOC, ODT, RTF, Pages, Markdown, HTML, TXT, EPUB | PDF, DOCX, ODT, HTML, Markdown, TXT, EPUB | LibreOffice for PDF and office formats, pandoc for the rest |
@@ -31,6 +31,8 @@ This is our own build, written from scratch. The idea comes from what the paid T
 | Presentations: PPTX, PPT, ODP, Keynote | PDF, PPTX, ODP | LibreOffice |
 | PDF | JPG, PNG (a picture of each page), TXT, DOCX (the text only) | MuPDF (`mutool`); pandoc for DOCX |
 | Subtitles: SRT, VTT | SRT, VTT | ffmpeg |
+
+An SVG is the picture traced into flat-coloured shapes, which scale to any size: best for logos, drawings, icons and screenshots; a photo becomes a poster-like picture. ImageMagick reads the picture and makes it at most 2000 pixels on its longer side, then vtracer (MIT or Apache-2.0, pure Rust, built into the app) traces it in a process of its own, so a slow one is stopped like any other tool. JPEG, HEIC and AVIF are taken as photos (coarser layers, small specks dropped); other pictures keep their flat colours. The menu's picture quality picks how fine: Smaller Files drops more specks and merges more colours, Best Quality keeps more of both. Transparency is kept. An SVG can't be read back in: the wheel takes only plain pictures.
 
 An icon (ICO) holds the picture at 256, 128, 64, 48, 32 and 16 pixels, fitted into a square with see-through edges rather than stretched. MKV is a fast copy of the streams when they fit, H.264 otherwise; AVI is MPEG-4 Part 2 (what Xvid makes) with MP3, and WMV is Windows Media 8 with WMA, for older players, at most 1920 pixels on the long side. Pages, Numbers and Keynote files go through LibreOffice, which reads them; a file saved as a package folder (older versions) is refused: save it as a single file. Subtitles should be UTF-8.
 

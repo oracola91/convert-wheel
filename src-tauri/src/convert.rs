@@ -26,6 +26,7 @@ use crate::settings::{Level, Quality};
 pub mod estimate;
 pub mod info;
 pub mod markup;
+pub mod svg;
 
 /// How long each tool may run before it is stopped. Generous: a stuck tool should not
 /// block every later conversion, but a long video must still finish.
@@ -163,6 +164,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
         (Some(_), _) => Err("the Tools wheel has no tools for this kind of file yet".to_string()),
+        (None, Kind::Image) if target == "svg" => file(to_svg(&input, &out, work.path())),
         (None, Kind::Image) => file(image(&input, target, &out)),
         (None, Kind::Audio) => file(audio(&input, target, &out)),
         (None, Kind::Video) => file(video(&input, &ext, target, &out)),
@@ -286,6 +288,25 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
             e
         }
     })
+}
+
+/// A picture traced into an SVG: ImageMagick writes its pixels upright and at most
+/// svg::MAX_SIDE on the longer side, then this program traces them in a process of
+/// its own (svg.rs), under the usual time limit and Stop Converting.
+fn to_svg(src: &Path, out: &Path, work: &Path) -> Result<(), String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    let pixels = work.join("pixels.pam");
+    let side = svg::MAX_SIDE.to_string();
+    let mut cmd = Command::new(magick()?);
+    cmd.args(IMAGE_LIMITS);
+    cmd.arg(format!("{coder}:{}[0]", src.display()))
+        .args(["-auto-orient", "-resize", &format!("{side}x{side}>"), "-depth", "8"])
+        .arg(format!("pam:{}", pixels.display()));
+    run(cmd, QUICK)?;
+    let me = std::env::current_exe().map_err(|e| format!("can't find Convert Wheel itself to trace with: {e}"))?;
+    let mut trace = Command::new(me);
+    trace.arg("--trace").args(svg::trace_args(&pixels, out, svg::Style::of_coder(coder), quality().pictures));
+    run(trace, QUICK)
 }
 
 /// What ImageMagick is told to write a picture as `target` at `level`.

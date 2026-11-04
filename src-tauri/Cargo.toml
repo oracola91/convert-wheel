@@ -26,6 +26,11 @@ base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "=2.8.3"
+# Traces a picture into an SVG (convert/svg.rs). Pure Rust, no image decoding or file
+# access of its own (ImageMagick reads the picture); only visioncortex and flo_curves
+# come with it. Pinned: a 1.0 pre-release, chosen over 0.6 which drags in clap 2 and an
+# old image crate.
+vtracer = "=1.0.0-alpha.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The folder picker as its own window (transfer.rs); the version the dialog plugin uses.
