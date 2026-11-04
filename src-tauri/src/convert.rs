@@ -291,12 +291,13 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
 }
 
 /// A picture traced into an SVG: ImageMagick writes its pixels upright and at most
-/// svg::MAX_SIDE on the longer side, then this program traces them in a process of
+/// its style's longest side (2000 px, photos 1200), then this program traces them in a process of
 /// its own (svg.rs), under the usual time limit and Stop Converting.
 fn to_svg(src: &Path, out: &Path, work: &Path) -> Result<(), String> {
     let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
     let pixels = work.join("pixels.pam");
-    let side = svg::MAX_SIDE.to_string();
+    let style = svg::Style::of_coder(coder);
+    let side = style.max_side().to_string();
     let mut cmd = Command::new(magick()?);
     cmd.args(IMAGE_LIMITS);
     cmd.arg(format!("{coder}:{}[0]", src.display()))
@@ -305,7 +306,7 @@ fn to_svg(src: &Path, out: &Path, work: &Path) -> Result<(), String> {
     run(cmd, QUICK)?;
     let me = std::env::current_exe().map_err(|e| format!("can't find Convert Wheel itself to trace with: {e}"))?;
     let mut trace = Command::new(me);
-    trace.arg("--trace").args(svg::trace_args(&pixels, out, svg::Style::of_coder(coder), quality().pictures));
+    trace.arg("--trace").args(svg::trace_args(&pixels, out, style, quality().pictures));
     run(trace, QUICK)
 }
 

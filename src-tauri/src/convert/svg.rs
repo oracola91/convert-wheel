@@ -3,7 +3,7 @@
 //!
 //! ImageMagick reads the picture as it does for every other format (the real format
 //! from its first bytes, the usual limits), turns it upright, makes it at most
-//! MAX_SIDE pixels on its longer side and writes plain pixels (PAM). The tracing then
+//! Style::max_side pixels on its longer side and writes plain pixels (PAM). The tracing then
 //! runs in a process of its own, this same program started with `--trace`: a picture
 //! that takes too long is stopped with the usual time limit and Stop Converting, and
 //! whatever the tracing does with memory ends with that process.
@@ -13,9 +13,8 @@ use std::path::Path;
 
 use vtracer::{ColorImage, Config, Preset};
 
-/// The longer side a picture is traced at. Tracing time and the SVG's size grow with
-/// the pixels; past this, a photo's SVG only gets bigger, not better.
-pub const MAX_SIDE: u32 = 2000;
+/// The longest side any picture is traced at (Style::max_side).
+const MAX_SIDE: u32 = 2000;
 
 /// Most pixels the tracing process takes, whatever the file says: MAX_SIDE squared.
 const MAX_PIXELS: usize = (MAX_SIDE as usize) * (MAX_SIDE as usize);
@@ -33,6 +32,17 @@ impl Style {
     /// From ImageMagick's name for the picture's real format (convert.rs sniff_image).
     pub fn of_coder(coder: &str) -> Style {
         if matches!(coder, "jpeg" | "heic" | "avif") { Style::Photo } else { Style::Flat }
+    }
+
+    /// The longer side it is traced at. Tracing time and the SVG's size grow with the
+    /// pixels: a 1500 x 1000 photo took 8 s and made 3 MB, at 1200 x 800 4 s and 1.9 MB
+    /// (release build, 2026-11-04), with no better look to it. Flat pictures trace fast
+    /// and keep their edges sharper with more pixels.
+    pub fn max_side(self) -> u32 {
+        match self {
+            Style::Photo => 1200,
+            Style::Flat => MAX_SIDE,
+        }
     }
 
     fn key(self) -> &'static str {
@@ -57,28 +67,29 @@ pub fn trace_args(pam: &Path, out: &Path, style: Style, level: crate::settings::
     ]
 }
 
-/// vtracer's settings for a style at a quality level. Balanced is vtracer's own preset
-/// for the style; Smaller drops more small specks and merges more colours, Best keeps
-/// more of both. Coordinates are written with two decimals at most (one for Smaller).
+/// vtracer's settings for a style at a quality level: Balanced is vtracer's own
+/// preset for the style (for photos with 6 bits of colour, not 8, which halves the
+/// time); Smaller drops bigger specks and merges more colours, Best keeps more of both.
+/// Coordinates get two decimals, one for Smaller.
 pub fn config(style: Style, level: &str) -> Option<Config> {
-    let mut config = match style {
-        Style::Photo => Config::from_preset(Preset::Photo),
-        Style::Flat => Config::from_preset(Preset::Poster),
-    };
-    match level {
-        "smaller" => {
-            config.filter_speckle *= 2;
-            config.layer_difference += 16;
-            config.color_precision -= 1;
-            config.path_precision = Some(1);
-        }
-        "balanced" => {}
-        "best" => {
-            config.filter_speckle = (config.filter_speckle / 2).max(2);
-            config.layer_difference = (config.layer_difference / 2).max(8);
-        }
+    // Speck size, colour bits, layer difference, decimals.
+    let (speck, bits, layers, decimals) = match (style, level) {
+        (Style::Photo, "smaller") => (16, 6, 64, 1),
+        (Style::Photo, "balanced") => (10, 6, 48, 2),
+        (Style::Photo, "best") => (10, 8, 48, 2),
+        (Style::Flat, "smaller") => (8, 7, 32, 1),
+        (Style::Flat, "balanced") => (4, 8, 16, 2),
+        (Style::Flat, "best") => (2, 8, 8, 2),
         _ => return None,
-    }
+    };
+    let mut config = Config::from_preset(match style {
+        Style::Photo => Preset::Photo,
+        Style::Flat => Preset::Poster,
+    });
+    config.filter_speckle = speck;
+    config.color_precision = bits;
+    config.layer_difference = layers;
+    config.path_precision = Some(decimals);
     Some(config)
 }
 
@@ -197,6 +208,8 @@ mod tests {
         assert!(read_pam(&pam(2, 2, 4, "RGB_ALPHA", &[0; 15])).is_none());
         assert!(read_pam(b"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 4\nMAXVAL 65535\nENDHDR\n\0\0\0\0\0\0\0\0").is_none());
         assert!(read_pam(&pam(MAX_SIDE as usize + 1, MAX_SIDE as usize, 4, "RGB_ALPHA", &[])).is_none());
+        // Photo's settings match the preset it starts from where they aren't set here.
+        assert_eq!(config(Style::Photo, "balanced").unwrap().corner_threshold, Config::from_preset(Preset::Photo).corner_threshold);
         assert!(read_pam(&pam(0, 5, 4, "RGB_ALPHA", &[])).is_none());
         assert!(read_pam(b"P6\n1 1\n255\n\0\0\0").is_none());
     }
@@ -211,7 +224,8 @@ mod tests {
                 (config(style, "smaller").unwrap(), config(style, "balanced").unwrap(), config(style, "best").unwrap());
             assert!(smaller.filter_speckle > balanced.filter_speckle && best.filter_speckle <= balanced.filter_speckle);
             assert!(smaller.layer_difference > best.layer_difference);
-            assert!(smaller.color_precision >= 1 && best.color_precision <= 8);
+            assert!(smaller.color_precision <= balanced.color_precision && best.color_precision == 8);
+            assert!(style.max_side() <= MAX_SIDE);
         }
         assert!(config(Style::Flat, "huge").is_none());
     }
