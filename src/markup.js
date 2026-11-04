@@ -7,6 +7,8 @@
 // picture: click where they go, type, Enter. What is drawn is kept as shapes in the
 // picture's own pixels; the app checks them and ImageMagick draws them the same way
 // (src-tauri/src/convert/markup.rs), the blacked-out parts last, over everything.
+// For Black Out on a video, the same window shows a frame of it with only Select and
+// Black out: each box covers that place for the whole video (ffmpeg fills it).
 if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
@@ -47,6 +49,9 @@ const RECENT = 3;
 
 // The tools in the order the arrow keys go through them. The shapes share a button.
 const TOOLS = ['select', 'pen', 'highlight', 'arrow', 'line', 'box', 'circle', 'text', 'number', 'redact'];
+// The tools on offer: all of them, or for a video only these.
+let toolOrder = TOOLS;
+const VIDEO_TOOLS = ['select', 'redact'];
 const SHAPES = { arrow: 'Arrow', line: 'Line', box: 'Box', circle: 'Circle' };
 
 // Which size each kind of mark takes. The lists are what to pick, as in Word (font
@@ -572,8 +577,10 @@ canvas.addEventListener('pointermove', (event) => {
 function finishDrawing() {
   moving = null;
   if (!drawing) return;
-  // A click without a drag makes a dot with the pens, and nothing with the others.
-  const sized = drawing.points || drawing.from[0] !== drawing.to[0] || drawing.from[1] !== drawing.to[1];
+  // A click without a drag makes a dot with the pens, and nothing with the others. A
+  // black box needs both a width and a height (for a video, the app refuses one without).
+  const [dx, dy] = drawing.points ? [1, 1] : [drawing.from[0] !== drawing.to[0], drawing.from[1] !== drawing.to[1]];
+  const sized = drawing.kind === 'redact' ? dx && dy : dx || dy;
   if (sized) {
     remember();
     shapes.push(drawing);
@@ -834,7 +841,7 @@ async function save() {
   apply.disabled = true;
   try {
     // The app checks the shapes, queues the job and closes this window.
-    await invoke('editor_markup', { markup: { shapes } });
+    await invoke(session.video ? 'editor_blackout' : 'editor_markup', { markup: { shapes } });
   } catch (error) {
     say(String(error));
     apply.disabled = false;
@@ -914,9 +921,9 @@ document.addEventListener('keydown', (event) => {
       redraw();
     } else if (step[0]) {
       // Otherwise Left and Right pick the tool, Up and Down the colour.
-      const next = TOOLS[TOOLS.indexOf(tool) + step[0]];
+      const next = toolOrder[toolOrder.indexOf(tool) + step[0]];
       if (next) pickTool(next);
-    } else {
+    } else if (!session?.video) {
       const list = [...colours.querySelectorAll('[data-colour]')];
       const next = list[list.findIndex((button) => button.dataset.colour === colour) + step[1]];
       if (next) pickColour(next.dataset.colour);
@@ -927,6 +934,20 @@ document.addEventListener('keydown', (event) => {
 showColours();
 pickTool('pen');
 new ResizeObserver(layout).observe(stage);
+
+// Black Out on a video: only Select and Black out, no colours or sizes (the boxes are
+// black, and fill what they cover).
+function videoOnly() {
+  toolOrder = VIDEO_TOOLS;
+  for (const button of tools.querySelectorAll('[data-tool]')) {
+    if (!VIDEO_TOOLS.includes(button.dataset.tool)) button.hidden = true;
+  }
+  // Both have a display of their own, which [hidden] wouldn't override.
+  shapeTool.closest('.split').style.display = 'none';
+  colours.closest('.row').style.display = 'none';
+  pickTool('redact');
+  say('Draw a box over each part to hide. It stays black for the whole video.');
+}
 
 async function load() {
   try {
@@ -939,13 +960,15 @@ async function load() {
     && session.kind === 'markup'
     && Number.isSafeInteger(session.width) && session.width > 0
     && Number.isSafeInteger(session.height) && session.height > 0
-    && typeof session.preview === 'string' && session.preview.startsWith('data:image/jpeg;base64,');
+    && typeof session.preview === 'string' && session.preview.startsWith('data:image/jpeg;base64,')
+    && typeof session.video === 'boolean';
   if (!valid) {
     session = null;
     say('Nothing to mark up. Drag the picture onto Mark Up again.');
     return;
   }
-  document.title = `Mark up: ${session.name}`;
+  if (session.video) videoOnly();
+  document.title = `${session.video ? 'Black out' : 'Mark up'}: ${session.name}`;
   image.onload = layout;
   image.src = session.preview;
 }
