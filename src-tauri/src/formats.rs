@@ -49,7 +49,7 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
     (
         Kind::Image,
         &["jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp", "gif", "avif"],
-        &["jpg", "png", "heic", "webp", "tiff", "gif", "avif", "bmp", "ico", "pdf"],
+        &["jpg", "png", "heic", "webp", "tiff", "gif", "avif", "bmp", "ico", "pdf", "svg"],
     ),
     (
         Kind::Audio,
@@ -343,7 +343,9 @@ mod tests {
 
     #[test]
     fn new_formats_are_offered() {
-        assert!(formats_for(&v(&["/tmp/a.png"]), all_shown).ends_with(&["bmp", "ico", "pdf"]));
+        assert!(formats_for(&v(&["/tmp/a.png"]), all_shown).ends_with(&["bmp", "ico", "pdf", "svg"]));
+        assert!(formats_for(&v(&["/tmp/a.heic", "/tmp/b.gif"]), all_shown).contains(&"svg"));
+        assert!(!formats_for(&v(&["/tmp/a.pdf"]), all_shown).contains(&"svg"));
         assert!(formats_for(&v(&["/tmp/a.mov"]), all_shown).contains(&"wmv"));
         assert_eq!(formats_for(&v(&["/tmp/a.srt"]), all_shown), ["vtt"]);
         assert!(formats_for(&v(&["/tmp/a.pages"]), all_shown).contains(&"docx"));
@@ -435,8 +437,13 @@ mod tests {
 
     #[test]
     fn no_kind_offers_more_than_the_wheel_draws() {
-        for (_, _, outs) in KINDS {
-            assert!(outs.len() <= MAX_SEGMENTS);
+        // Files of one format lose their own: that fits on one wheel. Mixed formats can
+        // be offered one more (pictures: eleven), which come in sets with More.
+        for (_, ins, outs) in KINDS {
+            for ext in *ins {
+                assert!(formats_for(&[format!("/tmp/a.{ext}")], all_shown).len() <= MAX_SEGMENTS, ".{ext}");
+            }
+            assert!(outs.len() <= 2 * (MAX_SEGMENTS - 1));
         }
     }
 

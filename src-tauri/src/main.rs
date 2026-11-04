@@ -648,6 +648,11 @@ fn main() {
     }));
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The SVG tracing, in a process of its own (convert/svg.rs): started by the app
+    // itself, never by the user.
+    if args.first().map(String::as_str) == Some("--trace") {
+        std::process::exit(convert::svg::trace_main(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("--convert") {
         // A Windows release build has no console of its own; borrow the one it was
         // started from so the results and errors show up there.
