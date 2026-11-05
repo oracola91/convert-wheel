@@ -307,12 +307,14 @@ mod tests {
 #[cfg(windows)]
 fn share(app: &AppHandle, files: Vec<PathBuf>) {
     use tauri::Manager;
-    let Some(hwnd) = app.get_webview_window("wheel").and_then(|w| w.hwnd().ok()) else {
+    let Some(window) = app.get_webview_window("wheel") else {
         return;
     };
     let handle = app.clone();
+    // The window handle is not Send: it is read on the main thread.
     let _ = app.run_on_main_thread(move || {
-        if let Err(e) = share_sheet(hwnd, &files) {
+        let shown = window.hwnd().map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()));
+        if let Err(e) = shown.and_then(|hwnd| share_sheet(hwnd, &files)) {
             log::line(&format!("couldn't open the share sheet: {e}"));
             notify(&handle, "Couldn't open Share", &e.message());
         }
@@ -323,7 +325,7 @@ fn share(app: &AppHandle, files: Vec<PathBuf>) {
 fn share_sheet(hwnd: windows::Win32::Foundation::HWND, files: &[PathBuf]) -> windows::core::Result<()> {
     use windows::core::{factory, Interface, HSTRING};
     use windows::ApplicationModel::DataTransfer::{DataRequestedEventArgs, DataTransferManager};
-    use windows::Foundation::Collections::IIterable;
+    use windows_collections::IIterable;
     use windows::Foundation::TypedEventHandler;
     use windows::Storage::{IStorageItem, StorageFile};
     use windows::Win32::UI::Shell::IDataTransferManagerInterop;
