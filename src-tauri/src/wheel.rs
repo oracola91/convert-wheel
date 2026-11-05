@@ -123,6 +123,8 @@ pub struct WheelState {
     pub which: Mutex<Which>,
     /// The dragged files, once known: a switch to another wheel needs them again.
     pub paths: Mutex<Vec<String>>,
+    /// The segment the arrow keys picked, if any: a drop on the hub goes there.
+    pub picked: Mutex<Option<usize>>,
     phase: Mutex<Phase>,
 }
 

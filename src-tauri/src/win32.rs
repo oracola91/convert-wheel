@@ -24,7 +24,7 @@ use windows::Win32::System::Ole::{
 use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_MENU, VK_RBUTTON, VK_SHIFT,
+    GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_LBUTTON, VK_LEFT, VK_MENU, VK_RBUTTON, VK_RIGHT, VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -57,6 +57,7 @@ pub fn start_trigger(app: AppHandle) {
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
+        let mut arrows = trigger::Arrows::default();
         loop {
             thread::sleep(POLL);
             let mut pt = POINT::default();
@@ -69,6 +70,7 @@ pub fn start_trigger(app: AppHandle) {
                 }
                 (was_down, from_files, shown, held) = (false, false, false, 0);
                 keys = KeyFollower::default();
+                arrows = trigger::Arrows::default();
                 continue;
             }
             if !was_down {
@@ -85,6 +87,7 @@ pub fn start_trigger(app: AppHandle) {
                 }
             } else if shown {
                 trigger::follow_keys(&app, &mut keys, key_down(VK_SHIFT), key_down(VK_MENU), key_down(VK_CONTROL));
+                trigger::follow_arrows(&app, &mut arrows, [key_down(VK_LEFT), key_down(VK_RIGHT), key_down(VK_UP), key_down(VK_DOWN)]);
             }
         }
     });

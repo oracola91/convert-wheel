@@ -321,6 +321,13 @@ fn wheel_keys(app: AppHandle, alt: bool, control: bool) {
     trigger::pinned_keys(&app, alt, control);
 }
 
+/// The wheel's page, opened from the shortcut (Linux): an arrow key, 0 left, 1 right,
+/// 2 up, 3 down.
+#[tauri::command]
+fn wheel_arrow(app: AppHandle, key: usize) {
+    trigger::arrow(&app, key);
+}
+
 /// The page drew a wheel and measured its words: on macOS the glass gets a frosted
 /// patch behind each. Boxes that don't fit the window are dropped.
 #[tauri::command]
@@ -712,7 +719,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, wheel_more, wheel_keys, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
