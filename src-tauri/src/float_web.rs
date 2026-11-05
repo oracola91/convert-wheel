@@ -187,7 +187,7 @@ fn drag_out(window: &WebviewWindow, files: &[PathBuf]) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::System::Com::{CoTaskMemFree, IDataObject};
-    use windows::Win32::System::Ole::{IDropSource, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
+    use windows::Win32::System::Ole::{IDropSource, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{BHID_DataObject, IShellItemArray, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHParseDisplayName};
 
@@ -203,9 +203,9 @@ fn drag_out(window: &WebviewWindow, files: &[PathBuf]) -> Result<(), String> {
         let list: Vec<*const ITEMIDLIST> = pidls.iter().map(|p| *p as *const ITEMIDLIST).collect();
         let items: IShellItemArray = unsafe { SHCreateShellItemArrayFromIDLists(&list)? };
         let data: IDataObject = unsafe { items.BindToHandler(None, &BHID_DataObject)? };
-        let mut effect = DROPEFFECT(0);
-        // No drop source of our own: the shell makes its default one.
-        unsafe { SHDoDragDrop(Some(hwnd), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK, &mut effect) }
+        // No drop source of our own: the shell makes its default one. Whether the files
+        // moved is read from the disk afterwards (after_drag), not from the effect.
+        unsafe { SHDoDragDrop(Some(hwnd), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK) }.map(|_| ())
     })();
     for p in pidls {
         unsafe { CoTaskMemFree(Some(p as *const _)) };
