@@ -10,6 +10,7 @@ mod editor;
 mod estimates;
 #[cfg(target_os = "macos")]
 mod float_card;
+mod float_web;
 mod formats;
 #[cfg(target_os = "macos")]
 mod glass_slider;
@@ -704,7 +705,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, wheel_more, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, wheel_more, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
