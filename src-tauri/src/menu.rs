@@ -43,8 +43,8 @@ const KEYS: &str = "keys:";
 /// The wheels in the Keys menu: as the menu ids name them, and as it shows them.
 const WHEELS: [(Which, &str, &str); 3] =
     [(Which::Formats, "formats", "Formats Wheel"), (Which::Tools, "tools", "Tools Wheel"), (Which::Actions, "actions", "Actions Wheel")];
-/// Wheel Glass: "glass:on" (Liquid Glass) and "glass:off" (No Liquid Glass), macOS.
-#[cfg(target_os = "macos")]
+/// Wheel Glass: "glass:on" (Liquid Glass, See-through) and "glass:off" (No Liquid Glass,
+/// Solid), and on Windows and Linux "glass:t50", a Transparency step.
 const GLASS: &str = "glass:";
 /// Windows and Linux: the Transparency steps in place of macOS's slider.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
