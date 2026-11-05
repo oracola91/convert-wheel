@@ -323,7 +323,7 @@ fn share(app: &AppHandle, files: Vec<PathBuf>) {
 
 #[cfg(windows)]
 fn share_sheet(hwnd: windows::Win32::Foundation::HWND, files: &[PathBuf]) -> windows::core::Result<()> {
-    use windows::core::{factory, Interface, HSTRING};
+    use windows::core::{factory, AgileReference, Interface, HSTRING};
     use windows::ApplicationModel::DataTransfer::{DataRequestedEventArgs, DataTransferManager};
     use windows_collections::IIterable;
     use windows::Foundation::TypedEventHandler;
@@ -339,6 +339,10 @@ fn share_sheet(hwnd: windows::Win32::Foundation::HWND, files: &[PathBuf]) -> win
         [one] => one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         many => format!("{} files", many.len()),
     };
+    // The share sheet asks for the files on a thread of its own: the list goes there
+    // through an agile reference, as COM objects may not cross threads by themselves.
+    let list: IIterable<IStorageItem> = items.into();
+    let list = AgileReference::new(&list)?;
     let interop = factory::<DataTransferManager, IDataTransferManagerInterop>()?;
     let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd)? };
     // One share at a time: the handler answers only the request this share makes.
@@ -348,8 +352,7 @@ fn share_sheet(hwnd: windows::Win32::Foundation::HWND, files: &[PathBuf]) -> win
         if let Some(args) = args.as_ref() {
             let data = args.Request()?.Data()?;
             data.Properties()?.SetTitle(&HSTRING::from(title.as_str()))?;
-            let list: IIterable<IStorageItem> = items.clone().into();
-            data.SetStorageItemsReadOnly(&list)?;
+            data.SetStorageItemsReadOnly(&list.resolve()?)?;
         }
         if let (Some(sender), Some(t)) = (sender.as_ref(), slot.lock().map(|g| *g).unwrap_or(None)) {
             let _ = sender.RemoveDataRequested(t);
