@@ -108,10 +108,11 @@ fn start_x11(app: AppHandle) {
             let moved = (px - start.0).abs() > DRAG_THRESHOLD || (py - start.1).abs() > DRAG_THRESHOLD;
             held = if pointer.mask.contains(KeyButMask::SHIFT) { held.saturating_add(1) } else { 0 };
             if from_files && !shown && held >= trigger::KEYS_SETTLE && moved {
-                // MOD1 is Alt.
-                let which = Which::from_keys(pointer.mask.contains(KeyButMask::MOD1), pointer.mask.contains(KeyButMask::CONTROL));
-                trigger::show_wheel(&app, Vec::new(), which);
-                shown = true;
+                // MOD1 is Alt. Keys switched off in the menu open no wheel.
+                if let Some(which) = Which::from_keys(pointer.mask.contains(KeyButMask::MOD1), pointer.mask.contains(KeyButMask::CONTROL)) {
+                    trigger::show_wheel(&app, Vec::new(), which);
+                    shown = true;
+                }
             } else if shown {
                 let held = |key| pointer.mask.contains(key);
                 trigger::follow_keys(&app, &mut keys, held(KeyButMask::SHIFT), held(KeyButMask::MOD1), held(KeyButMask::CONTROL));

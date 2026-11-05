@@ -708,6 +708,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     log::init(app.path().app_log_dir().ok());
     log::line(&format!("started, version {}", app.package_info().version));
     let (store, settings_problem) = settings::Store::load(app.path().app_config_dir()?.join("settings.json"));
+    wheel::set_keys(store.get().keys);
     app.manage(store);
     app.manage(update::Pending::default());
     app.manage(reveal::Results::default());

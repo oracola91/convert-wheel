@@ -158,8 +158,12 @@ impl Drag {
             self.refused = true;
             return Step::Wait;
         }
+        // Keys switched off in the menu open no wheel; other keys still can.
+        let Some(which) = Which::from_keys(keys.alt, keys.control) else {
+            return Step::Wait;
+        };
         self.shown = true;
-        Step::Open(Which::from_keys(keys.alt, keys.control))
+        Step::Open(which)
     }
 }
 

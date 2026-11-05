@@ -78,10 +78,11 @@ pub fn start_trigger(app: AppHandle) {
             }
             held = if key_down(VK_SHIFT) { held.saturating_add(1) } else { 0 };
             if from_files && !shown && held >= trigger::KEYS_SETTLE && moved_past_threshold(start, pt) {
-                // VK_MENU is Alt.
-                let which = Which::from_keys(key_down(VK_MENU), key_down(VK_CONTROL));
-                trigger::show_wheel(&app, Vec::new(), which);
-                shown = true;
+                // VK_MENU is Alt. Keys switched off in the menu open no wheel.
+                if let Some(which) = Which::from_keys(key_down(VK_MENU), key_down(VK_CONTROL)) {
+                    trigger::show_wheel(&app, Vec::new(), which);
+                    shown = true;
+                }
             } else if shown {
                 trigger::follow_keys(&app, &mut keys, key_down(VK_SHIFT), key_down(VK_MENU), key_down(VK_CONTROL));
             }
