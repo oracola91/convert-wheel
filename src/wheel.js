@@ -401,6 +401,7 @@ listen('wheel-show', (event) => {
   nameWheel();
   if (picture && picture.path !== paths[0]) picture = null;
   pinned = event.payload?.pinned === true;
+  pinnedKeys = 'false/false';
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   const highlight = event.payload?.highlight;
   document.documentElement.dataset.highlight = HIGHLIGHTS.includes(highlight) ? highlight : 'orange';
@@ -514,6 +515,18 @@ function cancel() {
 document.addEventListener('keydown', (event) => {
   if (open && pinned && event.key === 'Escape') cancel();
 });
+// The shortcut's wheel has the keyboard (Linux): Alt and Control switch wheels, as
+// Option and Control do during a Shift+drag.
+let pinnedKeys = '';
+function pinnedSwitch(event) {
+  if (!open || !pinned) return;
+  const now = `${event.altKey}/${event.ctrlKey}`;
+  if (now === pinnedKeys) return;
+  pinnedKeys = now;
+  invoke('wheel_keys', { alt: event.altKey, control: event.ctrlKey }).catch(() => {});
+}
+document.addEventListener('keydown', pinnedSwitch);
+document.addEventListener('keyup', pinnedSwitch);
 svg.addEventListener('click', (event) => {
   if (open && pinned && event.target === hub) cancel();
 });

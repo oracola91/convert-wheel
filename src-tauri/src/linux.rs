@@ -204,8 +204,8 @@ fn start_listener(app: AppHandle) -> bool {
             let Some(line) = read_line(&mut reader) else {
                 continue;
             };
-            if line == "show" {
-                trigger::show_pinned(&app);
+            if let Some(which) = shown_wheel(&line) {
+                trigger::show_pinned(&app, which);
             } else if let Some(from) = line.strip_prefix("drag ") {
                 // In an X11 session the X11 poll sees the drag already.
                 if is_wayland() {
@@ -255,11 +255,28 @@ fn follow_drag(app: &AppHandle, from: &str, reader: &mut impl BufRead) {
     }
 }
 
-/// `convert-wheel --show`: asks the running app to open the wheel.
-pub fn send_show() -> Result<(), String> {
+/// "show", "show tools" or "show actions" from the socket: which wheel to open.
+fn shown_wheel(line: &str) -> Option<crate::wheel::Which> {
+    use crate::wheel::Which;
+    match line {
+        "show" | "show formats" => Some(Which::Formats),
+        "show tools" => Some(Which::Tools),
+        "show actions" => Some(Which::Actions),
+        _ => None,
+    }
+}
+
+/// `convert-wheel --show [tools|actions]`: asks the running app to open the wheel.
+pub fn send_show(wheel: Option<&str>) -> Result<(), String> {
+    let line = match wheel {
+        None | Some("formats") => "show\n",
+        Some("tools") => "show tools\n",
+        Some("actions") => "show actions\n",
+        Some(other) => return Err(format!("no wheel called {other}: formats, tools or actions")),
+    };
     let path = socket_path().ok_or("XDG_RUNTIME_DIR is not set")?;
     UnixStream::connect(path)
-        .and_then(|mut s| s.write_all(b"show\n"))
+        .and_then(|mut s| s.write_all(line.as_bytes()))
         .map_err(|_| "Convert Wheel isn't running".into())
 }
 

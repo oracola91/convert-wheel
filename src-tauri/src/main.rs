@@ -315,6 +315,12 @@ fn wheel_more(app: AppHandle) {
     trigger::next_page(&app);
 }
 
+/// The wheel's page, opened from the shortcut (Linux): Alt or Control went down or up.
+#[tauri::command]
+fn wheel_keys(app: AppHandle, alt: bool, control: bool) {
+    trigger::pinned_keys(&app, alt, control);
+}
+
 /// The page drew a wheel and measured its words: on macOS the glass gets a frosted
 /// patch behind each. Boxes that don't fit the window are dropped.
 #[tauri::command]
@@ -674,7 +680,7 @@ fn main() {
     // For a keyboard shortcut on Linux, where Wayland hides Shift+drag from apps.
     #[cfg(target_os = "linux")]
     if args.first().map(String::as_str) == Some("--show") {
-        if let Err(e) = linux::send_show() {
+        if let Err(e) = linux::send_show(args.get(1).map(String::as_str)) {
             eprintln!("{e}");
             std::process::exit(1);
         }
@@ -706,7 +712,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, wheel_more, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, wheel_more, wheel_keys, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
