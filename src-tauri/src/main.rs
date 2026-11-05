@@ -27,6 +27,7 @@ mod settings;
 mod shelf;
 #[cfg(target_os = "macos")]
 mod shelf_window;
+mod transfer;
 mod trigger;
 mod update;
 mod wheel;
@@ -111,6 +112,14 @@ impl Words {
                 "make one PDF of",
                 "Stopped making the PDF",
             ),
+            // A collage makes one picture of the whole drop: "{}" is "3 files".
+            "tool:collage" => tool(
+                "Making a collage of {}",
+                "Made a collage",
+                "Made a collage of {} files",
+                "make a collage of",
+                "Stopped making the collage",
+            ),
             "tool:split" => tool(
                 "Splitting {} into pages",
                 "Split into pages",
@@ -119,6 +128,8 @@ impl Words {
                 "Stopped splitting",
             ),
             "tool:smaller" => tool("Shrinking {}", "Made smaller", "Made {} files smaller", "shrink", "Stopped shrinking"),
+            "tool:order" => tool("Reordering {}", "Reordered the pages", "Reordered {} files", "reorder", "Stopped reordering"),
+            "tool:info" => tool("Saving new tags for {}", "Saved new tags", "Saved new tags for {} files", "change the tags of", "Stopped saving the tags"),
             "tool:still" => tool(
                 "Taking the first frame of {}",
                 "Saved the first frame",
@@ -142,7 +153,24 @@ impl Words {
                 "Stopped reading QR codes",
             ),
             "tool:crop" => tool("Cropping {}", "Cropped", "Cropped {} files", "crop", "Stopped cropping"),
+            "tool:adjust" => tool("Adjusting {}", "Adjusted", "Adjusted {} files", "adjust", "Stopped adjusting"),
+            "tool:markup" => tool("Marking up {}", "Marked up", "Marked up {} files", "mark up", "Stopped marking up"),
             "tool:trim" => tool("Trimming {}", "Trimmed", "Trimmed {} files", "trim", "Stopped trimming"),
+            "tool:bleep" => tool("Bleeping {}", "Bleeped", "Bleeped {} files", "bleep", "Stopped bleeping"),
+            "tool:speed" => tool(
+                "Changing the speed of {}",
+                "Changed the speed",
+                "Changed the speed of {} files",
+                "change the speed of",
+                "Stopped changing the speed",
+            ),
+            "tool:parts" => tool(
+                "Splitting {} into parts",
+                "Split into parts",
+                "Split {} files into parts",
+                "split",
+                "Stopped splitting",
+            ),
             "tool:target" => tool(
                 "Compressing {} to a size",
                 "Compressed to a size",
@@ -310,7 +338,7 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
         for job in rx {
             // The quality chosen in the menu when the drop starts holds for all of it.
             let quality = app.state::<settings::Store>().get().quality;
-            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality, job.edit));
+            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality, job.edit.clone()));
             app.state::<NowConverting>().set(Some(Arc::clone(&running)));
             menu::show_progress(&app, &running.line());
             let (finished, done_signal) = mpsc::channel::<()>();
@@ -358,7 +386,11 @@ fn keep_progress_shown(app: &AppHandle, running: &Running, finished: Receiver<()
 fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Vec<PathBuf>) {
     let words = &running.words;
     // Converting or compressing video is slow; the video tools that copy are quick.
-    let encodes = !formats::is_tool(&job.format) || matches!(job.format.as_str(), "tool:compress" | "tool:trim" | "tool:join" | "tool:target");
+    let encodes = !formats::is_tool(&job.format)
+        || matches!(
+            job.format.as_str(),
+            "tool:compress" | "tool:crop" | "tool:trim" | "tool:speed" | "tool:parts" | "tool:join" | "tool:target"
+        );
     let slow = encodes
         && job.paths.iter().any(|p| {
             formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
@@ -526,7 +558,7 @@ pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
 
 /// `notify` for a finished drop. A click on the notification shows `done`, the files
 /// it produced, in the file manager.
-fn notify_done(app: &AppHandle, title: &str, body: &str, done: Vec<PathBuf>) {
+pub(crate) fn notify_done(app: &AppHandle, title: &str, body: &str, done: Vec<PathBuf>) {
     let id = NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst);
     show_notification(app, id, title, body, &done);
     app.state::<reveal::Results>().finished(id, done);
@@ -640,6 +672,9 @@ fn main() {
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // The folder picker for Copy To and Move To, used from Rust only: no page is
+        // given the plugin's permissions.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Anything that stops the start is logged and shown; otherwise the app
             // would vanish without a word.
@@ -649,7 +684,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_order, editor::editor_info, editor::editor_cancel])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {

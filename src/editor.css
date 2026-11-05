@@ -20,6 +20,9 @@
   --field-edge: rgba(0, 0, 0, 0.16);
   /* Amber for a warning that doesn't stop anything (5:1 on the bar). */
   --warn: #9a5b00;
+  /* Words on the stage, which is dark in both looks. */
+  --on-stage: rgba(255, 255, 255, 0.8);
+  --picked: #ffb27a;
   color-scheme: light dark;
 }
 
@@ -295,7 +298,8 @@ footer label {
   color: var(--muted);
 }
 
-footer input {
+footer input,
+.pop input {
   width: 84px;
   font: inherit;
   font-variant-numeric: tabular-nums;
@@ -308,7 +312,8 @@ footer input {
   user-select: text;
 }
 
-footer input:focus-visible {
+footer input:focus-visible,
+.pop input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -396,4 +401,325 @@ footer input:focus-visible {
 #warning.strong {
   color: var(--warn);
   font-weight: 600;
+}
+
+/* Adjust: the picture fitted into the stage, as it will look, and a slider for each
+   setting under it. */
+#picture {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.slider input[type="range"] {
+  width: 120px;
+  padding: 0;
+  background: none;
+  border: none;
+  accent-color: var(--accent);
+}
+
+.slider output {
+  min-width: 3.2em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* Mark Up: a round swatch for each colour, a Word-like size box, and the words typed
+   straight onto the picture. */
+.swatch {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--field-edge);
+}
+
+.swatch[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* More colours: a rainbow swatch that opens the palette. */
+.swatch.more {
+  background: conic-gradient(#e5322d, #f5c400, #21a148, #1fb5c9, #1d6fe5, #9b4dde, #e5322d);
+}
+
+/* Two rows on purpose: what to do on top, how it looks underneath. */
+footer.rows {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.combo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.combo label {
+  margin-right: 2px;
+}
+
+#sizeValue {
+  width: 44px;
+  text-align: right;
+}
+
+#sizeOpen {
+  padding: 4px 9px;
+  font-size: 1.15em;
+  line-height: 1;
+}
+
+#sizeValue:disabled,
+#sizeOpen:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The size list and the colour palette open above the bar. */
+.pop {
+  position: fixed;
+  z-index: 10;
+  padding: 6px;
+  color: var(--text);
+  background: var(--bar);
+  border: 1px solid var(--field-edge);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+
+/* !important: the list's own display (an id rule) would win over [hidden]. */
+.pop[hidden] {
+  display: none !important;
+}
+
+/* The shapes share one button: the shape in use, and a menu of the others. */
+.split {
+  display: flex;
+  gap: 1px;
+}
+
+#shapeTool {
+  border-radius: 999px 0 0 999px;
+  padding-right: 9px;
+}
+
+#shapeOpen {
+  border-radius: 0 999px 999px 0;
+  padding: 4px 9px 4px 7px;
+  font-size: 1.15em;
+  line-height: 1;
+}
+
+#shapeList {
+  display: grid;
+  min-width: 96px;
+}
+
+#shapeList button {
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+
+#shapeList button:hover {
+  background: var(--button-hover);
+}
+
+#shapeList button[aria-current="true"] {
+  color: var(--pressed-text);
+  background: var(--pressed);
+}
+
+#sizes {
+  display: grid;
+  max-height: 260px;
+  overflow-y: auto;
+  min-width: 64px;
+}
+
+#sizes button {
+  border-radius: 6px;
+  background: transparent;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#sizes button:hover {
+  background: var(--button-hover);
+}
+
+#sizes button[aria-selected="true"] {
+  color: var(--pressed-text);
+  background: var(--pressed);
+}
+
+#grid {
+  display: grid;
+  grid-template-columns: repeat(10, 22px);
+  gap: 4px;
+}
+
+#grid .swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+}
+
+.pop .code {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.pop input[aria-invalid="true"] {
+  border-color: #e5322d;
+}
+
+/* The words being typed, where they will land, in their own colour and size. */
+.typing {
+  position: absolute;
+  box-sizing: content-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  outline: 1px dashed rgba(255, 255, 255, 0.9);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.25);
+  caret-color: currentColor;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Reorder: the pages in rows on the stage, scrolling when there are many. The picked
+   one has a ring, a moved one an orange number, and the one being dragged leaves a
+   faint gap where it will land while a copy follows the pointer. */
+#pages {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 18px;
+  list-style: none;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  align-content: start;
+  gap: 16px 12px;
+}
+
+#pages > li,
+.ghost {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  color: var(--on-stage);
+  font-variant-numeric: tabular-nums;
+  cursor: grab;
+  touch-action: none;
+  outline: none;
+  -webkit-user-drag: none;
+}
+
+#pages img,
+.ghost img {
+  max-width: 100%;
+  max-height: 140px;
+  margin-top: auto;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  -webkit-user-drag: none;
+}
+
+#pages > li[aria-selected="true"] {
+  box-shadow: inset 0 0 0 2px var(--picked);
+}
+
+#pages > li.moved span {
+  color: var(--picked);
+  font-weight: 600;
+}
+
+#pages > li.lifted {
+  opacity: 0.3;
+}
+
+.ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10;
+  margin: 0;
+  list-style: none;
+  pointer-events: none;
+  background: var(--stage);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  cursor: grabbing;
+}
+
+#earlier,
+#later {
+  font-size: 16px;
+  line-height: 1;
+  padding: 5px 10px;
+}
+
+#hint {
+  color: var(--muted);
+}
+
+/* Info: what the file says, a label and a value each, then the tags to change. The
+   panel scrolls when a file says a lot. */
+#panel.scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+#facts,
+#fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  margin: 0;
+}
+
+#fields {
+  align-items: center;
+  margin-top: 6px;
+}
+
+#facts dt {
+  color: var(--muted);
+}
+
+#facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+#panel #fields input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: 13px;
+  font-variant-numeric: normal;
 }

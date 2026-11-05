@@ -97,7 +97,12 @@ const TOOLS: &[(&str, &[&str])] = &[
     ),
     ("tool:rotate", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     ("tool:qr", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
-    ("tool:crop", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    ("tool:adjust", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    ("tool:markup", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    (
+        "tool:crop",
+        &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"],
+    ),
     (
         "tool:trim",
         &[
@@ -105,16 +110,39 @@ const TOOLS: &[(&str, &[&str])] = &[
             "opus", "wma",
         ],
     ),
+    (
+        "tool:bleep",
+        &[
+            "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg",
+            "opus", "wma",
+        ],
+    ),
+    (
+        "tool:speed",
+        &[
+            "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg",
+            "opus", "wma",
+        ],
+    ),
+    (
+        "tool:parts",
+        &[
+            "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg",
+            "opus", "wma",
+        ],
+    ),
     ("tool:onepdf", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
+    ("tool:collage", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:merge", &["pdf"]),
     ("tool:split", &["pdf"]),
+    ("tool:order", &["pdf"]),
     ("tool:smaller", &["pdf"]),
     ("tool:still", &["mp4", "mov", "m4v", "mkv", "webm", "avi"]),
     (
         "tool:target",
         &[
             "jpg", "jpeg", "heic", "heif", "webp", "avif", "mp4", "mov", "m4v", "mkv", "webm", "mp3", "m4a", "aac", "ogg",
-            "opus", "wma",
+            "opus", "wma", "pdf",
         ],
     ),
     (
@@ -126,11 +154,18 @@ const TOOLS: &[(&str, &[&str])] = &[
     ),
     ("tool:loudness", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
     ("tool:mono", &["mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus"]),
+    (
+        "tool:info",
+        &[
+            "jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "mp4", "mov", "m4v", "mkv", "webm", "avi",
+            "wmv", "mp3", "wav", "m4a", "aac", "flac", "aiff", "aif", "ogg", "opus", "wma", "pdf",
+        ],
+    ),
 ];
 
 /// A tool that turns the whole drop into one file, instead of working on each file.
 pub fn combines(id: &str) -> bool {
-    matches!(id, "tool:merge" | "tool:onepdf" | "tool:join" | "act:zip" | "act:tgz" | "act:tar")
+    matches!(id, "tool:merge" | "tool:onepdf" | "tool:collage" | "tool:join" | "act:zip" | "act:tgz" | "act:tar")
 }
 
 /// A Tools wheel id ("tool:half") rather than a format.
@@ -165,12 +200,14 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 
 /// A tool that first opens the editing window (one file at a time) instead of running.
 pub fn opens_editor(id: &str) -> bool {
-    matches!(id, "tool:crop" | "tool:trim" | "tool:target")
+    matches!(id, "tool:crop" | "tool:adjust" | "tool:markup" | "tool:trim" | "tool:bleep" | "tool:speed" | "tool:parts" | "tool:order" | "tool:info" | "tool:target")
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
 /// they are. AirDrop is macOS only; Unpack only when every file is an archive.
-const ACTIONS: &[&str] = &["act:path", "act:show", "act:terminal", "act:airdrop", "act:zip", "act:tgz", "act:tar", "act:unpack"];
+const ACTIONS: &[&str] = &[
+    "act:path", "act:show", "act:copyto", "act:moveto", "act:terminal", "act:airdrop", "act:zip", "act:tgz", "act:tar", "act:unpack",
+];
 
 /// An Actions wheel id ("act:path").
 pub fn is_action(id: &str) -> bool {
@@ -320,41 +357,63 @@ mod tests {
 
     #[test]
     fn tools_are_offered_when_every_file_takes_them() {
-        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:crop", "tool:target"];
+        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:adjust", "tool:markup", "tool:crop", "tool:target", "tool:info"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG"])), one);
-        let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:onepdf"];
+        let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:onepdf", "tool:collage"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), two);
         // BMP has no metadata to remove and nothing to compress it with.
         // Crop opens a window for one picture: not offered for two.
-        assert_eq!(tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])), ["tool:half", "tool:rotate", "tool:qr", "tool:onepdf"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.bmp"])), ["tool:half", "tool:rotate", "tool:qr", "tool:crop"]);
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])),
+            ["tool:half", "tool:rotate", "tool:qr", "tool:onepdf", "tool:collage"]
+        );
+        assert_eq!(tools_for(&v(&["/tmp/a.bmp"])), ["tool:half", "tool:rotate", "tool:qr", "tool:adjust", "tool:markup", "tool:crop"]);
         // An animated GIF's first frame can still hold a QR code.
         assert_eq!(tools_for(&v(&["/tmp/a.gif"])), ["tool:qr"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:qr", "tool:onepdf"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:qr", "tool:onepdf", "tool:collage"]);
         // Trim opens a window for one file.
-        assert_eq!(tools_for(&v(&["/tmp/a.MOV"])), ["tool:compress", "tool:clean", "tool:trim", "tool:still", "tool:target"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.avi"])), ["tool:clean", "tool:trim", "tool:still"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.mp3"])), ["tool:compress", "tool:clean", "tool:trim", "tool:target", "tool:loudness", "tool:mono"]);
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.MOV"])),
+            ["tool:compress", "tool:clean", "tool:crop", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:target", "tool:info"]
+        );
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.avi"])),
+            ["tool:clean", "tool:crop", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:info"]
+        );
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.mp3"])),
+            ["tool:compress", "tool:clean", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:target", "tool:loudness", "tool:mono", "tool:info"]
+        );
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.flac"])), ["tool:compress", "tool:clean", "tool:join", "tool:loudness", "tool:mono"]);
         // WAV and AIFF are uncompressed by design: nothing to compress them with.
-        assert_eq!(tools_for(&v(&["/tmp/a.wav"])), ["tool:clean", "tool:trim", "tool:loudness", "tool:mono"]);
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.wav"])),
+            ["tool:clean", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:loudness", "tool:mono", "tool:info"]
+        );
         assert_eq!(tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])), ["tool:compress", "tool:clean", "tool:still", "tool:join"]);
         // Sound and video together: each is compressed or cleaned in its own way, but
         // Join takes one kind only.
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
-        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:smaller"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller", "tool:target", "tool:info"]);
         assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller"]);
         assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
         assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));
         assert!(TOOLS.iter().all(|(id, _)| is_tool(id)));
-        // No kind of file gets more tools than the wheel draws, even with Merge or One PDF.
+        // No kind of file gets more tools than the wheel draws, one file (with the tools
+        // that open a window) or several (with Merge, One PDF and Collage), before
+        // tools_for cuts the list.
         for (_, ins, _) in KINDS {
             for ext in *ins {
-                let two = v(&[&format!("/tmp/a.{ext}"), &format!("/tmp/b.{ext}")]);
-                assert!(TOOLS.iter().filter(|(id, _)| tool_takes(id, ext)).count() <= MAX_SEGMENTS, "{ext}");
-                assert!(tools_for(&two).len() <= MAX_SEGMENTS);
+                for files in [1, 2] {
+                    let offered = TOOLS
+                        .iter()
+                        .filter(|(id, _)| tool_takes(id, ext))
+                        .filter(|(id, _)| if files == 1 { !combines(id) } else { !opens_editor(id) })
+                        .count();
+                    assert!(offered <= MAX_SEGMENTS, "{files} x .{ext}: {offered} tools");
+                }
             }
         }
     }
@@ -363,10 +422,13 @@ mod tests {
     fn actions_are_offered_for_any_file() {
         assert!(actions_for(&[]).is_empty());
         let actions = actions_for(&v(&["/tmp/a.txt", "/tmp/Photos"]));
-        assert_eq!(actions[..3], ["act:path", "act:show", "act:terminal"]);
+        assert_eq!(actions[..5], ["act:path", "act:show", "act:copyto", "act:moveto", "act:terminal"]);
         assert_eq!(actions.contains(&"act:airdrop"), cfg!(target_os = "macos"));
         assert!(actions.ends_with(&["act:zip", "act:tgz", "act:tar"]));
-        assert!(actions_for(&v(&["/tmp/a.zip", "/tmp/b.tar.gz"])).ends_with(&["act:tar", "act:unpack"]));
+        let archives = actions_for(&v(&["/tmp/a.zip", "/tmp/b.tar.gz"]));
+        assert!(archives.ends_with(&["act:tar", "act:unpack"]));
+        // The most an Actions wheel holds (archives, on a Mac) still fits.
+        assert!(archives.len() <= MAX_SEGMENTS);
         assert!(actions.len() <= MAX_SEGMENTS && actions.iter().all(|a| is_action(a) && !is_tool(a)));
     }
 
@@ -374,6 +436,16 @@ mod tests {
     fn no_kind_offers_more_than_the_wheel_draws() {
         for (_, _, outs) in KINDS {
             assert!(outs.len() <= MAX_SEGMENTS);
+        }
+    }
+
+    #[test]
+    fn the_page_names_and_draws_every_tool_and_action() {
+        let words = include_str!("../../src/wheel.js");
+        let icons = include_str!("../../src/icons.js");
+        for id in TOOLS.iter().map(|(id, _)| *id).chain(ACTIONS.iter().copied()) {
+            assert!(words.contains(&format!("'{id}': [")), "wheel.js has no words for {id}");
+            assert!(icons.contains(&format!("\"{id}\": ")), "icons.js has no icon for {id}");
         }
     }
 }

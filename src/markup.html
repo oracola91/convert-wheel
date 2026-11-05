@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mark up</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="markup.js" defer></script>
+</head>
+<body>
+  <main>
+    <div id="stage">
+      <canvas id="photo" role="img" aria-label="The picture, with what is drawn on it"></canvas>
+      <p id="message" hidden></p>
+    </div>
+    <footer class="rows">
+      <div class="row">
+        <button type="button" id="undo" disabled>Undo</button>
+        <div class="group" role="group" aria-label="Tool">
+          <button type="button" data-tool="select" aria-pressed="false">Select</button>
+          <button type="button" data-tool="pen" aria-pressed="true">Pen</button>
+          <button type="button" data-tool="highlight" aria-pressed="false">Highlight</button>
+          <span class="split">
+            <button type="button" id="shapeTool" data-tool="arrow" aria-pressed="false">Arrow</button>
+            <button type="button" id="shapeOpen" aria-label="Pick a shape" aria-haspopup="menu" aria-expanded="false" aria-controls="shapeList">&#9662;</button>
+          </span>
+          <button type="button" data-tool="text" aria-pressed="false">Text</button>
+          <button type="button" data-tool="number" aria-pressed="false">Steps</button>
+          <button type="button" data-tool="redact" aria-pressed="false">Black out</button>
+        </div>
+        <div class="end">
+          <button type="button" id="cancel">Cancel</button>
+          <button type="button" id="apply" class="primary" disabled>Save</button>
+        </div>
+      </div>
+      <div class="row">
+        <div id="colours" class="group" role="group" aria-label="Colour"></div>
+        <div class="combo">
+          <label for="sizeValue">Size</label>
+          <input id="sizeValue" inputmode="numeric" maxlength="3" autocomplete="off" spellcheck="false">
+          <button type="button" id="sizeOpen" aria-label="Pick a size" aria-haspopup="listbox" aria-expanded="false" aria-controls="sizes">&#9662;</button>
+        </div>
+      </div>
+    </footer>
+    <div id="sizes" class="pop" role="listbox" aria-label="Sizes" hidden></div>
+    <div id="shapeList" class="pop" role="menu" aria-label="Shapes" hidden>
+      <button type="button" role="menuitem" data-shape="arrow">Arrow</button>
+      <button type="button" role="menuitem" data-shape="line">Line</button>
+      <button type="button" role="menuitem" data-shape="box">Box</button>
+      <button type="button" role="menuitem" data-shape="circle">Circle</button>
+    </div>
+    <div id="palette" class="pop" role="dialog" aria-label="More colours" hidden>
+      <div id="grid" role="group" aria-label="Colours"></div>
+      <label class="code">Code <input id="code" maxlength="7" placeholder="#ff8800" autocomplete="off" spellcheck="false"></label>
+    </div>
+  </main>
+</body>
+</html>
