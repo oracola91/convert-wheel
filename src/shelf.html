@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Shelf</title>
+  <link rel="stylesheet" href="shelf.css">
+  <script src="shelf.js" defer></script>
+</head>
+<body>
+  <main id="shelf">
+    <div id="pill"><span id="count"></span></div>
+    <section id="open">
+      <header>
+        <span id="title">Shelf</span>
+        <button id="clear" type="button" aria-label="Let go of every file">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </header>
+      <div id="files" title="Drag out"><ul id="list"></ul><p id="empty">Drop files here to hold them</p></div>
+    </section>
+  </main>
+</body>
+</html>

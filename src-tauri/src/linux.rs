@@ -96,6 +96,7 @@ fn start_x11(app: AppHandle) {
                 if shown {
                     trigger::released(&app);
                 }
+                crate::shelf_web::drag_ended(&app);
                 (was_down, from_files, shown, held) = (false, false, false, 0);
                 keys = KeyFollower::default();
                 arrows = trigger::Arrows::default();
@@ -119,6 +120,9 @@ fn start_x11(app: AppHandle) {
                 let held = |key| pointer.mask.contains(key);
                 trigger::follow_keys(&app, &mut keys, held(KeyButMask::SHIFT), held(KeyButMask::MOD1), held(KeyButMask::CONTROL));
                 trigger::follow_arrows(&app, &mut arrows, x11_arrows(&conn));
+            } else if from_files && held == 0 && moved && py <= crate::shelf_web::EDGE {
+                // Files dragged to the top of the screen without Shift: the shelf.
+                crate::shelf_web::drag_near_top(&app);
             }
         }
     });
