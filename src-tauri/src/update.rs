@@ -17,7 +17,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Updater, UpdaterExt};
 
 use crate::wheel::lock;
-use crate::{log, menu, notify};
+use crate::{log, menu, notify, APP_NAME};
 
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -62,7 +62,7 @@ pub fn install_soon(app: &AppHandle) {
     let app = app.clone();
     thread::spawn(move || {
         if crate::busy_jobs() > 0 {
-            notify(&app, "Updating after the current conversions", "Convert Wheel installs the update when they're done.");
+            notify(&app, "Updating after the current conversions", &format!("{APP_NAME} installs the update when they're done."));
             while crate::busy_jobs() > 0 {
                 thread::sleep(Duration::from_secs(2));
             }
@@ -75,7 +75,7 @@ pub fn install_soon(app: &AppHandle) {
 fn claim(app: &AppHandle, asked: bool) -> bool {
     if BUSY.swap(true, Ordering::SeqCst) {
         if asked {
-            notify(app, "Convert Wheel is already checking for updates", "It will say when it's done.");
+            notify(app, &format!("{APP_NAME} is already checking for updates"), "It will say when it's done.");
         }
         return false;
     }
@@ -115,8 +115,8 @@ async fn check(app: &AppHandle, asked: bool) {
                 log::line(&format!("update {version} available"));
                 notify(
                     app,
-                    &format!("Convert Wheel {version} is available"),
-                    "Choose Install Update in the Convert Wheel menu.",
+                    &format!("{APP_NAME} {version} is available"),
+                    &format!("Choose Install Update in the {APP_NAME} menu."),
                 );
             }
         }
@@ -126,7 +126,7 @@ async fn check(app: &AppHandle, asked: bool) {
             menu::show_update(app, menu::UpdateState::UpToDate);
             if asked {
                 let current = app.package_info().version.to_string();
-                notify(app, "Convert Wheel is up to date", &format!("You have version {current}."));
+                notify(app, &format!("{APP_NAME} is up to date"), &format!("You have version {current}."));
             }
         }
         Err(e) => {
@@ -156,7 +156,7 @@ async fn install(app: &AppHandle) {
             release();
             *lock(&app.state::<Pending>().0) = None;
             menu::show_update(app, menu::UpdateState::UpToDate);
-            notify(app, "Convert Wheel is up to date", "There is no newer version.");
+            notify(app, &format!("{APP_NAME} is up to date"), "There is no newer version.");
             return;
         }
         Err(e) => {
@@ -168,7 +168,7 @@ async fn install(app: &AppHandle) {
         }
     };
     let version = update.version.clone();
-    notify(app, &format!("Installing Convert Wheel {version}…"), "It restarts by itself when it's done.");
+    notify(app, &format!("Installing {APP_NAME} {version}…"), "It restarts by itself when it's done.");
     match update.download_and_install(|_, _| {}, || {}).await {
         Ok(()) => {
             log::line(&format!("installed update {version}, restarting"));
@@ -222,7 +222,7 @@ fn relaunch(app: &AppHandle) {
                 .process_group(0)
                 .spawn();
             if let Err(e) = started {
-                log::line(&format!("couldn't schedule the restart ({e}); start Convert Wheel again by hand"));
+                log::line(&format!("couldn't schedule the restart ({e}); start {APP_NAME} again by hand"));
             }
         }
         app.exit(0);
