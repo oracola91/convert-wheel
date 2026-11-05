@@ -125,7 +125,7 @@ fn png_for(path: &Path) -> Option<Vec<u8>> {
     let scaled = |p: &Path| Pixbuf::from_file_at_scale(p, SIZE, SIZE, true).ok();
     let picture = scaled(path).or_else(|| {
         let uri = glib::filename_to_uri(path, None).ok()?;
-        let digest = glib::compute_checksum_for_string(glib::ChecksumType::Md5, uri.as_str())?;
+        let digest = glib::compute_checksum_for_bytes(glib::ChecksumType::Md5, &glib::Bytes::from_owned(uri.as_bytes().to_vec()))?;
         let cache = glib::user_cache_dir().join("thumbnails");
         ["large", "normal"].iter().find_map(|size| scaled(&cache.join(size).join(format!("{digest}.png"))))
     })?;
