@@ -110,7 +110,7 @@ fn describe(files: &[PathBuf]) -> (String, String) {
 
 /// A file:// address for a uri-list: every byte outside the unreserved set and `/` is
 /// %-escaped, so spaces, `#` and non-ASCII names survive.
-fn file_uri(path: &Path) -> String {
+pub(crate) fn file_uri(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\\', "/");
     let mut out = String::from("file://");
     if !text.starts_with('/') {
@@ -163,6 +163,7 @@ pub fn float_drag(window: WebviewWindow) -> Result<(), String> {
     let files = files_of(window.label()).ok_or("this card holds nothing")?;
     drag_out(&window, &files)?;
     after_drag(&window, &files);
+    // (Whether the drop landed doesn't matter here: the card goes only once moved.)
     Ok(())
 }
 
@@ -182,8 +183,10 @@ fn after_drag(window: &WebviewWindow, files: &[PathBuf]) {
     }
 }
 
+/// Windows: the system's own drag of `files` from `window`, started while the button
+/// is down. Ok(true) once they were dropped somewhere, Ok(false) if it was cancelled.
 #[cfg(windows)]
-fn drag_out(window: &WebviewWindow, files: &[PathBuf]) -> Result<(), String> {
+pub(crate) fn drag_out(window: &WebviewWindow, files: &[PathBuf]) -> Result<bool, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::System::Com::{CoTaskMemFree, IDataObject};
@@ -193,7 +196,7 @@ fn drag_out(window: &WebviewWindow, files: &[PathBuf]) -> Result<(), String> {
 
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     let mut pidls: Vec<*mut ITEMIDLIST> = Vec::new();
-    let result = (|| -> windows::core::Result<()> {
+    let result = (|| -> windows::core::Result<windows::Win32::System::Ole::DROPEFFECT> {
         for f in files {
             let wide: Vec<u16> = f.as_os_str().encode_wide().chain(Some(0)).collect();
             let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
@@ -205,19 +208,19 @@ fn drag_out(window: &WebviewWindow, files: &[PathBuf]) -> Result<(), String> {
         let data: IDataObject = unsafe { items.BindToHandler(None, &BHID_DataObject)? };
         // No drop source of our own: the shell makes its default one. Whether the files
         // moved is read from the disk afterwards (after_drag), not from the effect.
-        unsafe { SHDoDragDrop(Some(hwnd), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK) }.map(|_| ())
+        unsafe { SHDoDragDrop(Some(hwnd), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK) }
     })();
     for p in pidls {
         unsafe { CoTaskMemFree(Some(p as *const _)) };
     }
-    result.map_err(|e| {
-        log::line(&format!("Float drag failed: {e}"));
+    result.map(|effect| effect.0 != 0).map_err(|e| {
+        log::line(&format!("file drag failed: {e}"));
         e.to_string()
     })
 }
 
 #[cfg(not(windows))]
-fn drag_out(_window: &WebviewWindow, _files: &[PathBuf]) -> Result<(), String> {
+pub(crate) fn drag_out(_window: &WebviewWindow, _files: &[PathBuf]) -> Result<bool, String> {
     Err("the page drags the files itself here".into())
 }
 

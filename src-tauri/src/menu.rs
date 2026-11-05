@@ -17,7 +17,6 @@ use crate::{converters, formats, login, reveal, update};
 const SAVE_NEXT: &str = "save:next";
 const SAVE_DOWNLOADS: &str = "save:downloads";
 const LOGIN: &str = "login";
-#[cfg(target_os = "macos")]
 const SHELF: &str = "shelf";
 const LAST: &str = "last";
 const STOP: &str = "stop";
@@ -139,11 +138,15 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let sep = || PredefinedMenuItem::separator(app);
     let (separator, separator2) = (sep()?, sep()?);
     let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&title, &hint, &last, &stop, &separator, &update, &login];
-    // Only macOS has the shelf so far.
-    #[cfg(target_os = "macos")]
+    // Every system with a shelf: not Wayland, which places no window at the top.
     let shelf = CheckMenuItem::with_id(app, SHELF, "Shelf at the Top of the Screen", true, !current.shelf_off, None::<&str>)?;
-    #[cfg(target_os = "macos")]
-    items.push(&shelf);
+    #[cfg(target_os = "linux")]
+    let shelf_here = !crate::linux::is_wayland();
+    #[cfg(not(target_os = "linux"))]
+    let shelf_here = true;
+    if shelf_here {
+        items.push(&shelf);
+    }
     let middle: [&dyn tauri::menu::IsMenuItem<Wry>; 5] = [&save, &shown, &quality, &highlight, &keys];
     items.extend(middle);
     // Only macOS has a choice of glass.
@@ -380,13 +383,15 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             }
             set_check(app, LOGIN, login::is_enabled());
         }
-        #[cfg(target_os = "macos")]
         SHELF => {
             if let Err(e) = store.update(|s| s.shelf_off = !s.shelf_off) {
                 crate::notify(app, "Couldn't save the setting", &e);
             }
             set_check(app, SHELF, !store.get().shelf_off);
+            #[cfg(target_os = "macos")]
             crate::shelf_window::setting_changed(app);
+            #[cfg(not(target_os = "macos"))]
+            crate::shelf_web::setting_changed(app);
         }
         SAVE_NEXT | SAVE_DOWNLOADS => {
             let wanted = if id == SAVE_NEXT { SaveTo::NextToOriginal } else { SaveTo::Downloads };

@@ -68,6 +68,7 @@ pub fn start_trigger(app: AppHandle) {
                 if shown {
                     trigger::released(&app);
                 }
+                crate::shelf_web::drag_ended(&app);
                 (was_down, from_files, shown, held) = (false, false, false, 0);
                 keys = KeyFollower::default();
                 arrows = trigger::Arrows::default();
@@ -88,6 +89,9 @@ pub fn start_trigger(app: AppHandle) {
             } else if shown {
                 trigger::follow_keys(&app, &mut keys, key_down(VK_SHIFT), key_down(VK_MENU), key_down(VK_CONTROL));
                 trigger::follow_arrows(&app, &mut arrows, [key_down(VK_LEFT), key_down(VK_RIGHT), key_down(VK_UP), key_down(VK_DOWN)]);
+            } else if from_files && held == 0 && moved_past_threshold(start, pt) && at_top_edge(pt) {
+                // Files dragged to the top of the screen without Shift: the shelf.
+                crate::shelf_web::drag_near_top(&app);
             }
         }
     });
@@ -107,6 +111,13 @@ fn primary_button() -> VIRTUAL_KEY {
 }
 
 /// Windows' own distance before a press counts as a drag.
+/// The pointer is at the top edge of the screen it is on.
+fn at_top_edge(pt: POINT) -> bool {
+    let monitor = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() && pt.y <= info.rcMonitor.top + crate::shelf_web::EDGE
+}
+
 fn moved_past_threshold(a: POINT, b: POINT) -> bool {
     let (dx, dy) = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
     (b.x - a.x).abs() > dx || (b.y - a.y).abs() > dy
@@ -366,4 +377,79 @@ unsafe fn file_paths(data: Ref<'_, IDataObject>) -> Vec<String> {
     }
     unsafe { ReleaseStgMedium(&mut medium) };
     paths
+}
+
+/// The shelf's window (shelf_web.rs) takes file drops: they are held, as a copy the
+/// source allows, never a move. Its WebView2 child windows appear after it is made,
+/// so this runs again each time the shelf shows; known windows are skipped.
+pub fn register_shelf_drop(app: &AppHandle, window: &tauri::WebviewWindow) {
+    unsafe extern "system" fn collect(child: HWND, list: LPARAM) -> BOOL {
+        let list = unsafe { &mut *(list.0 as *mut Vec<HWND>) };
+        list.push(child);
+        BOOL(1)
+    }
+    let Ok(top) = window.hwnd() else {
+        return;
+    };
+    let mut windows = vec![top];
+    let _ = unsafe { EnumChildWindows(Some(top), Some(collect), LPARAM(&mut windows as *mut _ as isize)) };
+    REGISTERED.with(|r| r.borrow_mut().retain(|&key| unsafe { IsWindow(Some(HWND(key as _))) }.as_bool()));
+    for hwnd in windows {
+        let key = hwnd.0 as isize;
+        if REGISTERED.with(|r| r.borrow().contains(&key)) {
+            continue;
+        }
+        let target: IDropTarget = ShelfDropTarget { app: app.clone() }.into();
+        let _ = unsafe { RevokeDragDrop(hwnd) };
+        match unsafe { RegisterDragDrop(hwnd, &target) } {
+            Ok(()) => {
+                REGISTERED.with(|r| r.borrow_mut().insert(key));
+                TARGETS.with(|t| t.borrow_mut().push(target));
+            }
+            Err(e) => crate::log::line(&format!("drop target not registered on the shelf: {e}")),
+        }
+    }
+}
+
+#[implement(IDropTarget)]
+struct ShelfDropTarget {
+    app: AppHandle,
+}
+
+fn copy_only(allowed: DROPEFFECT) -> DROPEFFECT {
+    if (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY {
+        DROPEFFECT_COPY
+    } else {
+        DROPEFFECT_NONE
+    }
+}
+
+impl IDropTarget_Impl for ShelfDropTarget_Impl {
+    fn DragEnter(&self, data: Ref<'_, IDataObject>, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+        let files = !unsafe { file_paths(data) }.is_empty();
+        unsafe { *effect = if files { copy_only(*effect) } else { DROPEFFECT_NONE } };
+        Ok(())
+    }
+
+    fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+        unsafe { *effect = copy_only(*effect) };
+        Ok(())
+    }
+
+    fn DragLeave(&self) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn Drop(&self, data: Ref<'_, IDataObject>, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+        let allowed = unsafe { *effect };
+        let paths = unsafe { file_paths(data) };
+        let take = (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY && !paths.is_empty();
+        if take {
+            crate::shelf_web::dropped(&self.app, paths);
+        }
+        // As for the wheel: always say "copy" or "none", never leave "move" for
+        // File Explorer to act on.
+        unsafe { *effect = if take { DROPEFFECT_COPY } else { DROPEFFECT_NONE } };
+        Ok(())
+    }
 }
