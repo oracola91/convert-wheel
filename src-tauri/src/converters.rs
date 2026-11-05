@@ -1,7 +1,7 @@
 //! Installs the converters that drops found missing, when the menu's "Install …" item
-//! is chosen: with winget on Windows, with Homebrew on macOS. On Linux the setup script
-//! installs them and apt needs an admin password, so there the message names the
-//! command, as before.
+//! is chosen: with winget on Windows, with Homebrew on macOS, and on Ubuntu and Debian
+//! with apt-get through pkexec, which asks for the admin password in the desktop's own
+//! window. Other Linux systems get the message that names the command, as before.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -25,8 +25,10 @@ const LIMIT: Duration = Duration::from_secs(30 * 60);
 
 #[cfg(target_os = "macos")]
 const PACKAGE_MANAGER: &str = "Homebrew";
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
 const PACKAGE_MANAGER: &str = "winget";
+#[cfg(not(any(target_os = "macos", windows)))]
+const PACKAGE_MANAGER: &str = "apt";
 
 /// The converters drops found missing, in the order found: what the Install item offers.
 #[derive(Default)]
@@ -45,7 +47,7 @@ static INSTALLING: AtomicBool = AtomicBool::new(false);
 /// converter is missing and this system can install it, the menu offers it and the
 /// message points there instead of at a command.
 pub fn offer(app: &AppHandle, error: String) -> String {
-    let Some(c) = convert::missing(&error).filter(|_| AVAILABLE) else {
+    let Some(c) = convert::missing(&error).filter(|_| available()) else {
         return error;
     };
     {
@@ -159,9 +161,23 @@ fn package_manager() -> Option<PathBuf> {
     std::fs::symlink_metadata(&alias).is_ok().then_some(alias)
 }
 
+/// Linux: pkexec, which runs apt-get as root once the desktop's password window has
+/// said yes. Both must be there: without apt-get it is not Ubuntu or Debian, without
+/// pkexec there is no password window to ask with.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn package_manager() -> Option<PathBuf> {
-    None
+    let pkexec = PathBuf::from("/usr/bin/pkexec");
+    (pkexec.is_file() && Path::new(APT_GET).is_file()).then_some(pkexec)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+const APT_GET: &str = "/usr/bin/apt-get";
+
+/// Whether the menu can offer to install a missing converter here. macOS and Windows
+/// always offer it (without Homebrew or winget the menu says how to get them); Linux
+/// only where apt-get and pkexec are.
+fn available() -> bool {
+    AVAILABLE || package_manager().is_some()
 }
 
 /// winget: the exact package from winget's own source, without its installer's
@@ -180,10 +196,13 @@ fn install_args(c: &Converter) -> Vec<&'static str> {
             "--accept-package-agreements",
             "--accept-source-agreements",
         ]
-    } else {
+    } else if cfg!(target_os = "macos") {
         let mut args = vec!["install"];
         args.extend(c.brew.split_whitespace());
         args
+    } else {
+        // pkexec clears the environment, so env sets apt's quiet mode for it.
+        vec!["env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "install", "-y", c.apt]
     }
 }
 
@@ -205,6 +224,10 @@ fn install_one(pm: &Path, c: &Converter) -> Result<(), String> {
     // winget's "already installed, and no newer version" (APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE).
     if cfg!(windows) && status.code() == Some(0x8A15_002B_u32 as i32) {
         return Err(format!("{PACKAGE_MANAGER} says {} is already installed, but Convert Wheel can't find it. Show Log has the details.", c.name));
+    }
+    // pkexec: 126 = the password window was closed, 127 = no permission.
+    if cfg!(target_os = "linux") && matches!(status.code(), Some(126 | 127)) {
+        return Err("The admin password wasn't given, so nothing was installed.".into());
     }
     let code = match status.code() {
         // winget's codes are Windows error numbers, which are written in hex.
@@ -320,9 +343,12 @@ mod tests {
             let args = install_args(named("soffice"));
             assert_eq!(args[..5], ["install", "--id", "TheDocumentFoundation.LibreOffice", "--exact", "--source"]);
             assert!(args.contains(&"--silent"));
-        } else {
+        } else if cfg!(target_os = "macos") {
             assert_eq!(install_args(named("soffice")), ["install", "--cask", "libreoffice"]);
             assert_eq!(install_args(named("mutool")), ["install", "mupdf-tools"]);
+        }
+        if cfg!(target_os = "linux") {
+            assert_eq!(install_args(named("mutool")), ["env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "install", "-y", "mupdf-tools"]);
         }
     }
 
