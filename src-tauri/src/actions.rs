@@ -46,6 +46,8 @@ pub fn run(app: &AppHandle, action: &str, paths: Vec<String>) {
         "act:airdrop" => airdrop(app, files),
         #[cfg(target_os = "macos")]
         "act:float" => crate::float_card::open(app, files),
+        #[cfg(not(target_os = "macos"))]
+        "act:float" => crate::float_web::open(app, files),
         other => log::line(&format!("unknown action {other}")),
     }
 }

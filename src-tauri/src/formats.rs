@@ -227,8 +227,7 @@ pub fn actions_for(paths: &[String]) -> Vec<&'static str> {
         .iter()
         .copied()
         .filter(|a| match *a {
-            // Float's card is macOS only so far, like AirDrop.
-            "act:airdrop" | "act:float" => cfg!(target_os = "macos"),
+            "act:airdrop" => cfg!(target_os = "macos"),
             "act:unpack" => archives,
             _ => true,
         })
@@ -431,7 +430,7 @@ mod tests {
         let actions = actions_for(&v(&["/tmp/a.txt", "/tmp/Photos"]));
         assert_eq!(actions[..4], ["act:path", "act:show", "act:copyto", "act:moveto"]);
         assert_eq!(actions.contains(&"act:airdrop"), cfg!(target_os = "macos"));
-        assert_eq!(actions.contains(&"act:float"), cfg!(target_os = "macos"));
+        assert!(actions.contains(&"act:float"));
         assert!(actions.ends_with(&["act:zip", "act:tgz", "act:tar"]));
         let archives = actions_for(&v(&["/tmp/a.zip", "/tmp/b.tar.gz"]));
         assert!(archives.ends_with(&["act:tar", "act:unpack"]));
