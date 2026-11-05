@@ -332,7 +332,7 @@ fn share_sheet(hwnd: windows::Win32::Foundation::HWND, files: &[PathBuf]) -> win
 
     let mut items: Vec<Option<IStorageItem>> = Vec::new();
     for f in files {
-        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(f.as_os_str()))?.get()?;
+        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(f.as_os_str()))?.join()?;
         items.push(Some(file.cast()?));
     }
     let title = match files {
