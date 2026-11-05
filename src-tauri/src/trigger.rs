@@ -201,9 +201,10 @@ pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>, which: Which) {
 }
 
 /// Opens the wheel from the keyboard shortcut and closes it again if no file comes.
+/// `convert-wheel --show tools` (or actions) opens that wheel instead of the formats.
 #[cfg(target_os = "linux")]
-pub(crate) fn show_pinned(app: &AppHandle) {
-    let generation = open_wheel(app, Vec::new(), true, Which::Formats);
+pub(crate) fn show_pinned(app: &AppHandle, which: Which) {
+    let generation = open_wheel(app, Vec::new(), true, which);
     close_later(app, generation, PINNED_TIMEOUT, false);
 }
 
@@ -250,6 +251,23 @@ pub(crate) fn follow_keys(app: &AppHandle, keys: &mut KeyFollower, shift: bool, 
 pub(crate) fn showing(app: &AppHandle, path: &str) -> bool {
     let state = app.state::<WheelState>();
     state.is_open() && matches!(wheel::lock(&state.paths).as_slice(), [p] if p == path)
+}
+
+/// The shortcut's wheel has the keyboard (Linux): Alt and Control choose the wheel as
+/// Option and Control do during a Shift+drag, by the keys set in the menu's Keys.
+pub(crate) fn pinned_keys(app: &AppHandle, alt: bool, control: bool) {
+    use crate::settings::Combo;
+    let keys = app.state::<crate::settings::Store>().get().keys;
+    let combo = if control {
+        Combo::ShiftControl
+    } else if alt {
+        Combo::ShiftOption
+    } else {
+        Combo::Shift
+    };
+    if let Some(which) = [Which::Formats, Which::Tools, Which::Actions].into_iter().find(|w| keys.get(*w) == Some(combo)) {
+        switch_wheel(app, which);
+    }
 }
 
 /// Shows another wheel for the same drag, without closing the window.
