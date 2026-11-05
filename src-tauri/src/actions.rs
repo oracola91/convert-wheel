@@ -2,7 +2,8 @@
 //! files themselves. None of them changes a file: Copy Path puts the paths on the
 //! clipboard, Show in Folder opens the file manager on them, Copy To and Move To put
 //! them in a folder of the user's choosing (transfer.rs), Terminal opens one in their
-//! folder, and AirDrop (macOS) offers to send them. Making and unpacking archives take
+//! folder, and AirDrop (macOS) or Share (Windows: the share sheet; Linux: a new email
+//! with the files attached) offers to send them. Making and unpacking archives take
 //! a while, so they go through the conversion queue (archive.rs).
 
 use std::path::{Path, PathBuf};
@@ -48,6 +49,8 @@ pub fn run(app: &AppHandle, action: &str, paths: Vec<String>) {
         "act:float" => crate::float_card::open(app, files),
         #[cfg(not(target_os = "macos"))]
         "act:float" => crate::float_web::open(app, files),
+        #[cfg(not(target_os = "macos"))]
+        "act:share" => share(app, files),
         other => log::line(&format!("unknown action {other}")),
     }
 }
@@ -297,5 +300,89 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         assert_eq!(folder_of(&file), dir.path());
         assert_eq!(folder_of(dir.path()), dir.path());
+    }
+}
+
+/// Windows: the system's share sheet (Nearby Share, Mail, apps), for the wheel's window.
+#[cfg(windows)]
+fn share(app: &AppHandle, files: Vec<PathBuf>) {
+    use tauri::Manager;
+    let Some(hwnd) = app.get_webview_window("wheel").and_then(|w| w.hwnd().ok()) else {
+        return;
+    };
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Err(e) = share_sheet(hwnd, &files) {
+            log::line(&format!("couldn't open the share sheet: {e}"));
+            notify(&handle, "Couldn't open Share", &e.message());
+        }
+    });
+}
+
+#[cfg(windows)]
+fn share_sheet(hwnd: windows::Win32::Foundation::HWND, files: &[PathBuf]) -> windows::core::Result<()> {
+    use windows::core::{factory, Interface, HSTRING};
+    use windows::ApplicationModel::DataTransfer::{DataRequestedEventArgs, DataTransferManager};
+    use windows::Foundation::Collections::IIterable;
+    use windows::Foundation::TypedEventHandler;
+    use windows::Storage::{IStorageItem, StorageFile};
+    use windows::Win32::UI::Shell::IDataTransferManagerInterop;
+
+    let mut items: Vec<Option<IStorageItem>> = Vec::new();
+    for f in files {
+        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(f.as_os_str()))?.get()?;
+        items.push(Some(file.cast()?));
+    }
+    let title = match files {
+        [one] => one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        many => format!("{} files", many.len()),
+    };
+    let interop = factory::<DataTransferManager, IDataTransferManagerInterop>()?;
+    let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd)? };
+    // One share at a time: the handler answers only the request this share makes.
+    let token = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = token.clone();
+    let handler = TypedEventHandler::new(move |sender: windows::core::Ref<DataTransferManager>, args: windows::core::Ref<DataRequestedEventArgs>| {
+        if let Some(args) = args.as_ref() {
+            let data = args.Request()?.Data()?;
+            data.Properties()?.SetTitle(&HSTRING::from(title.as_str()))?;
+            let list: IIterable<IStorageItem> = items.clone().into();
+            data.SetStorageItemsReadOnly(&list)?;
+        }
+        if let (Some(sender), Some(t)) = (sender.as_ref(), slot.lock().map(|g| *g).unwrap_or(None)) {
+            let _ = sender.RemoveDataRequested(t);
+        }
+        Ok(())
+    });
+    let t = manager.DataRequested(&handler)?;
+    if let Ok(mut g) = token.lock() {
+        *g = Some(t);
+    }
+    unsafe { interop.ShowShareUIForWindow(hwnd) }
+}
+
+/// Linux has no share sheet of its own: a new email in the user's mail app with the
+/// files attached (xdg-email, part of xdg-utils).
+#[cfg(target_os = "linux")]
+fn share(app: &AppHandle, files: Vec<PathBuf>) {
+    let mut cmd = Command::new("xdg-email");
+    for f in &files {
+        cmd.arg("--attach").arg(f);
+    }
+    let started = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    match started {
+        Ok(mut child) => {
+            let handle = app.clone();
+            thread::spawn(move || {
+                if !child.wait().map(|s| s.success()).unwrap_or(false) {
+                    log::line("xdg-email couldn't open a new email");
+                    notify(&handle, "Couldn't start an email", "Set a mail app as the default in Settings > Default Apps.");
+                }
+            });
+        }
+        Err(e) => {
+            log::line(&format!("xdg-email: {e}"));
+            notify(app, "Couldn't start an email", "xdg-email is missing: install xdg-utils.");
+        }
     }
 }
