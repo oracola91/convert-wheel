@@ -11,6 +11,7 @@ mod estimates;
 #[cfg(target_os = "macos")]
 mod float_card;
 mod float_web;
+mod hub_picture;
 mod formats;
 #[cfg(target_os = "macos")]
 mod glass_slider;

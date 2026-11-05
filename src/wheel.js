@@ -248,8 +248,33 @@ function build() {
   hubLabel = el('text', { x: C, y: C + 30, class: 'hub-label' });
   tag.append(hubPill, hubLabel);
   svg.append(hub, hubShine, tag);
+  // Windows and Linux: the file's picture above the label, once it has arrived.
+  hubPicture = el('image', { x: C - 20, y: C - 28, width: 40, height: 40, class: 'hub-picture', preserveAspectRatio: 'xMidYMid meet' });
+  svg.append(hubPicture);
+  drawPicture();
   show({ segment: null, hub: false });
 }
+
+// The picture of the first file (Windows, Linux), sent when the system has made it;
+// macOS shows Quick Look's in a native view instead.
+let picture = null;
+let hubPicture = null;
+
+function drawPicture() {
+  const ok = picture !== null && paths.length > 0 && picture.path === paths[0];
+  if (!hubPicture) return;
+  if (ok) hubPicture.setAttribute('href', picture.url);
+  else hubPicture.removeAttribute('href');
+  hubPicture.classList.toggle('shown', ok);
+  document.documentElement.classList.toggle('pictured', ok);
+}
+
+listen('wheel-picture', (event) => {
+  const p = event.payload;
+  if (typeof p?.path !== 'string' || typeof p?.url !== 'string' || !p.url.startsWith('data:image/png;base64,')) return;
+  picture = { path: p.path, url: p.url };
+  if (open) drawPicture();
+});
 
 // Each segment's word, with its icon if it has one: its box where the segment rests.
 function wordBoxes() {
@@ -374,6 +399,7 @@ listen('wheel-show', (event) => {
   stopMore();
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   nameWheel();
+  if (picture && picture.path !== paths[0]) picture = null;
   pinned = event.payload?.pinned === true;
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   const highlight = event.payload?.highlight;

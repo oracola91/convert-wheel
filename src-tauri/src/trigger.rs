@@ -303,6 +303,9 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
     let highlight = app.state::<crate::settings::Store>().get().highlight.key();
     let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which, bytes, highlight: Some(highlight), look: Some(look(app)) });
     crate::estimates::ask(app);
+    if let Some(f) = first.as_deref() {
+        crate::hub_picture::send(app, f);
+    }
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -322,6 +325,9 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
 pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
     let (which, formats) = fill(app, &paths, None);
     app.state::<WheelState>().files_known();
+    if let Some(first) = paths.first() {
+        crate::hub_picture::send(app, first);
+    }
     let bytes = total_bytes(&paths);
     let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
     crate::estimates::ask(app);

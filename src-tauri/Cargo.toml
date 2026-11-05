@@ -47,6 +47,8 @@ objc2-app-kit = { version = "0.3", features = ["NSAccessibility", "NSAnimation",
 windows-core = "0.62"
 # The stock IIterable for the share sheet; already in the build through windows.
 windows-collections = "0.3"
+# PNG for the hub picture; already in the build through tauri's image-png.
+png = "0.18"
 windows = { version = "0.62", features = [
     "ApplicationModel_DataTransfer",
     "Foundation",
