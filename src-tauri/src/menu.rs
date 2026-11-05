@@ -24,7 +24,7 @@ const INSTALL: &str = "install";
 /// Where the Install item goes while converters are missing: under Stop Converting.
 const INSTALL_AT: usize = 4;
 const UPDATE: &str = "update";
-const TOOLTIP: &str = "Convert Wheel: hold Shift while dragging a file";
+const TOOLTIP: &str = "hold Shift while dragging a file";
 const SHOW_LOG: &str = "log";
 /// Longest "Last: …" line, so the menu stays a sensible width.
 pub const LAST_MAX_CHARS: usize = 70;
@@ -48,7 +48,7 @@ struct InstallItem(Mutex<MenuItem<Wry>>);
 
 pub fn build(app: &App) -> tauri::Result<()> {
     let current = app.state::<Store>().get();
-    let version = format!("Convert Wheel {}", app.package_info().version);
+    let version = format!("{} {}", crate::APP_NAME, app.package_info().version);
     let title = MenuItem::with_id(app, "version", version, false, None::<&str>)?;
     let hint = MenuItem::with_id(app, "hint", "Hold Shift while dragging a file", false, None::<&str>)?;
     // Feedback that stays put even when notifications are off. Once a drop produced
@@ -104,7 +104,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let color_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = colors.iter().map(|c| c as _).collect();
     let highlight = Submenu::with_items(app, "Highlight Color", true, &color_refs)?;
 
-    let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
+    let quit = MenuItem::with_id(app, QUIT, format!("Quit {}", crate::APP_NAME), true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
     let (separator, separator2) = (sep()?, sep()?);
     let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&title, &hint, &last, &stop, &separator, &update, &login];
@@ -144,7 +144,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
         Some(icon) => TrayIconBuilder::with_id("main").icon(icon.clone()),
         None => TrayIconBuilder::with_id("main"),
     };
-    tray.tooltip(TOOLTIP)
+    tray.tooltip(format!("{}: {TOOLTIP}", crate::APP_NAME))
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(on_event)
@@ -160,7 +160,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
 pub fn show_last_result(app: &AppHandle, text: &str, clickable: bool) {
     set_text(app, LAST, &short(&format!("Last: {text}")), clickable);
     set_text(app, STOP, "Stop Converting", false);
-    set_tooltip(app, TOOLTIP);
+    set_tooltip(app, &format!("{}: {TOOLTIP}", crate::APP_NAME));
 }
 
 /// While a drop converts: how far it has got, in the menu and the menu bar icon's
@@ -168,7 +168,7 @@ pub fn show_last_result(app: &AppHandle, text: &str, clickable: bool) {
 pub fn show_progress(app: &AppHandle, line: &str) {
     set_text(app, LAST, &short(line), false);
     set_text(app, STOP, "Stop Converting", true);
-    set_tooltip(app, &format!("Convert Wheel: {line}"));
+    set_tooltip(app, &format!("{}: {line}", crate::APP_NAME));
 }
 
 fn short(line: &str) -> String {
@@ -243,7 +243,7 @@ fn set_text(app: &AppHandle, id: &str, text: &str, enabled: bool) {
 /// Opens the folder with the log file, the file selected where the system allows it.
 fn show_log(app: &AppHandle) {
     let Some(file) = crate::log::path() else {
-        crate::notify(app, "No log yet", "Convert Wheel hasn't written a log on this computer.");
+        crate::notify(app, "No log yet", &format!("{} hasn't written a log on this computer.", crate::APP_NAME));
         return;
     };
     reveal::show(app, vec![file]);

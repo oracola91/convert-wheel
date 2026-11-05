@@ -55,7 +55,7 @@ pub fn start_trigger(app: AppHandle) {
         // On Wayland the socket is the only way in; without it nothing opens the wheel.
         crate::notify(
             &app,
-            "Convert Wheel can't open its wheel here",
+            &format!("{} can't open its wheel here", crate::APP_NAME),
             "This desktop session has no XDG_RUNTIME_DIR, which the keyboard shortcut needs. Details are in the log.",
         );
     } else if crate::gnome_shell::is_gnome() {
@@ -259,7 +259,7 @@ pub fn send_show() -> Result<(), String> {
     let path = socket_path().ok_or("XDG_RUNTIME_DIR is not set")?;
     UnixStream::connect(path)
         .and_then(|mut s| s.write_all(b"show\n"))
-        .map_err(|_| "Convert Wheel isn't running".into())
+        .map_err(|_| format!("{} isn't running", crate::APP_NAME))
 }
 
 /// Shows the wheel. From Shift+drag on X11 it sits at the cursor, inside the screen's

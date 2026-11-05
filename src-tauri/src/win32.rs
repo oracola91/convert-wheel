@@ -247,7 +247,7 @@ fn register_drop_targets(app: &AppHandle, wheel: HWND) {
     // Without any drop target the wheel would open and take nothing. Say so once.
     static WARNED: AtomicBool = AtomicBool::new(false);
     if REGISTERED.with(|r| r.borrow().is_empty()) && !WARNED.swap(true, Ordering::SeqCst) {
-        crate::notify(app, "Convert Wheel can't take drops", "Quit Convert Wheel and open it again.");
+        crate::notify(app, &format!("{} can't take drops", crate::APP_NAME), &format!("Quit {} and open it again.", crate::APP_NAME));
     }
 }
 
