@@ -120,6 +120,8 @@ Once a wheel is open, the keys keep choosing: add Option (Alt) and it becomes th
 
 The menu's **Keys** sets which keys open each wheel: Shift alone, Shift with Option (Alt on Windows and Linux), Shift with Control, or Off. Picking keys another wheel already has swaps the two over, so no two wheels share keys; a wheel that is Off simply doesn't open. The keys that switch an open wheel follow the same choice.
 
+A wheel shows at most ten segments. When it has more to offer, it shows them a set at a time with **More** as the last segment: rest the file on More for a moment and the next set appears; stay there and it goes on round the sets, every 1.2 seconds. Move off More onto the item you want. A drop on More does nothing, like a drop in the middle.
+
 ## On Windows and Linux
 
 Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS:

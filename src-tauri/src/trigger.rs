@@ -225,7 +225,10 @@ fn fill(app: &AppHandle, paths: &[String], which: Option<Which>) -> (Which, Vec<
     if let Some(which) = which {
         *current = which;
     }
-    let formats = items_for(app, paths, *current);
+    let all = items_for(app, paths, *current);
+    let formats = wheel::page_of(&all, 0, formats::MAX_SEGMENTS);
+    *wheel::lock(&state.all) = all;
+    *wheel::lock(&state.page) = 0;
     *wheel::lock(&state.formats) = formats.clone();
     *wheel::lock(&state.paths) = paths.to_vec();
     (*current, formats)
@@ -253,6 +256,31 @@ fn switch_wheel(app: &AppHandle, which: Which) {
     }
     let paths = wheel::lock(&state.paths).clone();
     let (which, formats) = fill(app, &paths, Some(which));
+    let pending = paths.is_empty();
+    let bytes = total_bytes(&paths);
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
+    crate::estimates::ask(app);
+}
+
+/// The cursor rested on More: the same wheel shows its next set of items. Under the
+/// `which` lock, like fill, so a switch or the files arriving can't cross it.
+pub(crate) fn next_page(app: &AppHandle) {
+    let state = app.state::<WheelState>();
+    if !state.is_open() {
+        return;
+    }
+    let (which, formats, paths) = {
+        let current = wheel::lock(&state.which);
+        let all = wheel::lock(&state.all);
+        if wheel::pages(all.len(), formats::MAX_SEGMENTS) == 1 {
+            return;
+        }
+        let mut page = wheel::lock(&state.page);
+        *page = (*page + 1) % wheel::pages(all.len(), formats::MAX_SEGMENTS);
+        let formats = wheel::page_of(&all, *page, formats::MAX_SEGMENTS);
+        *wheel::lock(&state.formats) = formats.clone();
+        (*current, formats, wheel::lock(&state.paths).clone())
+    };
     let pending = paths.is_empty();
     let bytes = total_bytes(&paths);
     let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
@@ -302,6 +330,11 @@ pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -
         .segment
         .and_then(|i| wheel::lock(&app.state::<WheelState>().formats).get(i).copied());
     match format {
+        // More only shows the next items: a drop there does nothing, like the middle.
+        Some(wheel::MORE) => {
+            hide_wheel(app, false, None);
+            false
+        }
         // Crop first opens its window; the job is queued from there.
         Some(tool) if !paths.is_empty() && formats::opens_editor(tool) => {
             hide_wheel(app, true, None);
