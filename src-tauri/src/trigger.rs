@@ -68,11 +68,15 @@ struct WheelShow {
 struct Look {
     plain: bool,
     seg: f64,
+    /// Windows and Linux draw the disc themselves: with Wheel Glass on, it is this
+    /// opaque (see-through, no blur); None for macOS's glass or a solid disc.
+    see: Option<f64>,
 }
 
 fn look(app: &AppHandle) -> Look {
     let settings = app.state::<crate::settings::Store>().get();
-    Look { plain: settings.no_liquid_glass, seg: settings.transparency.paint() }
+    let see = (!cfg!(target_os = "macos") && !settings.no_liquid_glass).then(|| settings.transparency.disc());
+    Look { plain: settings.no_liquid_glass, seg: settings.transparency.paint(), see }
 }
 
 /// The total size of `paths`, or None with a folder among them.

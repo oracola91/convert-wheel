@@ -294,6 +294,12 @@ impl Transparency {
     pub fn paint(self) -> f64 {
         0.40 - 0.34 * self.share()
     }
+
+    /// Windows and Linux: how opaque the page's own disc is, with no blur behind it.
+    /// Never below half, so the words stay readable on a busy background.
+    pub fn disc(self) -> f64 {
+        0.92 - 0.40 * self.share()
+    }
 }
 
 pub fn key(kind: Kind, format: &str) -> String {

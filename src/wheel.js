@@ -383,6 +383,10 @@ listen('wheel-show', (event) => {
   const share = (v, fallback) => (Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback);
   document.documentElement.classList.toggle('plain', look?.plain === true);
   document.documentElement.style.setProperty('--seg-a', share(look?.seg, 0.23));
+  // Windows and Linux, Wheel Glass on: the page's own disc, see-through.
+  const see = Number.isFinite(look?.see);
+  document.documentElement.classList.toggle('see', see);
+  if (see) document.documentElement.style.setProperty('--disc-a', share(look.see, 1));
   build();
   frostWords();
   open = true;
