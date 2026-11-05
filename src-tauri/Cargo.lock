@@ -541,6 +541,7 @@ dependencies = [
  "vtracer",
  "webkit2gtk",
  "windows",
+ "windows-collections",
  "windows-core",
  "x11rb",
  "zbus",
