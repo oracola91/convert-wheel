@@ -64,6 +64,7 @@ const TOOLS = {
   'act:float': ['Float', 'Keep it on screen'],
   'act:terminal': ['Terminal', 'Open Terminal here'],
   'act:airdrop': ['AirDrop', 'Send with AirDrop'],
+  'act:share': ['Share', 'Send it to an app or person'],
   'act:zip': ['ZIP', 'Make a ZIP'],
   'act:tgz': ['TAR.GZ', 'Make a TAR.GZ'],
   'act:tar': ['TAR', 'Make a TAR'],

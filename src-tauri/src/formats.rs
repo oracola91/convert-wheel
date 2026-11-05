@@ -206,9 +206,10 @@ pub fn opens_editor(id: &str) -> bool {
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
-/// they are. AirDrop is macOS only; Unpack only when every file is an archive.
+/// they are. AirDrop is macOS only, Share is its Windows and Linux counterpart; Unpack
+/// only when every file is an archive.
 const ACTIONS: &[&str] = &[
-    "act:path", "act:show", "act:copyto", "act:moveto", "act:float", "act:terminal", "act:airdrop", "act:zip", "act:tgz", "act:tar",
+    "act:path", "act:show", "act:copyto", "act:moveto", "act:float", "act:terminal", "act:airdrop", "act:share", "act:zip", "act:tgz", "act:tar",
     "act:unpack",
 ];
 
@@ -228,6 +229,7 @@ pub fn actions_for(paths: &[String]) -> Vec<&'static str> {
         .copied()
         .filter(|a| match *a {
             "act:airdrop" => cfg!(target_os = "macos"),
+            "act:share" => !cfg!(target_os = "macos"),
             "act:unpack" => archives,
             _ => true,
         })
