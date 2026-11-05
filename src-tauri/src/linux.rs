@@ -80,6 +80,7 @@ fn start_x11(app: AppHandle) {
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
+        let mut arrows = trigger::Arrows::default();
         loop {
             thread::sleep(POLL);
             let pointer = match conn.query_pointer(root).map(|c| c.reply()) {
@@ -97,6 +98,7 @@ fn start_x11(app: AppHandle) {
                 }
                 (was_down, from_files, shown, held) = (false, false, false, 0);
                 keys = KeyFollower::default();
+                arrows = trigger::Arrows::default();
                 continue;
             }
             let (px, py) = (i32::from(pointer.root_x), i32::from(pointer.root_y));
@@ -116,6 +118,7 @@ fn start_x11(app: AppHandle) {
             } else if shown {
                 let held = |key| pointer.mask.contains(key);
                 trigger::follow_keys(&app, &mut keys, held(KeyButMask::SHIFT), held(KeyButMask::MOD1), held(KeyButMask::CONTROL));
+                trigger::follow_arrows(&app, &mut arrows, x11_arrows(&conn));
             }
         }
     });
@@ -253,6 +256,16 @@ fn follow_drag(app: &AppHandle, from: &str, reader: &mut impl BufRead) {
     if drag.refused {
         crate::log::line(&format!("Shift+drag from {from}: not a file manager, so no wheel"));
     }
+}
+
+/// Left, right, up and down from the X keymap: the evdev keycodes every current X
+/// server uses (113, 114, 111, 116).
+fn x11_arrows(conn: &impl x11rb::connection::Connection) -> [bool; 4] {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let Ok(Ok(map)) = conn.query_keymap().map(|c| c.reply()) else {
+        return [false; 4];
+    };
+    [113u8, 114, 111, 116].map(|code| map.keys[usize::from(code / 8)] & (1 << (code % 8)) != 0)
 }
 
 /// "show", "show tools" or "show actions" from the socket: which wheel to open.

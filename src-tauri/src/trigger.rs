@@ -97,6 +97,7 @@ pub fn start(app: AppHandle) {
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
+        let mut arrows = Arrows::default();
         // This drag carries files, so the shelf follows it (until the wheel opens), and
         // whether that was checked yet.
         let mut shelf_drag = false;
@@ -125,6 +126,7 @@ pub fn start(app: AppHandle) {
                     shown = false;
                     held = 0;
                     keys = KeyFollower::default();
+                    arrows = Arrows::default();
                     shelf_drag = false;
                     idle = (idle + 1) % SHELF_REFRESH;
                     if idle == 0 {
@@ -156,6 +158,7 @@ pub fn start(app: AppHandle) {
                     }
                 } else if shown {
                     follow_keys(&app, &mut keys, macos::shift_down(), macos::option_down(), macos::control_down());
+                    follow_arrows(&app, &mut arrows, macos::arrows());
                 }
                 if shelf_drag && dragging {
                     crate::shelf_window::dragging_soon(&app);
@@ -236,6 +239,7 @@ fn fill(app: &AppHandle, paths: &[String], which: Option<Which>) -> (Which, Vec<
     *wheel::lock(&state.page) = 0;
     *wheel::lock(&state.formats) = formats.clone();
     *wheel::lock(&state.paths) = paths.to_vec();
+    *wheel::lock(&state.picked) = None;
     (*current, formats)
 }
 
@@ -245,6 +249,71 @@ pub(crate) fn follow_keys(app: &AppHandle, keys: &mut KeyFollower, shift: bool, 
     if let Some(which) = keys.poll(&wheel::keys(), current, KEYS_SETTLE, shift, option, control) {
         switch_wheel(app, which);
     }
+}
+
+/// Arrow keys while the wheel is open: Left and Right move a highlight round the
+/// wheel, Up and Down show the next or the previous set of a full wheel (More). A drop
+/// on the hub then goes to the highlighted item; the mouse over a segment still wins.
+/// Each system's loop reads the keys (left, right, up, down) and calls this.
+#[derive(Default)]
+pub(crate) struct Arrows {
+    held: [bool; 4],
+}
+
+pub(crate) fn follow_arrows(app: &AppHandle, arrows: &mut Arrows, now: [bool; 4]) {
+    for (key, (was, is)) in arrows.held.iter().zip(now).enumerate() {
+        if is && !was {
+            arrow(app, key);
+        }
+    }
+    arrows.held = now;
+}
+
+/// One arrow key went down: 0 left, 1 right, 2 up, 3 down.
+pub(crate) fn arrow(app: &AppHandle, key: usize) {
+    let state = app.state::<WheelState>();
+    if !state.is_open() {
+        return;
+    }
+    match key {
+        0 | 1 => {
+            let n = wheel::lock(&state.formats).len();
+            if n == 0 {
+                return;
+            }
+            let next = {
+                let mut picked = wheel::lock(&state.picked);
+                let next = step(*picked, n, key == 1);
+                *picked = Some(next);
+                next
+            };
+            let _ = app.emit("wheel-pick", Some(next));
+        }
+        2 => turn_page(app, true),
+        3 => turn_page(app, false),
+        _ => {}
+    }
+}
+
+/// The next segment round a wheel of `n`, clockwise or back; the first press starts
+/// at the top (clockwise) or the last segment (back).
+fn step(picked: Option<usize>, n: usize, clockwise: bool) -> usize {
+    match picked {
+        None if clockwise => 0,
+        None => n - 1,
+        Some(i) if clockwise => (i + 1) % n,
+        Some(i) => (i + n - 1) % n,
+    }
+}
+
+/// A drop on the hub goes to the segment the arrow keys picked.
+fn with_pick(app: &AppHandle, hover: Hover) -> Hover {
+    if hover.segment.is_none() && hover.hub {
+        if let Some(i) = *wheel::lock(&app.state::<WheelState>().picked) {
+            return Hover { segment: Some(i), hub: false };
+        }
+    }
+    hover
 }
 
 /// The wheel is open on this one file.
@@ -287,6 +356,11 @@ fn switch_wheel(app: &AppHandle, which: Which) {
 /// The cursor rested on More: the same wheel shows its next set of items. Under the
 /// `which` lock, like fill, so a switch or the files arriving can't cross it.
 pub(crate) fn next_page(app: &AppHandle) {
+    turn_page(app, true);
+}
+
+/// The next set of a full wheel, or with `forward` false the one before.
+fn turn_page(app: &AppHandle, forward: bool) {
     let state = app.state::<WheelState>();
     if !state.is_open() {
         return;
@@ -298,7 +372,9 @@ pub(crate) fn next_page(app: &AppHandle) {
             return;
         }
         let mut page = wheel::lock(&state.page);
-        *page = (*page + 1) % wheel::pages(all.len(), formats::MAX_SEGMENTS);
+        let pages = wheel::pages(all.len(), formats::MAX_SEGMENTS);
+        *page = if forward { (*page + 1) % pages } else { (*page + pages - 1) % pages };
+        *wheel::lock(&state.picked) = None;
         let formats = wheel::page_of(&all, *page, formats::MAX_SEGMENTS);
         *wheel::lock(&state.formats) = formats.clone();
         (*current, formats, wheel::lock(&state.paths).clone())
@@ -354,6 +430,7 @@ pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
 /// A drop on the wheel. Converts (or runs the tool) when it landed on a segment and
 /// says whether it did.
 pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -> bool {
+    let hover = with_pick(app, hover);
     let format = hover
         .segment
         .and_then(|i| wheel::lock(&app.state::<WheelState>().formats).get(i).copied());
@@ -460,6 +537,26 @@ mod macos {
         NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control)
     }
 
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
+        fn CGPreflightListenEventAccess() -> bool;
+        fn CGRequestListenEventAccess() -> bool;
+    }
+
+    /// Left, right, up, down. Keys of another app in front are only seen with Input
+    /// Monitoring allowed (System Settings > Privacy & Security); macOS asks once.
+    pub fn arrows() -> [bool; 4] {
+        static ASKED: std::sync::Once = std::sync::Once::new();
+        ASKED.call_once(|| unsafe {
+            if !CGPreflightListenEventAccess() {
+                CGRequestListenEventAccess();
+            }
+        });
+        const COMBINED_SESSION: i32 = 0;
+        [123, 124, 126, 125].map(|key| unsafe { CGEventSourceKeyState(COMBINED_SESSION, key) })
+    }
+
     pub fn dragged_files() -> Vec<String> {
         file_paths(&drag_pasteboard())
     }
@@ -479,5 +576,19 @@ mod macos {
                 Some(path.to_string())
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod arrow_tests {
+    use super::step;
+
+    #[test]
+    fn arrows_go_round_the_wheel_both_ways() {
+        assert_eq!(step(None, 5, true), 0);
+        assert_eq!(step(None, 5, false), 4);
+        assert_eq!(step(Some(4), 5, true), 0);
+        assert_eq!(step(Some(0), 5, false), 4);
+        assert_eq!(step(Some(2), 5, true), 3);
     }
 }

@@ -310,7 +310,13 @@ function clean(hover) {
 function show(raw) {
   if (!hub) return;
   const hover = clean(raw);
-  lastHover = hover;
+  lastHover = { ...hover };
+  // The arrow keys' pick shows while the mouse is on no segment; a drop on the hub
+  // goes there (trigger.rs).
+  if (hover.segment === null && picked !== null && picked < segments.length) {
+    hover.segment = picked;
+    hover.hub = false;
+  }
   segments.forEach((g, i) => g.classList.toggle('active', i === hover.segment));
   hub.classList.toggle('cancel', hover.hub);
   hubLabel.classList.toggle('strong', hover.segment !== null || hover.hub);
@@ -402,6 +408,7 @@ listen('wheel-show', (event) => {
   if (picture && picture.path !== paths[0]) picture = null;
   pinned = event.payload?.pinned === true;
   pinnedKeys = 'false/false';
+  picked = null;
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   const highlight = event.payload?.highlight;
   document.documentElement.dataset.highlight = HIGHLIGHTS.includes(highlight) ? highlight : 'orange';
@@ -426,6 +433,7 @@ listen('wheel-show', (event) => {
 // cursor moves or a key changes.
 listen('wheel-formats', (event) => {
   if (!open) return;
+  picked = null;
   let keep = lastHover;
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   // Going round with More: More (always last) stays lit under the resting cursor
@@ -526,6 +534,20 @@ function pinnedSwitch(event) {
   invoke('wheel_keys', { alt: event.altKey, control: event.ctrlKey }).catch(() => {});
 }
 document.addEventListener('keydown', pinnedSwitch);
+
+// Arrow keys: the segment they picked (any system, from its own key polling), and on
+// the shortcut's wheel, which has the keyboard (Linux), the keys themselves.
+let picked = null;
+listen('wheel-pick', (event) => {
+  picked = Number.isInteger(event.payload) ? event.payload : null;
+  if (open && lastHover) show(lastHover);
+});
+const ARROWS = { ArrowLeft: 0, ArrowRight: 1, ArrowUp: 2, ArrowDown: 3 };
+document.addEventListener('keydown', (event) => {
+  if (!open || !pinned || !Object.hasOwn(ARROWS, event.key)) return;
+  event.preventDefault();
+  invoke('wheel_arrow', { key: ARROWS[event.key] }).catch(() => {});
+});
 document.addEventListener('keyup', pinnedSwitch);
 svg.addEventListener('click', (event) => {
   if (open && pinned && event.target === hub) cancel();
