@@ -46,6 +46,15 @@ const WHEELS: [(Which, &str, &str); 3] =
 /// Wheel Glass: "glass:on" (Liquid Glass) and "glass:off" (No Liquid Glass), macOS.
 #[cfg(target_os = "macos")]
 const GLASS: &str = "glass:";
+/// Windows and Linux: the Transparency steps in place of macOS's slider.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+const GLASS_STEPS: &[(u8, &str)] = &[(20, "Less"), (50, "Medium"), (80, "More")];
+
+/// The step closest to a saved transparency (the macOS slider saves any value).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn nearest_step(value: u8) -> u8 {
+    GLASS_STEPS.iter().map(|(s, _)| *s).min_by_key(|s| s.abs_diff(value)).unwrap_or(50)
+}
 
 pub struct TrayMenu(Menu<Wry>);
 
@@ -152,6 +161,30 @@ pub fn build(app: &App) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     let glass = Submenu::with_items(app, "Wheel Glass", true, &kind_items)?;
     #[cfg(target_os = "macos")]
+    items.push(&glass);
+    // Windows and Linux: Solid or See-through, and three steps of transparency, as a
+    // tray menu holds no slider.
+    #[cfg(not(target_os = "macos"))]
+    let glass_items = {
+        let mut v = vec![
+            CheckMenuItem::with_id(app, format!("{GLASS}off"), "Solid", true, current.no_liquid_glass, None::<&str>)?,
+            CheckMenuItem::with_id(app, format!("{GLASS}on"), "See-through", true, !current.no_liquid_glass, None::<&str>)?,
+        ];
+        let near = nearest_step(current.transparency.0);
+        for (step, name) in GLASS_STEPS {
+            v.push(CheckMenuItem::with_id(app, format!("{GLASS}t{step}"), *name, true, *step == near, None::<&str>)?);
+        }
+        v
+    };
+    #[cfg(not(target_os = "macos"))]
+    let (glass_sep, glass_label) = (sep()?, MenuItem::with_id(app, format!("{GLASS}label"), "Transparency", false, None::<&str>)?);
+    #[cfg(not(target_os = "macos"))]
+    let glass = {
+        let mut kind: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&glass_items[0], &glass_items[1], &glass_sep, &glass_label];
+        kind.extend(glass_items[2..].iter().map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>));
+        Submenu::with_items(app, "Wheel Glass", true, &kind)?
+    };
+    #[cfg(not(target_os = "macos"))]
     items.push(&glass);
     let rest: [&dyn tauri::menu::IsMenuItem<Wry>; 3] = [&separator2, &show_log, &quit];
     items.extend(rest);
@@ -365,8 +398,17 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             set_check(app, SAVE_NEXT, save_to == SaveTo::NextToOriginal);
             set_check(app, SAVE_DOWNLOADS, save_to == SaveTo::Downloads);
         }
-        #[cfg(target_os = "macos")]
         _ if id.starts_with(GLASS) => {
+            if let Some(step) = id[GLASS.len()..].strip_prefix('t').and_then(|t| t.parse::<u8>().ok()) {
+                if let Err(e) = store.update(|s| s.transparency = settings::Transparency(step)) {
+                    crate::notify(app, "Couldn't save the setting", &e);
+                }
+                let near = nearest_step(store.get().transparency.0);
+                for (s, _) in GLASS_STEPS {
+                    set_check(app, &format!("{GLASS}t{s}"), *s == near);
+                }
+                return;
+            }
             let plain = &id[GLASS.len()..] == "off";
             if let Err(e) = store.update(|s| s.no_liquid_glass = plain) {
                 crate::notify(app, "Couldn't save the setting", &e);

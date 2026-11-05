@@ -139,6 +139,16 @@ svg.closing {
   display: inline;
 }
 
+/* Windows and Linux with Wheel Glass on: the page's own disc, see-through at the
+   chosen transparency. No blur: these systems blur nothing behind a round window. */
+.see .disc {
+  fill-opacity: var(--disc-a, 1);
+}
+
+.see .shadow {
+  opacity: var(--disc-a, 1);
+}
+
 .seg {
   transform-box: fill-box;
   transform-origin: center;
