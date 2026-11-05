@@ -1,4 +1,6 @@
-# Convert Wheel
+# Pirouette
+
+Called Convert Wheel before 0.3.0. On Windows and Linux it still installs under that name for now, so updates there keep replacing the old copy.
 
 Hold Shift while dragging a file. A wheel of formats appears under the cursor. Drop the file on a format to convert it.
 
@@ -148,7 +150,7 @@ On Windows the update runs the installer in passive mode (a progress bar, no que
 
 The ring icon in the menu bar opens:
 
-- **Open at Login**: adds or removes Convert Wheel in System Settings > General > Login Items. Only works for the installed app.
+- **Open at Login**: adds or removes Pirouette in System Settings > General > Login Items. Only works for the installed app.
 - **Shelf at the Top of the Screen** (macOS): on unless unticked.
 - **Save Converted Files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
 - **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
@@ -173,7 +175,7 @@ The ring icon in the menu bar opens:
 - **Stop Converting**: ends the drop being converted now. Files already done stay; the one in progress leaves nothing behind. Drops queued after it still run.
 - **Install ffmpeg…** (macOS and Windows): appears when a drop needed a converter that isn't installed, and the notification points to it. It runs `brew install` on macOS or `winget install` on Windows for that converter (several in a row: "Install ffmpeg and MuPDF…"), checks the app can now find it, and says so; then drop the files again. Without Homebrew it opens brew.sh; without winget it says to get App Installer from the Microsoft Store. On Windows, choosing it accepts the package's terms as typing the command would, and packages that install for all users, such as LibreOffice, still ask for admin rights. The package manager's last lines go to the log. On Linux the notification still names the `apt` command (it needs an admin password); the setup script installs everything at once.
 - **Check for Updates… / Install Update … and Restart**.
-- **Quit Convert Wheel**.
+- **Quit Pirouette** (Quit Convert Wheel on Windows and Linux).
 
 Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json` (Windows: `%APPDATA%\local.convertwheel`, Linux: `~/.config/local.convertwheel`). A settings file that can't be used is kept aside as `settings.json.bad` (or, if it can't be read at all, left alone and never saved over), and a notification says the settings were reset.
 
