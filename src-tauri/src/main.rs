@@ -8,6 +8,8 @@ mod converters;
 mod drop_view;
 mod editor;
 mod estimates;
+#[cfg(target_os = "macos")]
+mod float_card;
 mod formats;
 #[cfg(target_os = "macos")]
 mod glass_slider;
