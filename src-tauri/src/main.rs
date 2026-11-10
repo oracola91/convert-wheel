@@ -745,6 +745,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     log::line(&format!("started, version {}", app.package_info().version));
     let (store, settings_problem) = settings::Store::load(app.path().app_config_dir()?.join("settings.json"));
     wheel::set_keys(store.get().keys);
+    #[cfg(target_os = "macos")]
+    trigger::set_mac_arrows(store.get().arrow_keys);
     app.manage(store);
     app.manage(update::Pending::default());
     app.manage(reveal::Results::default());

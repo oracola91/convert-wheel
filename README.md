@@ -123,7 +123,7 @@ Windows (above the clock) and Linux follow.
 
 ### Switching wheels in one drag
 
-**Arrow keys** while a wheel is open: Left and Right move a highlight round the wheel, Up and Down show the next or the previous set of a full wheel. Drop the file on the middle and it goes to the highlighted item; the mouse over a segment still wins. On macOS the keys of the app in front are only seen with Input Monitoring allowed for the app (System Settings > Privacy & Security; macOS asks the first time). On Wayland they work on the shortcut's wheel.
+**Arrow keys** while a wheel is open: Left and Right move a highlight round the wheel, Up and Down show the next or the previous set of a full wheel. Drop the file on the middle and it goes to the highlighted item; the mouse over a segment still wins. On macOS they are off until switched on in the menu under Keys > Arrow Keys on the Wheel: reading the keys while another app is in front needs Input Monitoring (System Settings > Privacy & Security), and macOS asks for it when you switch them on, never before. Windows and Linux read them always. On Wayland they work on the shortcut's wheel.
 
 Once a wheel is open, the keys keep choosing: add Option (Alt) and it becomes the Tools wheel, press Control instead and it becomes the Actions wheel, keep only Shift and it is the formats again. With no keys held the wheel stays as it is, so they can be let go on the way to a segment. On Linux this works with X11; the Wayland shortcut opens the formats wheel only.
 
