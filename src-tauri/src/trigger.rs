@@ -87,6 +87,27 @@ fn total_bytes(paths: &[String]) -> Option<u64> {
     })
 }
 
+/// macOS: the arrow keys are read only once "Arrow Keys on the Wheel" is on (Keys
+/// menu), as reading the keys of the app in front needs Input Monitoring. Windows and
+/// Linux read them always.
+#[cfg(target_os = "macos")]
+static MAC_ARROWS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switches the arrow keys on or off (macOS): at the start from the settings, and from
+/// the menu.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_mac_arrows(on: bool) {
+    MAC_ARROWS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether Input Monitoring is allowed; if not, macOS asks for it (a dialog the first
+/// time only, after that the switch is in System Settings). Only called when the
+/// arrow keys are switched on, never by the wheel itself.
+#[cfg(target_os = "macos")]
+pub(crate) fn ask_input_monitoring() -> bool {
+    macos::input_monitoring_or_ask()
+}
+
 #[cfg(target_os = "macos")]
 pub fn start(app: AppHandle) {
     thread::spawn(move || {
@@ -158,7 +179,9 @@ pub fn start(app: AppHandle) {
                     }
                 } else if shown {
                     follow_keys(&app, &mut keys, macos::shift_down(), macos::option_down(), macos::control_down());
-                    follow_arrows(&app, &mut arrows, macos::arrows());
+                    if MAC_ARROWS.load(std::sync::atomic::Ordering::Relaxed) {
+                        follow_arrows(&app, &mut arrows, macos::arrows());
+                    }
                 }
                 if shelf_drag && dragging {
                     crate::shelf_window::dragging_soon(&app);
@@ -544,15 +567,14 @@ mod macos {
         fn CGRequestListenEventAccess() -> bool;
     }
 
+    /// True when Input Monitoring is allowed; otherwise asks for it and says false.
+    pub fn input_monitoring_or_ask() -> bool {
+        unsafe { CGPreflightListenEventAccess() || CGRequestListenEventAccess() }
+    }
+
     /// Left, right, up, down. Keys of another app in front are only seen with Input
-    /// Monitoring allowed (System Settings > Privacy & Security); macOS asks once.
+    /// Monitoring allowed (System Settings > Privacy & Security); this never asks.
     pub fn arrows() -> [bool; 4] {
-        static ASKED: std::sync::Once = std::sync::Once::new();
-        ASKED.call_once(|| unsafe {
-            if !CGPreflightListenEventAccess() {
-                CGRequestListenEventAccess();
-            }
-        });
         const COMBINED_SESSION: i32 = 0;
         [123, 124, 126, 125].map(|key| unsafe { CGEventSourceKeyState(COMBINED_SESSION, key) })
     }

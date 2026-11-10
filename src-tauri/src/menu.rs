@@ -19,6 +19,9 @@ const SAVE_DOWNLOADS: &str = "save:downloads";
 const LOGIN: &str = "login";
 #[cfg(target_os = "macos")]
 const SHELF: &str = "shelf";
+/// macOS: the arrow keys on the wheel, off until switched on (Input Monitoring).
+#[cfg(target_os = "macos")]
+const ARROWS: &str = "arrows";
 const LAST: &str = "last";
 const STOP: &str = "stop";
 const INSTALL: &str = "install";
@@ -132,7 +135,17 @@ pub fn build(app: &App) -> tauri::Result<()> {
         let refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = choices.iter().map(|c| c as _).collect();
         wheels.push(Submenu::with_items(app, label, true, &refs)?);
     }
-    let wheel_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = wheels.iter().map(|w| w as _).collect();
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut wheel_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = wheels.iter().map(|w| w as _).collect();
+    // macOS reads the arrow keys only once they are switched on here: that needs Input
+    // Monitoring, and macOS asks for it when they are. Windows and Linux always read them.
+    #[cfg(target_os = "macos")]
+    let (arrows_sep, arrows) = (
+        PredefinedMenuItem::separator(app)?,
+        CheckMenuItem::with_id(app, ARROWS, "Arrow Keys on the Wheel", true, current.arrow_keys, None::<&str>)?,
+    );
+    #[cfg(target_os = "macos")]
+    wheel_refs.extend([&arrows_sep as &dyn tauri::menu::IsMenuItem<Wry>, &arrows]);
     let keys = Submenu::with_items(app, "Keys", true, &wheel_refs)?;
 
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
@@ -387,6 +400,24 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
             }
             set_check(app, SHELF, !store.get().shelf_off);
             crate::shelf_window::setting_changed(app);
+        }
+        #[cfg(target_os = "macos")]
+        ARROWS => {
+            if let Err(e) = store.update(|s| s.arrow_keys = !s.arrow_keys) {
+                crate::notify(app, "Couldn't save the setting", &e);
+            }
+            let on = store.get().arrow_keys;
+            set_check(app, ARROWS, on);
+            crate::trigger::set_mac_arrows(on);
+            // Asked here and never by the wheel: macOS shows its dialog the first time,
+            // after that the switch only lives in System Settings.
+            if on && !crate::trigger::ask_input_monitoring() {
+                crate::notify(
+                    app,
+                    "Arrow keys need Input Monitoring",
+                    "Allow the app in System Settings > Privacy & Security > Input Monitoring. Until then the wheel can't see the arrow keys while another app is in front.",
+                );
+            }
         }
         SAVE_NEXT | SAVE_DOWNLOADS => {
             let wanted = if id == SAVE_NEXT { SaveTo::NextToOriginal } else { SaveTo::Downloads };
