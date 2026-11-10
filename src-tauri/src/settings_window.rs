@@ -89,6 +89,8 @@ pub struct View {
     converters: bool,
     /// Windows only: the Send To entry for the keyboard wheel. None elsewhere.
     send_to: Option<bool>,
+    /// The converters not found that "Install Missing Converters…" would install.
+    missing: Vec<&'static str>,
     kinds: Vec<KindView>,
     keys: Vec<WheelKeys>,
     combos: Vec<Choice>,
@@ -158,6 +160,7 @@ fn view(app: &AppHandle) -> View {
         shelf: shelf_here().then_some(!s.shelf_off),
         converters: converters::available(),
         send_to: cfg!(windows).then_some(!s.send_to_off),
+        missing: if converters::available() { converters::not_installed().iter().map(|c| c.name).collect() } else { Vec::new() },
         kinds,
         keys: WHEELS.iter().map(|(which, wheel, label)| WheelKeys { wheel, label, combo: s.keys.get(*which).map(Combo::key) }).collect(),
         combos: Combo::ALL.iter().map(|c| Choice { key: c.key(), label: c.label() }).collect(),
@@ -310,7 +313,8 @@ pub fn settings_change(app: AppHandle, change: Change) -> Result<View, String> {
     Ok(view(&app))
 }
 
-/// The window's buttons: "log" (Show Log), "update-converters", and "close" (Esc).
+/// The window's buttons: "log" (Show Log), "update-converters", "install-all", and
+/// "close" (Esc).
 #[tauri::command]
 pub fn settings_action(app: AppHandle, action: String) -> Result<(), String> {
     match action.as_str() {
@@ -321,6 +325,10 @@ pub fn settings_action(app: AppHandle, action: String) -> Result<(), String> {
         }
         "update-converters" if converters::available() => {
             converters::update(&app);
+            Ok(())
+        }
+        "install-all" if converters::available() => {
+            converters::install_all(&app);
             Ok(())
         }
         "close" => {

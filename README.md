@@ -199,6 +199,7 @@ The **Settings window** holds everything else, in four tabs, the same on every s
 - **Open at login**: adds or removes Pirouette in System Settings > General > Login Items. Only works for the installed app.
 - **Save converted files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
 - **Shelf at the top of the screen**: on unless switched off (not on Wayland).
+- **Install Missing Converters…** (where Install works): installs every converter the app can't find in one run of the same Install (one-step setup); the line above it names them. LibreOffice is a large download.
 - **Update Converters…** (where Install works): a button that asks the same package manager for a newer version of every converter the app finds: `brew upgrade`, `winget upgrade`, or one `apt-get install --only-upgrade` for all of them on Ubuntu and Debian (one password; apt uses the package lists the system refreshed last, which Ubuntu does daily). A converter the package manager didn't install, such as a LibreOffice downloaded from its website, is left alone, and so is the bsdtar built into macOS and Windows. The notification says which ones were updated, which were already up to date, and which were left alone. One package manager job runs at a time, so Install waits for it.
 
 **Wheel**

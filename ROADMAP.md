@@ -14,6 +14,8 @@ Today Shift+drag opens one wheel: the formats a file can become. Two more are pl
 
 ## Stages, in order
 
+Status, 2026-11-10: stages 1 to 8 are built (on branches, not yet released). Stage 6 is install on demand rather than shipping the converters (council 2026-11-05): the Install item, Install Missing Converters… and Update Converters… in Settings. From *Beyond that*, the second way in is built too: Finder's Services, File Explorer's Send To and the Linux file managers' Open With open a keyboard wheel.
+
 **1. Show what happened.** Clicking the notification opens the folder with the result selected. A progress line for long jobs and batches, and a way to stop a job that runs too long.
 
 **2. The Tools wheel, with what the installed tools already do.**

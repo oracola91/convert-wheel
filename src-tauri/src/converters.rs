@@ -90,6 +90,26 @@ fn names(list: &[&Converter]) -> String {
     }
 }
 
+/// The converters this system's package manager provides that the app can't find.
+pub fn not_installed() -> Vec<&'static Converter> {
+    convert::CONVERTERS.iter().filter(|c| updatable(c) && !convert::installed(c)).collect()
+}
+
+/// Settings' "Install Missing Converters…" (roadmap stage 6, one-step setup): every
+/// converter not found, in one run of the same Install.
+pub fn install_all(app: &AppHandle) {
+    {
+        let state = app.state::<Missing>();
+        let mut missing = state.list();
+        for c in not_installed() {
+            if !missing.iter().any(|m| m.tool == c.tool) {
+                missing.push(c);
+            }
+        }
+    }
+    install(app);
+}
+
 /// The menu's Install item: installs the missing converters one after another, on a
 /// thread of its own, and says how it went. It stops at the first that fails; that one
 /// and the rest stay in the menu, to try again.
