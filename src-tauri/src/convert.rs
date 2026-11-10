@@ -307,7 +307,7 @@ fn to_svg(src: &Path, out: &Path, work: &Path) -> Result<(), String> {
         .args(["-auto-orient", "-resize", &format!("{side}x{side}>"), "-depth", "8"])
         .arg(format!("pam:{}", pixels.display()));
     run(cmd, QUICK)?;
-    let me = std::env::current_exe().map_err(|e| format!("can't find Convert Wheel itself to trace with: {e}"))?;
+    let me = std::env::current_exe().map_err(|e| format!("can't find {} itself to trace with: {e}", crate::APP_NAME))?;
     let mut trace = Command::new(me);
     trace.arg("--trace").args(svg::trace_args(&pixels, out, style, quality().pictures));
     run(trace, QUICK)

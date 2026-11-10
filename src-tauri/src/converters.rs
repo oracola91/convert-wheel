@@ -65,7 +65,7 @@ pub fn offer(app: &AppHandle, error: String) -> String {
 }
 
 fn pointer(c: &Converter) -> String {
-    format!("{} is not installed. Choose Install {} in the Convert Wheel menu.", c.name, c.name)
+    format!("{} is not installed. Choose Install {} in the {} menu.", c.name, c.name, crate::APP_NAME)
 }
 
 /// Puts the Install item in the menu for the converters still missing, or takes it out.
@@ -275,11 +275,11 @@ fn install_one(pm: &Path, c: &Converter) -> Result<(), String> {
         return Ok(());
     }
     if status.success() {
-        return Err(format!("{PACKAGE_MANAGER} finished, but Convert Wheel still can't find {}. Show Log has the details.", c.name));
+        return Err(format!("{PACKAGE_MANAGER} finished, but {} still can't find {}. Show Log has the details.", crate::APP_NAME, c.name));
     }
     // winget's "already installed, and no newer version" (APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE).
     if cfg!(windows) && status.code() == Some(0x8A15_002B_u32 as i32) {
-        return Err(format!("{PACKAGE_MANAGER} says {} is already installed, but Convert Wheel can't find it. Show Log has the details.", c.name));
+        return Err(format!("{PACKAGE_MANAGER} says {} is already installed, but {} can't find it. Show Log has the details.", c.name, crate::APP_NAME));
     }
     // pkexec: 126 = the password window was closed, 127 = no permission.
     if cfg!(target_os = "linux") && matches!(status.code(), Some(126 | 127)) {
@@ -630,7 +630,7 @@ mod tests {
     fn the_message_points_at_the_menu() {
         assert_eq!(
             pointer(named("soffice")),
-            "LibreOffice is not installed. Choose Install LibreOffice in the Convert Wheel menu."
+            format!("LibreOffice is not installed. Choose Install LibreOffice in the {} menu.", crate::APP_NAME)
         );
     }
 

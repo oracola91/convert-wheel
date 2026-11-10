@@ -163,7 +163,7 @@ pub fn make(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback: &P
 /// leaves nothing behind.
 pub fn unpack(src: &Path, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
     let name = src.file_name().and_then(|n| n.to_str()).ok_or("the file name is not valid text")?;
-    let (kind, stem) = split_name(name).ok_or("this is not an archive Convert Wheel unpacks")?;
+    let (kind, stem) = split_name(name).ok_or_else(|| format!("this is not an archive {} unpacks", crate::APP_NAME))?;
     let meta = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?;
     if !meta.is_file() {
         return Err("this is not a regular file".into());

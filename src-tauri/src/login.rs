@@ -28,7 +28,7 @@ mod imp {
         // macOS can accept the request but want the user's OK first.
         if on && unsafe { service.status() } == SMAppServiceStatus::RequiresApproval {
             unsafe { SMAppService::openSystemSettingsLoginItems() };
-            return Err("Allow Convert Wheel in System Settings > General > Login Items.".into());
+            return Err(format!("Allow {} in System Settings > General > Login Items.", crate::APP_NAME));
         }
         Ok(())
     }
