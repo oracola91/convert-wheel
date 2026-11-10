@@ -5,5 +5,28 @@
 	<!-- Menu bar app: no Dock icon, not even for a moment at launch. -->
 	<key>LSUIElement</key>
 	<true/>
+	<!-- Keyboard mode: Finder's right-click > Services > Open in Pirouette Wheel hands
+	     the selected files to the app (src/services.rs). Shown without being switched
+	     on first (an empty NSRequiredContext). -->
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Open in Pirouette Wheel</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>openInWheel</string>
+			<key>NSPortName</key>
+			<string>Pirouette</string>
+			<key>NSRequiredContext</key>
+			<dict/>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.item</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

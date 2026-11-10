@@ -33,6 +33,8 @@ const PENDING_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long a wheel opened from the shortcut waits for a file.
 #[cfg(target_os = "linux")]
 const PINNED_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long the keyboard wheel waits for a choice before it closes by itself.
+const KEYBOARD_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Serialize)]
 struct WheelShow {
@@ -226,6 +228,65 @@ pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>, which: Which) {
     let _ = (generation, pending);
 }
 
+/// The keyboard wheel is open (keyboard mode): closing it hands the keyboard back.
+static KEYBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keyboard mode (council 2026-11-10): the system hands over the selected files (the
+/// Services entry on macOS, Send To on Windows, Open With on Linux) and the wheel
+/// opens on them with the keyboard: Left and Right pick, Up and Down turn the set,
+/// Enter applies, Esc closes, Option/Alt and Control switch wheels. It closes by
+/// itself after KEYBOARD_TIMEOUT.
+pub(crate) fn open_for_keys(app: &AppHandle, paths: Vec<String>) {
+    let paths: Vec<String> = paths.into_iter().filter(|p| std::path::Path::new(p).exists()).collect();
+    if paths.is_empty() {
+        return;
+    }
+    crate::log::line(&format!("keyboard wheel on {} file(s)", paths.len()));
+    KEYBOARD.store(true, std::sync::atomic::Ordering::SeqCst);
+    let generation = open_wheel(app, paths, true, Which::Formats);
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        // After the wheel is shown (the same queue): the app comes to the front and
+        // the wheel's page takes the keys.
+        #[cfg(target_os = "macos")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            #[allow(deprecated)]
+            objc2_app_kit::NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        }
+        if let Some(win) = handle.get_webview_window("wheel") {
+            let _ = win.set_focusable(true);
+            let _ = win.set_focus();
+        }
+    });
+    close_later(app, generation, KEYBOARD_TIMEOUT, false);
+}
+
+/// Enter on the keyboard wheel: the picked item, as a drop on it would be. On More,
+/// the next set.
+pub(crate) fn apply_pick(app: &AppHandle) {
+    let state = app.state::<WheelState>();
+    if !state.is_open() {
+        return;
+    }
+    let Some(i) = *wheel::lock(&state.picked) else {
+        return;
+    };
+    if wheel::lock(&state.formats).get(i).copied() == Some(wheel::MORE) {
+        turn_page(app, true);
+        return;
+    }
+    let paths = wheel::lock(&state.paths).clone();
+    drop_on_wheel(app, Hover { segment: Some(i), hub: false }, paths);
+}
+
+/// The files a second start of the app was given (Send To, Open With), or None when
+/// it was given anything else: every argument after the program must be a file or
+/// folder that exists.
+pub(crate) fn files_in_args(args: &[String]) -> Option<Vec<String>> {
+    let given = args.get(1..)?;
+    (!given.is_empty() && given.iter().all(|a| !a.starts_with('-') && std::path::Path::new(a).exists())).then(|| given.to_vec())
+}
+
 /// Opens the wheel from the keyboard shortcut and closes it again if no file comes.
 /// `convert-wheel --show tools` (or actions) opens that wheel instead of the formats.
 #[cfg(target_os = "linux")]
@@ -236,7 +297,6 @@ pub(crate) fn show_pinned(app: &AppHandle, which: Which) {
 
 /// Closes wheel `generation` after `delay`, unless it closed or a newer one opened
 /// in the meantime. With `only_if_waiting`, only while it still has no files.
-#[cfg(any(windows, target_os = "linux"))]
 fn close_later(app: &AppHandle, generation: u64, delay: Duration, only_if_waiting: bool) {
     let app = app.clone();
     thread::spawn(move || {
@@ -530,8 +590,20 @@ pub fn hide_wheel(app: &AppHandle, accepted: bool, expected: Option<u64>) {
         return;
     };
     let _ = app.emit("wheel-close", accepted);
+    let keyboard = KEYBOARD.swap(false, std::sync::atomic::Ordering::SeqCst);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        // The keyboard wheel took the keys: the wheel can't take them during a drag
+        // again, and on macOS the app in front before it gets them back.
+        if keyboard {
+            if let Some(win) = handle.get_webview_window("wheel") {
+                let _ = win.set_focusable(false);
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(mtm) = objc2::MainThreadMarker::new() {
+                objc2_app_kit::NSApplication::sharedApplication(mtm).deactivate();
+            }
+        }
         #[cfg(target_os = "macos")]
         crate::wheel_window::close(&handle, generation);
         #[cfg(windows)]
@@ -620,7 +692,20 @@ mod macos {
 
 #[cfg(test)]
 mod arrow_tests {
-    use super::step;
+    use super::{files_in_args, step};
+
+    #[test]
+    fn only_existing_files_open_the_keyboard_wheel() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.png");
+        std::fs::write(&file, b"x").unwrap();
+        let file = file.to_string_lossy().into_owned();
+        let args = |rest: &[&str]| std::iter::once("app".to_string()).chain(rest.iter().map(|s| s.to_string())).collect::<Vec<_>>();
+        assert_eq!(files_in_args(&args(&[&file])), Some(vec![file.clone()]));
+        assert_eq!(files_in_args(&args(&[])), None);
+        assert_eq!(files_in_args(&args(&["--update"])), None);
+        assert_eq!(files_in_args(&args(&[&file, "/no/such/file"])), None);
+    }
 
     #[test]
     fn arrows_go_round_the_wheel_both_ways() {

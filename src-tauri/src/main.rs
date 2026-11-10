@@ -28,6 +28,10 @@ mod menu;
 mod reveal;
 mod settings;
 mod settings_window;
+#[cfg(target_os = "macos")]
+mod services;
+#[cfg(windows)]
+mod send_to;
 mod shelf;
 #[cfg(target_os = "macos")]
 mod shelf_window;
@@ -326,6 +330,12 @@ fn wheel_more(app: AppHandle) {
 #[tauri::command]
 fn wheel_keys(app: AppHandle, alt: bool, control: bool) {
     trigger::pinned_keys(&app, alt, control);
+}
+
+/// The keyboard wheel's page: Enter applies the picked item.
+#[tauri::command]
+fn wheel_enter(app: AppHandle) {
+    trigger::apply_pick(&app);
 }
 
 /// The wheel's page, opened from the shortcut (Linux): an arrow key, 0 left, 1 right,
@@ -708,6 +718,9 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--update") {
                 update::check_soon(app);
+            } else if let Some(files) = trigger::files_in_args(&args) {
+                // Send To (Windows) or Open With (Linux) on files: the keyboard wheel.
+                trigger::open_for_keys(app, files);
             } else {
                 notify(app, &format!("{APP_NAME} is already running"), "Hold Shift while dragging a file to open the wheel.");
             }
@@ -726,7 +739,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
+        .invoke_handler(tauri::generate_handler![wheel_enter, settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
@@ -780,6 +793,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let mtm = objc2::MainThreadMarker::new().ok_or("setup isn't on the main thread")?;
         wheel_window::install(app.handle(), mtm)?;
         drop_view::install(app.handle())?;
+        services::install(app.handle(), mtm);
         shelf_window::install(app.handle(), mtm);
     }
     #[cfg(windows)]
@@ -789,6 +803,21 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     shelf_web::start(app.handle());
     trigger::start(app.handle().clone());
+    // Windows: the Send To entry for the keyboard wheel, kept pointing at this copy.
+    #[cfg(windows)]
+    {
+        let on = !app.state::<settings::Store>().get().send_to_off;
+        std::thread::spawn(move || send_to::set(on));
+    }
+    // Started by Send To or Open With with files (no copy was running): once the
+    // wheel window is up, the keyboard wheel opens on them.
+    if let Some(files) = trigger::files_in_args(&std::env::args().collect::<Vec<_>>()) {
+        let handle = app.handle().clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            trigger::open_for_keys(&handle, files);
+        });
+    }
     update::start(app.handle().clone());
     if let Some(problem) = settings_problem {
         notify(app.handle(), &format!("{APP_NAME} settings"), &problem);

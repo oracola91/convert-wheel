@@ -87,6 +87,8 @@ pub struct View {
     shelf: Option<bool>,
     /// "Update Converters…" works here.
     converters: bool,
+    /// Windows only: the Send To entry for the keyboard wheel. None elsewhere.
+    send_to: Option<bool>,
     kinds: Vec<KindView>,
     keys: Vec<WheelKeys>,
     combos: Vec<Choice>,
@@ -115,6 +117,7 @@ pub enum Change {
     Glass { on: bool },
     Transparency { value: u8 },
     Quality { kind: String, level: String },
+    SendTo { on: bool },
 }
 
 fn system() -> &'static str {
@@ -154,6 +157,7 @@ fn view(app: &AppHandle) -> View {
         save_to: s.save_to,
         shelf: shelf_here().then_some(!s.shelf_off),
         converters: converters::available(),
+        send_to: cfg!(windows).then_some(!s.send_to_off),
         kinds,
         keys: WHEELS.iter().map(|(which, wheel, label)| WheelKeys { wheel, label, combo: s.keys.get(*which).map(Combo::key) }).collect(),
         combos: Combo::ALL.iter().map(|c| Choice { key: c.key(), label: c.label() }).collect(),
@@ -243,6 +247,13 @@ fn edit(change: &Change) -> Result<Edit, String> {
             let level = Level::ALL.into_iter().find(|l| l.key() == level).ok_or_else(|| format!("no level {level}"))?;
             Box::new(move |s| s.quality.set(kind, level))
         }
+        Change::SendTo { on } => {
+            if !cfg!(windows) {
+                return Err("Send To is a Windows menu".into());
+            }
+            let off = !on;
+            Box::new(move |s| s.send_to_off = off)
+        }
         Change::Login { .. } => Box::new(|_| {}),
     })
 }
@@ -263,6 +274,10 @@ fn apply(app: &AppHandle, change: Change) -> Result<(), String> {
             crate::shelf_web::setting_changed(app);
         }
         Change::Keys { .. } => crate::wheel::set_keys(saved.keys),
+        #[cfg(windows)]
+        Change::SendTo { on } => {
+            std::thread::spawn(move || crate::send_to::set(on));
+        }
         #[cfg(target_os = "macos")]
         Change::Arrows { on } => {
             crate::trigger::set_mac_arrows(on);
