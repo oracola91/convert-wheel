@@ -34,7 +34,7 @@ This is our own build, written from scratch. The idea comes from what the paid T
 | PDF | JPG, PNG (a picture of each page), TXT, DOCX (the text only) | MuPDF (`mutool`); pandoc for DOCX |
 | Subtitles: SRT, VTT | SRT, VTT | ffmpeg |
 
-An SVG is the picture traced into flat-coloured shapes, which scale to any size: best for logos, drawings, icons and screenshots; a photo becomes a poster-like picture. ImageMagick reads the picture and makes it at most 2000 pixels on its longer side (photos 1200, which trace in a few seconds), then vtracer (MIT or Apache-2.0, pure Rust, built into the app) traces it in a process of its own, so a slow one is stopped like any other tool. JPEG, HEIC and AVIF are taken as photos (coarser layers, small specks dropped); other pictures keep their flat colours. The menu's picture quality picks how fine: Smaller Files drops more specks and merges more colours, Best Quality keeps more of both. Transparency is kept. An SVG can't be read back in: the wheel takes only plain pictures.
+An SVG is the picture traced into flat-coloured shapes, which scale to any size: best for logos, drawings, icons and screenshots; a photo becomes a poster-like picture. ImageMagick reads the picture and makes it at most 2000 pixels on its longer side (photos 1200, which trace in a few seconds), then vtracer (MIT or Apache-2.0, pure Rust, built into the app) traces it in a process of its own, so a slow one is stopped like any other tool. JPEG, HEIC and AVIF are taken as photos (coarser layers, small specks dropped); other pictures keep their flat colours. The picture quality in Settings > Quality picks how fine: Smaller Files drops more specks and merges more colours, Best Quality keeps more of both. Transparency is kept. An SVG can't be read back in: the wheel takes only plain pictures.
 
 An icon (ICO) holds the picture at 256, 128, 64, 48, 32 and 16 pixels, fitted into a square with see-through edges rather than stretched. MKV is a fast copy of the streams when they fit, H.264 otherwise; AVI is MPEG-4 Part 2 (what Xvid makes) with MP3, and WMV is Windows Media 8 with WMA, for older players, at most 1920 pixels on the long side. Pages, Numbers and Keynote files go through LibreOffice, which reads them; a file saved as a package folder (older versions) is refused: save it as a single file. Subtitles should be UTF-8.
 
@@ -119,17 +119,17 @@ Drag files toward the top of the screen and the shelf opens to take them: out of
 - While it holds files a small sign stays: the newest file's icon and how many, beside the notch or in a pill under the ring icon. Point at it to see them, click to show them in Finder, and the × lets go of them all.
 - What it holds survives a restart (`shelf.json` next to the settings, the paths only). A file that was moved, renamed or deleted in the meantime is dropped from the shelf, never guessed at.
 - With Shift held the drag belongs to the wheel and the shelf steps aside.
-- To keep it away, untick **Shelf at the Top of the Screen** in the menu.
+- To keep it away, switch off **Shelf at the top of the screen** in Settings > General.
 
 Windows (above the clock) and Linux follow.
 
 ### Switching wheels in one drag
 
-**Arrow keys** while a wheel is open: Left and Right move a highlight round the wheel, Up and Down show the next or the previous set of a full wheel. Drop the file on the middle and it goes to the highlighted item; the mouse over a segment still wins. On macOS they are off until switched on in the menu under Keys > Arrow Keys on the Wheel: reading the keys while another app is in front needs Input Monitoring (System Settings > Privacy & Security), and macOS asks for it when you switch them on, never before. Windows and Linux read them always. On Wayland they work on the shortcut's wheel.
+**Arrow keys** while a wheel is open: Left and Right move a highlight round the wheel, Up and Down show the next or the previous set of a full wheel. Drop the file on the middle and it goes to the highlighted item; the mouse over a segment still wins. On macOS they are off until switched on in Settings > Wheel > Arrow keys on the wheel: reading the keys while another app is in front needs Input Monitoring (System Settings > Privacy & Security), and macOS asks for it when you switch them on, never before. Windows and Linux read them always. On Wayland they work on the shortcut's wheel.
 
 Once a wheel is open, the keys keep choosing: add Option (Alt) and it becomes the Tools wheel, press Control instead and it becomes the Actions wheel, keep only Shift and it is the formats again. With no keys held the wheel stays as it is, so they can be let go on the way to a segment. On Linux this works with X11; the Wayland shortcut opens the formats wheel only.
 
-The menu's **Keys** sets which keys open each wheel: Shift alone, Shift with Option (Alt on Windows and Linux), Shift with Control, or Off. Picking keys another wheel already has swaps the two over, so no two wheels share keys; a wheel that is Off simply doesn't open. The keys that switch an open wheel follow the same choice.
+**Keys** in Settings > Wheel sets which keys open each wheel: Shift alone, Shift with Option (Alt on Windows and Linux), Shift with Control, or Off. Picking keys another wheel already has swaps the two over, so no two wheels share keys; a wheel that is Off simply doesn't open. The keys that switch an open wheel follow the same choice.
 
 A wheel shows at most ten segments. When it has more to offer, it shows them a set at a time with **More** as the last segment: rest the file on More for a moment and the next set appears; stay there and it goes on round the sets, every 1.2 seconds. Move off More onto the item you want. A drop on More does nothing, like a drop in the middle.
 
@@ -169,37 +169,53 @@ From version 0.1.1 the app updates itself from this repo's [Releases page](https
 
 On Windows the update runs the installer in passive mode (a progress bar, no questions). On macOS the app is replaced in place. On Linux the AppImage is replaced, or the `.deb` is installed as root: the system asks for the admin password (pkexec), or if that isn't available, a plain password box appears and the password goes to `sudo`.
 
-## The menu
+## The menu and Settings
 
-The ring icon in the menu bar opens:
+The ring icon in the menu bar opens a short menu:
 
-- **Open at Login**: adds or removes Pirouette in System Settings > General > Login Items. Only works for the installed app.
-- **Shelf at the Top of the Screen**: on unless unticked (not on Wayland).
-- **Save Converted Files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
-- **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
-- **Quality**: Smaller Files, Balanced (the default, what the app always did) or Best Quality, for Pictures, Video and Audio separately. It holds for a whole drop, from when it starts.
-
-  | | Smaller Files | Balanced | Best Quality |
-  |---|---|---|---|
-  | JPEG, WebP | 75 | 90 | 97 |
-  | HEIC, AVIF | 40 | ImageMagick's own (50) | 85 |
-  | H.264 (MP4, MOV, MKV) | CRF 26 | CRF 20 | CRF 17 |
-  | VP9 (WebM) | CRF 38 | CRF 32 | CRF 26 |
-  | AVI, WMV | quantiser 5 | 3 | 2 |
-  | MP3 (VBR) | about 130 kbit/s | 190 | 245 |
-  | AAC (M4A) | 160 kbit/s | 256 | 320 |
-  | Opus, OGG | 96 kbit/s | 160 | 256 |
-  | WMA | 128 kbit/s | 192 | 256 |
-
-  Lossless formats (PNG, TIFF, WAV, FLAC, AIFF) and documents have no quality to choose. The Tools wheel's Compress keeps its own, lower settings.
-- **Highlight Color**: what colour the segment under the cursor lights up in: Orange (the default), Red, Pink, Purple, Blue, Teal, Green or Graphite. The next wheel opens in it.
-- **Wheel Glass**: on Windows and Linux, See-through (the default) or Solid, with Transparency Less, Medium or More. These systems blur nothing behind a round window, so the disc is see-through without frosting, and never less than half opaque. On macOS: Liquid Glass (the default) or No Liquid Glass, a plain solid wheel. With Liquid Glass, the Transparency slider under them sets how see-through it is, from frosted (left: the frosted material behind it and more white on the segments, easiest to read) to clear (right: no blur; the glass stays frosted only right behind each word, so the words still read). Saved when the knob is let go; the next wheel opens with it.
 - **Last: …**: how the last drop went, for when notifications are off. A click on it opens the folder with the new files selected, like a click on the notification. While a drop converts, the line shows how far it is: "Converting 3 of 10 to PNG…", with a percent for audio and video, or the time so far for a tool that doesn't report one.
 - **Stop Converting**: ends the drop being converted now. Files already done stay; the one in progress leaves nothing behind. Drops queued after it still run.
 - **Install ffmpeg…**: appears when a drop needed a converter that isn't installed, and the notification points to it. It runs `brew install` on macOS, `winget install` on Windows, or on Ubuntu and Debian `apt-get install` through pkexec (the desktop asks for the admin password) for that converter (several in a row: "Install ffmpeg and MuPDF…"), checks the app can now find it, and says so; then drop the files again. Without Homebrew it opens brew.sh. Without winget it first registers App Installer, which brings winget (Microsoft's own fix: a new Windows account gets it only some time after the first sign-in); if winget is still missing, the Microsoft Store opens on App Installer. On Windows, choosing it accepts the package's terms as typing the command would, and packages that install for all users, such as LibreOffice, still ask for admin rights. The package manager's last lines go to the log. Other Linux systems get the notification that names the command; the setup script installs everything at once.
-- **Update Converters…** (where Install works): asks the same package manager for a newer version of every converter the app finds: `brew upgrade`, `winget upgrade`, or one `apt-get install --only-upgrade` for all of them on Ubuntu and Debian (one password; apt uses the package lists the system refreshed last, which Ubuntu does daily). A converter the package manager didn't install, such as a LibreOffice downloaded from its website, is left alone, and so is the bsdtar built into macOS and Windows. The notification says which ones were updated, which were already up to date, and which were left alone. One package manager job runs at a time, so Install waits for it.
+- **Settings…** (Cmd+, on macOS): the Settings window, below.
 - **Check for Updates… / Install Update … and Restart**.
 - **Quit Pirouette** (Quit Convert Wheel on Windows and Linux).
+
+Stop Converting shows only while a drop converts, and Install only while a drop found a converter missing.
+
+The **Settings window** holds everything else, in four tabs, the same on every system. Each change is saved at once; Esc closes the window.
+
+**General**
+
+- **Open at login**: adds or removes Pirouette in System Settings > General > Login Items. Only works for the installed app.
+- **Save converted files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
+- **Shelf at the top of the screen**: on unless switched off (not on Wayland).
+- **Update Converters…** (where Install works): a button that asks the same package manager for a newer version of every converter the app finds: `brew upgrade`, `winget upgrade`, or one `apt-get install --only-upgrade` for all of them on Ubuntu and Debian (one password; apt uses the package lists the system refreshed last, which Ubuntu does daily). A converter the package manager didn't install, such as a LibreOffice downloaded from its website, is left alone, and so is the bsdtar built into macOS and Windows. The notification says which ones were updated, which were already up to date, and which were left alone. One package manager job runs at a time, so Install waits for it.
+
+**Wheel**
+
+- **Keys**: which keys open each wheel (see *Switching wheels in one drag*), and on macOS the **Arrow keys on the wheel** switch.
+- **Highlight colour**: what colour the segment under the cursor lights up in: Orange (the default), Red, Pink, Purple, Blue, Teal, Green or Graphite. The next wheel opens in it.
+- **Liquid Glass** (macOS) or **See-through** (Windows, Linux), on by default; off gives a plain solid wheel. The **Transparency** slider sets how see-through it is. On macOS it goes from frosted (left: the frosted material behind it and more white on the segments, easiest to read) to clear (right: no blur; the glass stays frosted only right behind each word, so the words still read). Windows and Linux blur nothing behind a round window, so there the disc is see-through without frosting, and never less than half opaque. Saved when the knob is let go; the next wheel opens with it.
+- **Formats on the wheel**: switch formats on or off per kind of file. Formats switched off stay off the wheel.
+
+**Quality**: Smaller Files, Balanced (the default, what the app always did) or Best Quality, for Pictures, Video and Audio separately. It holds for a whole drop, from when it starts.
+
+| | Smaller Files | Balanced | Best Quality |
+|---|---|---|---|
+| JPEG, WebP | 75 | 90 | 97 |
+| HEIC, AVIF | 40 | ImageMagick's own (50) | 85 |
+| H.264 (MP4, MOV, MKV) | CRF 26 | CRF 20 | CRF 17 |
+| VP9 (WebM) | CRF 38 | CRF 32 | CRF 26 |
+| AVI, WMV | quantiser 5 | 3 | 2 |
+| MP3 (VBR) | about 130 kbit/s | 190 | 245 |
+| AAC (M4A) | 160 kbit/s | 256 | 320 |
+| Opus, OGG | 96 kbit/s | 160 | 256 |
+| WMA | 128 kbit/s | 192 | 256 |
+
+
+Lossless formats (PNG, TIFF, WAV, FLAC, AIFF) and documents have no quality to choose. The Tools wheel's Compress keeps its own, lower settings.
+
+**About**: the version, and **Show Log**, which opens the folder with the log file.
 
 Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json` (Windows: `%APPDATA%\local.convertwheel`, Linux: `~/.config/local.convertwheel`). A settings file that can't be used is kept aside as `settings.json.bad` (or, if it can't be read at all, left alone and never saved over), and a notification says the settings were reset.
 
@@ -299,11 +315,12 @@ SECURITY.md                how to report a security problem
   src/wheel.rs             wheel geometry: which segment is under a point
   src/formats.rs           formats and tools offered per file type
   src/convert.rs           the conversions
-  src/menu.rs              menu bar icon and menu
+  src/menu.rs              menu bar icon and its short menu
   src/converters.rs        installing a missing converter from the menu
   src/reveal.rs            showing results selected in the file manager
   src/mac_notification.rs  macOS notifications, whose click shows the files
   src/settings.rs          saved choices (where files go, hidden formats)
+  src/settings_window.rs   the Settings window (src/settings.html, .css, .js)
   src/login.rs             Open at Login on each system
   src/drop_view.rs         macOS: the drop target over the wheel
   src/shelf.rs             the shelf: held files, where it goes
