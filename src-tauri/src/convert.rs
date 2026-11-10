@@ -1259,6 +1259,27 @@ const SMALLER: &[&str] = &[
 /// only tidies the file, which seldom makes it much smaller.
 const SMALLER_OLD_MUPDF: &[&str] = &["-ggg", "-z"];
 
+/// After MuPDF crashed on Smaller's full pass: the same without the deepest tidying,
+/// then only compressing the streams. Which step overflows MuPDF's stack is not known
+/// (it didn't happen on our PDFs), so each is tried in turn.
+const SMALLER_GENTLER: &[&[&str]] = &[&["-g", "-z", "-i"], &["-z"]];
+
+fn smaller_gently(mutool: &Mutool, work: &Path, out_name: &str) -> Result<(), String> {
+    for options in SMALLER_GENTLER {
+        let mut args = vec!["clean"];
+        args.extend(*options);
+        match mutool.run_failure(work, &args, &[out_name]) {
+            Ok(()) => {
+                crate::log::line(&format!("Smaller: MuPDF crashed on the full pass; done with {}", options.join(" ")));
+                return Ok(());
+            }
+            Err(f) if f.crashed => continue,
+            Err(f) => return Err(f.message),
+        }
+    }
+    Err("MuPDF crashes on this PDF, so it can't be made smaller here. The PDF itself is unchanged.".into())
+}
+
 /// Runs a Tools wheel tool on a PDF (Merge, which takes several, is `combine`).
 fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Output, String> {
     let mutool = Mutool { path: tool("mutool")?, src, deadline: Instant::now() + PDF_TOTAL };
@@ -1315,6 +1336,9 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
                     args.extend(SMALLER_OLD_MUPDF);
                     mutool.run_args(work.path(), &args, &[out_name])?;
                 }
+                // MuPDF crashed on this PDF (a Windows tester's stack overflow on some
+                // PDFs): gentler passes, each a fresh try into the same new file.
+                Err(f) if f.crashed => smaller_gently(&mutool, work.path(), out_name)?,
                 other => other.map_err(|f| f.message)?,
             }
             Ok(Output::File)
@@ -2247,11 +2271,14 @@ pub(crate) fn stop_asked() -> bool {
 struct Failure {
     message: String,
     output: String,
+    /// The tool crashed (a stack overflow or bad memory access on Windows, a signal
+    /// on macOS and Linux) rather than saying no.
+    crashed: bool,
 }
 
 impl From<String> for Failure {
     fn from(message: String) -> Self {
-        Failure { message, output: String::new() }
+        Failure { message, output: String::new(), crashed: false }
     }
 }
 
@@ -2381,7 +2408,20 @@ fn wait(child: &mut Child, name: &str, limit: Duration, errors: &mut fs::File) -
         Some(line) => format!("{name} failed: {line}"),
         None => format!("{name} failed ({status})"),
     };
-    Err(Failure { message, output: text })
+    Err(Failure { message, output: text, crashed: crashed(&status) })
+}
+
+/// Whether a tool ended by crashing: Windows' stack overflow (0xC00000FD) or bad
+/// memory access (0xC0000005), or a signal on macOS and Linux (the app's own stop
+/// never gets here).
+fn crashed(status: &std::process::ExitStatus) -> bool {
+    #[cfg(windows)]
+    return matches!(status.code().map(|c| c as u32), Some(0xC000_00FD | 0xC000_0005));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal().is_some()
+    }
 }
 
 /// "2 min", or "45 s" for less than a minute.
@@ -3879,6 +3919,14 @@ mod tests {
                 .unwrap();
             assert_eq!(String::from_utf8_lossy(&size.stdout).trim(), "1920,1080", "{target}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_crash_is_told_from_a_refusal() {
+        let status = |script: &str| Command::new("/bin/sh").args(["-c", script]).status().unwrap();
+        assert!(crashed(&status("kill -SEGV $$")));
+        assert!(!crashed(&status("exit 1")));
     }
 
     /// Needs ExifTool (and ImageMagick, ffmpeg): the date and place go into a copy,
