@@ -212,7 +212,11 @@ fn exif_args(video: bool, changes: &[(String, String)]) -> Result<Vec<String>, S
                 Some((lat, lon)) if video => {
                     args.extend([format!("-Keys:GPSCoordinates={lat:.6}, {lon:.6}"), format!("-UserData:GPSCoordinates={lat:.6}, {lon:.6}")]);
                 }
+                // XMP's copy of an old place goes, so the file holds one place: the new one.
                 Some((lat, lon)) => args.extend([
+                    "-XMP-exif:GPSLatitude=".to_string(),
+                    "-XMP-exif:GPSLongitude=".to_string(),
+                    "-XMP-exif:GPSAltitude=".to_string(),
                     format!("-GPSLatitude={:.6}", lat.abs()),
                     format!("-GPSLatitudeRef={}", if lat < 0.0 { "S" } else { "N" }),
                     format!("-GPSLongitude={:.6}", lon.abs()),
@@ -238,17 +242,38 @@ pub fn write_exif(src: &Path, out: &Path, video: bool, changes: &[(String, Strin
     if !src.is_absolute() || !out.is_absolute() {
         return Err("ExifTool is only given full paths".into());
     }
-    let mut cmd = Command::new(&exiftool);
-    // `-config ""` (it must come first): no config file, only what the app asks for.
     // `-o` writes a new file and leaves the original alone, with no backup next to it.
-    cmd.args(["-config", ""]).args(exif_args(video, changes)?).arg("-o").arg(out).arg(src);
-    run(cmd, QUICK)?;
+    let mut args = exif_args(video, changes)?;
+    args.extend(["-o".to_string(), path_text(out)?, path_text(src)?]);
+    run(with_args_file(&exiftool, out, &args)?, QUICK)?;
     let back = read_back(&exiftool, out, video).and_then(|tags| verify(&tags, video, changes));
     if let Err(e) = back {
         let _ = fs::remove_file(out);
         return Err(e);
     }
     Ok(())
+}
+
+/// An ExifTool command whose arguments are in a UTF-8 file next to `out` (`-@`), with
+/// `-charset filename=utf8`: on Windows ExifTool reads its command line in the old
+/// code page, so a file named in Cyrillic or Turkish would not be found otherwise.
+/// `-config ""` stays first on the command line: no config file, only what the app asks.
+fn with_args_file(exiftool: &Path, out: &Path, args: &[String]) -> Result<Command, String> {
+    let file = out.with_extension("exiftool-args.txt");
+    fs::write(&file, args.join("\n") + "\n").map_err(|e| format!("work file: {e}"))?;
+    let mut cmd = Command::new(exiftool);
+    cmd.args(["-config", "", "-charset", "filename=utf8", "-@"]).arg(&file);
+    Ok(cmd)
+}
+
+/// A path as text for an arguments file; one that isn't text, or that would break
+/// the file's lines, is refused.
+fn path_text(path: &Path) -> Result<String, String> {
+    let text = path.to_str().ok_or("the file name is not valid text")?;
+    if text.contains(['\n', '\r']) || text != text.trim() {
+        return Err("ExifTool can't take this file name (line breaks or spaces at its ends)".into());
+    }
+    Ok(text.to_string())
 }
 
 /// What ExifTool prints for `cmd`. The answers read here are short, so a pipe is fine.
@@ -272,14 +297,12 @@ fn version_at_least(version: &str, want: (u32, u32)) -> bool {
 
 /// The copy's date and place tags, by group and name ("GPS:GPSLatitude"), as text.
 fn read_back(exiftool: &Path, out: &Path, video: bool) -> Result<HashMap<String, String>, String> {
-    let mut cmd = Command::new(exiftool);
-    cmd.args(["-config", "", "-j", "-a", "-G1", "-n"]);
-    if video {
-        cmd.args(["-api", "QuickTimeUTC=1", "-CreationDate", "-CreateDate", "-GPSCoordinates"]);
-    } else {
-        cmd.args(["-DateTimeOriginal", "-GPS*"]);
-    }
-    let json: serde_json::Value = serde_json::from_str(&answer(cmd.arg(out))?).map_err(|e| format!("ExifTool's answer: {e}"))?;
+    let mut args: Vec<String> = ["-j", "-a", "-G1", "-n"].map(String::from).to_vec();
+    let tags: &[&str] = if video { &["-api", "QuickTimeUTC=1", "-CreationDate", "-CreateDate", "-GPSCoordinates"] } else { &["-DateTimeOriginal", "-GPS*"] };
+    args.extend(tags.iter().map(|t| t.to_string()));
+    args.push(path_text(out)?);
+    let json: serde_json::Value =
+        serde_json::from_str(&answer(&mut with_args_file(exiftool, out, &args)?)?).map_err(|e| format!("ExifTool's answer: {e}"))?;
     let tags = json.get(0).and_then(|v| v.as_object()).ok_or("ExifTool read nothing back")?;
     Ok(tags
         .iter()
@@ -586,8 +609,18 @@ mod tests {
         assert_eq!(exif_args(false, &ch("taken", "2024-05-01 12:34")).unwrap(), ["-DateTimeOriginal=2024:05:01 12:34:00", "-CreateDate=2024:05:01 12:34:00"]);
         assert_eq!(
             exif_args(false, &ch("location", "-33.86, 151.2")).unwrap(),
-            ["-GPSLatitude=33.860000", "-GPSLatitudeRef=S", "-GPSLongitude=151.200000", "-GPSLongitudeRef=E"]
+            [
+                "-XMP-exif:GPSLatitude=",
+                "-XMP-exif:GPSLongitude=",
+                "-XMP-exif:GPSAltitude=",
+                "-GPSLatitude=33.860000",
+                "-GPSLatitudeRef=S",
+                "-GPSLongitude=151.200000",
+                "-GPSLongitudeRef=E"
+            ]
         );
+        assert!(path_text(Path::new("/tmp/a\nb.jpg")).is_err());
+        assert_eq!(path_text(Path::new("/tmp/Снимка 1.jpg")).as_deref(), Ok("/tmp/Снимка 1.jpg"));
         let video = exif_args(true, &ch("location", "")).unwrap();
         assert_eq!(video[..2], ["-api", "QuickTimeUTC=1"]);
         assert!(video.iter().any(|a| a == "-Keys:GPSCoordinates="));

@@ -2420,7 +2420,8 @@ fn crashed(status: &std::process::ExitStatus) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
-        status.signal().is_some()
+        // Crashes only: not a kill from outside (out of memory, a quit).
+        matches!(status.signal(), Some(libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGABRT))
     }
 }
 
@@ -3926,6 +3927,7 @@ mod tests {
     fn a_crash_is_told_from_a_refusal() {
         let status = |script: &str| Command::new("/bin/sh").args(["-c", script]).status().unwrap();
         assert!(crashed(&status("kill -SEGV $$")));
+        assert!(!crashed(&status("kill -TERM $$")));
         assert!(!crashed(&status("exit 1")));
     }
 

@@ -219,6 +219,12 @@ fn items_for(app: &AppHandle, paths: &[String], which: Which) -> Vec<&'static st
 }
 
 pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>, which: Which) {
+    // A drag while the keyboard wheel was open: the wheel must not take the focus
+    // from the drag's own app.
+    if KEYBOARD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || give_keys_back(&handle, false));
+    }
     let pending = paths.is_empty();
     let generation = open_wheel(app, paths, false, which);
     #[cfg(any(windows, target_os = "linux"))]
@@ -261,6 +267,22 @@ pub(crate) fn open_for_keys(app: &AppHandle, paths: Vec<String>) {
     close_later(app, generation, KEYBOARD_TIMEOUT, false);
 }
 
+/// After the keyboard wheel: the wheel can't take the keys during a drag again, and
+/// on macOS (`deactivate`, when it closed) the app in front before gets them back.
+/// On the main thread.
+fn give_keys_back(app: &AppHandle, deactivate: bool) {
+    if let Some(win) = app.get_webview_window("wheel") {
+        let _ = win.set_focusable(false);
+    }
+    #[cfg(target_os = "macos")]
+    if deactivate {
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            objc2_app_kit::NSApplication::sharedApplication(mtm).deactivate();
+        }
+    }
+    let _ = deactivate;
+}
+
 /// Enter on the keyboard wheel: the picked item, as a drop on it would be. On More,
 /// the next set.
 pub(crate) fn apply_pick(app: &AppHandle) {
@@ -279,12 +301,19 @@ pub(crate) fn apply_pick(app: &AppHandle) {
     drop_on_wheel(app, Hover { segment: Some(i), hub: false }, paths);
 }
 
-/// The files a second start of the app was given (Send To, Open With), or None when
-/// it was given anything else: every argument after the program must be a file or
-/// folder that exists.
-pub(crate) fn files_in_args(args: &[String]) -> Option<Vec<String>> {
-    let given = args.get(1..)?;
-    (!given.is_empty() && given.iter().all(|a| !a.starts_with('-') && std::path::Path::new(a).exists())).then(|| given.to_vec())
+/// The files a start of the app was given (Send To, Open With), as full paths, or
+/// None when it was given anything else: every argument after the program must be a
+/// file or folder that exists. A relative one is read from `cwd`, the folder that
+/// start ran in (the running copy's own folder is another).
+pub(crate) fn files_in_args(args: &[String], cwd: &std::path::Path) -> Option<Vec<String>> {
+    let given = args.get(1..).filter(|g| !g.is_empty())?;
+    given
+        .iter()
+        .map(|a| {
+            let path = cwd.join(a);
+            (!a.starts_with('-') && path.exists()).then(|| path.to_string_lossy().into_owned())
+        })
+        .collect()
 }
 
 /// Opens the wheel from the keyboard shortcut and closes it again if no file comes.
@@ -596,13 +625,7 @@ pub fn hide_wheel(app: &AppHandle, accepted: bool, expected: Option<u64>) {
         // The keyboard wheel took the keys: the wheel can't take them during a drag
         // again, and on macOS the app in front before it gets them back.
         if keyboard {
-            if let Some(win) = handle.get_webview_window("wheel") {
-                let _ = win.set_focusable(false);
-            }
-            #[cfg(target_os = "macos")]
-            if let Some(mtm) = objc2::MainThreadMarker::new() {
-                objc2_app_kit::NSApplication::sharedApplication(mtm).deactivate();
-            }
+            give_keys_back(&handle, true);
         }
         #[cfg(target_os = "macos")]
         crate::wheel_window::close(&handle, generation);
@@ -701,10 +724,14 @@ mod arrow_tests {
         std::fs::write(&file, b"x").unwrap();
         let file = file.to_string_lossy().into_owned();
         let args = |rest: &[&str]| std::iter::once("app".to_string()).chain(rest.iter().map(|s| s.to_string())).collect::<Vec<_>>();
-        assert_eq!(files_in_args(&args(&[&file])), Some(vec![file.clone()]));
-        assert_eq!(files_in_args(&args(&[])), None);
-        assert_eq!(files_in_args(&args(&["--update"])), None);
-        assert_eq!(files_in_args(&args(&[&file, "/no/such/file"])), None);
+        let elsewhere = std::path::Path::new("/");
+        assert_eq!(files_in_args(&args(&[&file]), elsewhere), Some(vec![file.clone()]));
+        // A name alone is looked for where that start ran.
+        assert_eq!(files_in_args(&args(&["a.png"]), dir.path()), Some(vec![file.clone()]));
+        assert_eq!(files_in_args(&args(&["a.png"]), elsewhere), None);
+        assert_eq!(files_in_args(&args(&[]), elsewhere), None);
+        assert_eq!(files_in_args(&args(&["--update"]), elsewhere), None);
+        assert_eq!(files_in_args(&args(&[&file, "/no/such/file"]), elsewhere), None);
     }
 
     #[test]

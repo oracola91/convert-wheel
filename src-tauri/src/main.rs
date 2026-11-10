@@ -672,8 +672,10 @@ fn main() {
     // on first, so the running copy's keyboard wheel can come to the front instead of
     // opening behind Explorer.
     #[cfg(windows)]
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY);
+    if trigger::files_in_args(&std::env::args().collect::<Vec<_>>(), &std::env::current_dir().unwrap_or_default()).is_some() {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY);
+        }
     }
     // WebKitGTK's DMA-BUF renderer makes the wheel stutter with some Linux graphics;
     // drawing through shared memory is the usual way round it. Set before any thread
@@ -723,10 +725,10 @@ fn main() {
         // First, so a second copy hands over to the running one and quits before it
         // opens a second wheel and menu icon. `--update` from a second copy only checks:
         // installing is for the menu or a fresh start with `--update`.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             if args.iter().any(|a| a == "--update") {
                 update::check_soon(app);
-            } else if let Some(files) = trigger::files_in_args(&args) {
+            } else if let Some(files) = trigger::files_in_args(&args, std::path::Path::new(&cwd)) {
                 // Send To (Windows) or Open With (Linux) on files: the keyboard wheel.
                 trigger::open_for_keys(app, files);
             } else {
@@ -814,15 +816,16 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // Windows: the Send To entry for the keyboard wheel, kept pointing at this copy.
     #[cfg(windows)]
     {
-        let on = !app.state::<settings::Store>().get().send_to_off;
-        std::thread::spawn(move || send_to::set(on));
+        let handle = app.handle().clone();
+        std::thread::spawn(move || send_to::follow(&handle));
     }
     // Started by Send To or Open With with files (no copy was running): once the
     // wheel window is up, the keyboard wheel opens on them.
-    if let Some(files) = trigger::files_in_args(&std::env::args().collect::<Vec<_>>()) {
+    if let Some(files) = trigger::files_in_args(&std::env::args().collect::<Vec<_>>(), &std::env::current_dir().unwrap_or_default()) {
         let handle = app.handle().clone();
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(800));
+            // Long enough for the wheel's page to load and listen on a slow start.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
             trigger::open_for_keys(&handle, files);
         });
     }
