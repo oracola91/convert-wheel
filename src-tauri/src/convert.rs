@@ -162,7 +162,11 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         }
         (Some("tool:target"), Kind::Pdf) => file(size_limit().and_then(|limit| pdf_to_size(&input, &out, work.path(), limit))),
         (Some("tool:parts"), Kind::Audio | Kind::Video) => media_parts(&input, &ext, work.path()),
-        (Some("tool:info"), Kind::Image | Kind::Video) => Err("Info only reads a picture's or a video's details".to_string()),
+        // The date taken and the place, written by ExifTool into the copy.
+        (Some("tool:info"), Kind::Image | Kind::Video) => match control().and_then(|c| c.edit.clone()) {
+            Some(Edit::Info(changes)) => file(info::write_exif(&input, &out, kind == Kind::Video, &changes)),
+            _ => Err("Info opens its window from the wheel".to_string()),
+        },
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
@@ -2784,6 +2788,8 @@ pub const CONVERTERS: &[Converter] = &[
     Converter { tool: "mutool", name: "MuPDF", brew: "mupdf-tools", winget: "ArtifexSoftware.mutool", apt: "mupdf-tools" },
     // Archives. macOS and Windows have it built in; only Linux ever misses it.
     Converter { tool: "bsdtar", name: "bsdtar", brew: "libarchive", winget: "", apt: "libarchive-tools" },
+    // Info's date and place for pictures and videos (council 2026-11-10).
+    Converter { tool: "exiftool", name: "ExifTool", brew: "exiftool", winget: "OliverBetz.ExifTool", apt: "libimage-exiftool-perl" },
 ];
 
 fn converter(tool: &str) -> Option<&'static Converter> {
@@ -3875,6 +3881,53 @@ mod tests {
         }
     }
 
+    /// Needs ExifTool (and ImageMagick, ffmpeg): the date and place go into a copy,
+    /// read back by the app's own Info (ImageMagick, ffprobe), not only by ExifTool.
+    #[test]
+    fn info_writes_date_and_place_with_exiftool() {
+        if tool("exiftool").is_err() {
+            eprintln!("ExifTool isn't installed: writing the date and place not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let fact = |i: &info::Info, label: &str| i.facts.iter().find(|(l, _)| l == label).map(|(_, v)| v.clone());
+        let changed = |file: &Path, changes: Vec<(&str, &str)>| {
+            let changes = changes.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let control = Control::with_edit(Quality::default(), Some(Edit::Info(changes)));
+            under(&control, || convert(file, "tool:info", None, work.path()))
+        };
+        if let Ok(magick) = magick() {
+            let photo = work.path().join("photo.jpg");
+            let mut make = Command::new(&magick);
+            make.args(["-size", "40x30", "xc:orange"]).arg(&photo);
+            assert!(make.status().unwrap().success());
+            let out = changed(&photo, vec![("taken", "2024-05-01 12:34:56"), ("location", "48.85, -2.29")]).unwrap();
+            assert_eq!(out, work.path().join("photo (new info).jpg"));
+            let after = info::read(&out).unwrap();
+            assert_eq!(fact(&after, "Taken").as_deref(), Some("2024-05-01 12:34:56"));
+            assert_eq!(fact(&after, "Location").as_deref(), Some("48.85000, -2.29000"));
+            // The original is as it was.
+            assert_eq!(fact(&info::read(&photo).unwrap(), "Location").as_deref(), Some("none in the file"));
+            // And the place goes again, the date stays.
+            let gone = changed(&out, vec![("location", "")]).unwrap();
+            let again = info::read(&gone).unwrap();
+            assert_eq!(fact(&again, "Location").as_deref(), Some("none in the file"));
+            assert_eq!(fact(&again, "Taken").as_deref(), Some("2024-05-01 12:34:56"));
+        }
+        if tool("ffmpeg").is_ok() && tool("ffprobe").is_ok() {
+            let clip = work.path().join("clip.mp4");
+            let mut make = Command::new(tool("ffmpeg").unwrap());
+            make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=5:duration=1", "-c:v", "libx264"]).arg(&clip);
+            assert!(make.status().unwrap().success());
+            let out = changed(&clip, vec![("taken", "2024-05-01 12:34:56"), ("location", "51.50343, -0.128")]).unwrap();
+            let after = info::read(&out).unwrap();
+            assert_eq!(fact(&after, "Location").as_deref(), Some("51.50343, -0.12800"));
+            assert!(fact(&after, "Recorded").is_some_and(|r| r.starts_with("2024-05-01")), "{:?}", fact(&after, "Recorded"));
+            let gone = changed(&out, vec![("location", "")]).unwrap();
+            assert_eq!(fact(&info::read(&gone).unwrap(), "Location").as_deref(), Some("none in the file"));
+        }
+    }
+
     /// Needs ffmpeg, MuPDF and ImageMagick: a part whose tool isn't installed isn't
     /// checked, unless REQUIRE_MUTOOL asks for MuPDF.
     #[test]
@@ -3907,7 +3960,9 @@ mod tests {
                 .arg(&clip);
             assert!(make.status().unwrap().success());
             let video = info::read(&clip).unwrap();
-            assert!(video.fields.is_empty());
+            let keys: Vec<&str> = video.fields.iter().map(|f| f.key).collect();
+            assert_eq!(keys, ["taken", "location"]);
+            assert_eq!(field(&video, "location").as_deref(), Some("48.85000, 2.29000"));
             assert_eq!(fact(&video, "Title").as_deref(), Some("Holiday"));
             assert_eq!(fact(&video, "Location").as_deref(), Some("48.85000, 2.29000"));
         }
@@ -3919,8 +3974,16 @@ mod tests {
             let picture = info::read(&png).unwrap();
             assert_eq!(fact(&picture, "Size").as_deref(), Some("30 × 20 pixels"));
             assert_eq!(fact(&picture, "Location").as_deref(), Some("none in the file"));
-            assert!(picture.fields.is_empty());
+            let keys: Vec<&str> = picture.fields.iter().map(|f| f.key).collect();
+            assert_eq!(keys, ["taken", "location"]);
+            assert_eq!(field(&picture, "location").as_deref(), Some(""));
             assert!(convert(&png, "tool:info", None, work.path()).is_err());
+            // A BMP can't carry the date or place: its details are only read.
+            let bmp = work.path().join("plain.bmp");
+            let mut make = Command::new(&magick);
+            make.args(["-size", "30x20", "xc:white"]).arg(&bmp);
+            assert!(make.status().unwrap().success());
+            assert!(info::read(&bmp).unwrap().fields.is_empty());
         }
         if tool("mutool").is_ok() {
             let pdf = work.path().join("report.pdf");
