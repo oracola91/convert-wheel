@@ -323,3 +323,14 @@ svg.closing {
 .hub-picture.shown {
   opacity: 1;
 }
+
+/* Read by screen readers, not drawn. */
+.unseen {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

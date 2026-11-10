@@ -410,6 +410,7 @@ listen('wheel-show', (event) => {
   pinned = event.payload?.pinned === true;
   pinnedKeys = 'false/false';
   picked = null;
+  if (pinned && !pending) say(`Wheel open, ${formats.length} items. Left and Right choose, Enter applies, Escape closes.`);
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   const highlight = event.payload?.highlight;
   document.documentElement.dataset.highlight = HIGHLIGHTS.includes(highlight) ? highlight : 'orange';
@@ -544,9 +545,20 @@ document.addEventListener('keydown', pinnedSwitch);
 // Arrow keys: the segment they picked (any system, from its own key polling), and on
 // the shortcut's wheel, which has the keyboard (Linux), the keys themselves.
 let picked = null;
+// Spoken on the keyboard wheel: what each item is, as the hub says it.
+function itemName(f) {
+  if (f === 'more') return 'More, the next set';
+  if (Object.hasOwn(TOOLS, f)) return TOOLS[f][1];
+  return `To ${Object.hasOwn(NAMES, f) ? NAMES[f] : f.toUpperCase()}`;
+}
+function say(text) {
+  const said = document.getElementById('said');
+  if (said) said.textContent = text;
+}
 listen('wheel-pick', (event) => {
   picked = Number.isInteger(event.payload) ? event.payload : null;
   if (open && lastHover) show(lastHover);
+  if (picked !== null && formats[picked]) say(`${itemName(formats[picked])}, ${picked + 1} of ${formats.length}`);
 });
 const ARROWS = { ArrowLeft: 0, ArrowRight: 1, ArrowUp: 2, ArrowDown: 3 };
 document.addEventListener('keydown', (event) => {
