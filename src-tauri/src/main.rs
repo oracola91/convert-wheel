@@ -667,6 +667,14 @@ fn cli(args: &[String]) -> i32 {
 }
 
 fn main() {
+    // Windows: a copy started by Send To (from File Explorer, so allowed to come to the
+    // front) only hands its files to the running copy and quits. It passes that right
+    // on first, so the running copy's keyboard wheel can come to the front instead of
+    // opening behind Explorer.
+    #[cfg(windows)]
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY);
+    }
     // WebKitGTK's DMA-BUF renderer makes the wheel stutter with some Linux graphics;
     // drawing through shared memory is the usual way round it. Set before any thread
     // starts; a value the user set still wins.
