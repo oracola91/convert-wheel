@@ -3,6 +3,7 @@ name = "convert-wheel"
 version = "0.2.1"
 description = "Hold Shift while dragging a file to pick a format to convert it to"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [build-dependencies]
