@@ -14,7 +14,6 @@ mod float_web;
 mod hub_picture;
 mod shelf_web;
 mod formats;
-#[cfg(target_os = "macos")]
 // Tested everywhere; used on Linux only.
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
