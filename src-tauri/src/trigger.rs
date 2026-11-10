@@ -329,6 +329,23 @@ fn step(picked: Option<usize>, n: usize, clockwise: bool) -> usize {
     }
 }
 
+/// Whether a drop here would do something: on a segment, or on the hub once the arrow
+/// keys picked one. The drop targets (macOS, Windows) take the file only then, so
+/// anywhere else the system slides it back.
+#[cfg(any(target_os = "macos", windows))]
+pub(crate) fn accepts_drop(app: &AppHandle, hover: Hover) -> bool {
+    with_pick(app, hover).segment.is_some()
+}
+
+/// macOS: the drag ended over the wheel without a drop, for example Esc: the wheel
+/// closes now, not only once the mouse button goes up. After a drop it closed already,
+/// so this does nothing then.
+#[cfg(target_os = "macos")]
+pub(crate) fn drag_ended_on_wheel(app: &AppHandle) {
+    let generation = app.state::<WheelState>().generation();
+    hide_wheel(app, false, Some(generation));
+}
+
 /// A drop on the hub goes to the segment the arrow keys picked.
 fn with_pick(app: &AppHandle, hover: Hover) -> Hover {
     if hover.segment.is_none() && hover.hub {
