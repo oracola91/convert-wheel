@@ -337,7 +337,8 @@ function show(raw) {
   } else if (formats.length === 0) {
     hubLabel.textContent = { tools: 'No tools', actions: 'No actions' }[wheel] ?? 'No formats';
   } else if (pinned) {
-    hubLabel.textContent = 'Esc to close';
+    // The keyboard wheel (or the shortcut's, with files over it).
+    hubLabel.textContent = '← → then Enter';
   } else {
     const count = paths.length === 1 ? '1 file' : `${paths.length} files`;
     if (bytes === null) hubLabel.textContent = count;
@@ -522,6 +523,11 @@ function cancel() {
 }
 document.addEventListener('keydown', (event) => {
   if (open && pinned && event.key === 'Escape') cancel();
+  // The keyboard wheel: Enter applies the item the arrow keys picked.
+  if (open && pinned && event.key === 'Enter') {
+    event.preventDefault();
+    invoke('wheel_enter').catch(() => {});
+  }
 });
 // The shortcut's wheel has the keyboard (Linux): Alt and Control switch wheels, as
 // Option and Control do during a Shift+drag.

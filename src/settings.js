@@ -85,7 +85,20 @@ function general(v) {
   if (v.shelf !== null) {
     rows.push(row('Shelf at the top of the screen', toggle('shelf', v.shelf, (e) => change({ what: 'shelf', on: e.target.checked })), 'Holds files you drag to the top of the screen, to drag out later.'));
   }
-  const parts = [h('p', { class: 'lead' }, `Hold ${keyName(v, 'shift')} while dragging a file to open the wheel.`), group('', ...rows)];
+  // The keyboard wheel: how each system hands it the selected files.
+  const entry = {
+    macos: ['Finder: right-click > Services > Open in Pirouette Wheel', 'Set a key for it in System Settings > Keyboard > Keyboard Shortcuts > Services. Then ← → pick, Enter applies, Esc closes.'],
+    windows: ['File Explorer: right-click > Send to > Convert Wheel', 'Then ← → pick, Enter applies, Esc closes.'],
+    linux: ['Files: right-click > Open With > Convert Wheel', 'Then ← → pick, Enter applies, Esc closes.'],
+  }[v.system];
+  const keyboardRow = v.send_to !== null
+    ? row(entry[0], toggle('send-to', v.send_to, (e) => change({ what: 'send-to', on: e.target.checked })), entry[1])
+    : row(entry[0], h('span', { class: 'note' }, ''), entry[1]);
+  const parts = [
+    h('p', { class: 'lead' }, `Hold ${keyName(v, 'shift')} while dragging a file to open the wheel.`),
+    group('', ...rows),
+    group('Open the wheel from the keyboard', keyboardRow),
+  ];
   if (v.converters) {
     const button = h(
       'button',

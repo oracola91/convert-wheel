@@ -133,6 +133,16 @@ Once a wheel is open, the keys keep choosing: add Option (Alt) and it becomes th
 
 A wheel shows at most ten segments. When it has more to offer, it shows them a set at a time with **More** as the last segment: rest the file on More for a moment and the next set appears; stay there and it goes on round the sets, every 1.2 seconds. Move off More onto the item you want. A drop on More does nothing, like a drop in the middle.
 
+### The wheel from the keyboard
+
+Select files in the file manager and hand them to the wheel, no drag needed:
+
+- **macOS**: Finder's right-click > Services > **Open in Pirouette Wheel** (also in the app menus' Services). Finder hands over the files itself, so Pirouette asks for no permission. A key for it can be set in System Settings > Keyboard > Keyboard Shortcuts > Services (Files and Folders).
+- **Windows**: File Explorer's right-click > **Send to > Convert Wheel**: a shortcut in your own SendTo folder, made at start and switched off in Settings > General.
+- **Linux**: Files' right-click > **Open With** > Convert Wheel (the app's own desktop entry lists the file types it takes).
+
+The wheel opens in the middle with the keyboard: Left and Right pick a segment, Up and Down show the next or previous set, **Enter** applies the picked item, **Esc** closes, and Option (Alt) or Control held switch to the Tools or Actions wheel as during a drag. It closes by itself after a minute. On macOS the keys need no Input Monitoring here: the wheel has the keyboard itself. (Council 2026-11-10: the system hands over the selection; no global hotkey and no reading of another app's selection.)
+
 ## On Windows and Linux
 
 Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS:
@@ -321,6 +331,8 @@ SECURITY.md                how to report a security problem
   src/mac_notification.rs  macOS notifications, whose click shows the files
   src/settings.rs          saved choices (where files go, hidden formats)
   src/settings_window.rs   the Settings window (src/settings.html, .css, .js)
+  src/services.rs          macOS Services entry for the keyboard wheel
+  src/send_to.rs           Windows Send To entry for the keyboard wheel
   src/login.rs             Open at Login on each system
   src/drop_view.rs         macOS: the drop target over the wheel
   src/shelf.rs             the shelf: held files, where it goes

@@ -112,6 +112,9 @@ pub struct Settings {
     /// Wheel). Off unless switched on there, as reading them needs Input Monitoring.
     /// Windows and Linux read them always.
     pub arrow_keys: bool,
+    /// Windows: the "Send to" entry for the keyboard wheel is taken out (it is there
+    /// unless switched off in Settings).
+    pub send_to_off: bool,
 }
 
 /// The keys held with Shift that open a wheel: Shift alone, with Option (Alt on Windows
