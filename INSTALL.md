@@ -27,7 +27,7 @@ brew install ffmpeg imagemagick pandoc mupdf-tools
 brew install --cask libreoffice
 ```
 
-Or install only the ones you need, when you need them: when a drop needs a missing one, the menu offers **Install …** and runs the same `brew install` for you.
+Or install only the ones you need, when you need them: when a drop needs a missing one, the menu offers **Install …** and runs the same `brew install` for you. ExifTool (`brew install exiftool`) is only needed to change a picture's or video's date and place in Info; the menu offers it the same way.
 
 **2. The app:** open the `.dmg` and drag Pirouette onto Applications. If an older Convert Wheel is there, delete it: it is the same app under its old name.
 

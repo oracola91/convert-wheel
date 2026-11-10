@@ -1,5 +1,6 @@
 // The Info window: what a file says about itself, to read, and for a sound file or a
-// PDF its tags, to change. The app reads the file; this page sends back only the tags
+// PDF its tags, to change; for a picture or a video its date taken and its place
+// (written by ExifTool). The app reads the file; this page sends back only the tags
 // that changed, which the app checks and writes into a copy next to the file
 // (src-tauri/src/convert/info.rs).
 if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
@@ -66,7 +67,7 @@ function build() {
     facts.append(dt, dd);
   }
   const fields = $('fields');
-  for (const { key, label, value } of session.fields) {
+  for (const { key, label, value, hint } of session.fields) {
     const name = document.createElement('label');
     name.htmlFor = `tag-${key}`;
     name.textContent = label;
@@ -74,13 +75,16 @@ function build() {
     input.id = `tag-${key}`;
     input.value = value;
     input.maxLength = 1000;
+    if (hint) input.placeholder = hint;
     input.autocomplete = 'off';
     input.addEventListener('input', show);
     fields.append(name, input);
     boxes.push({ key, value, input });
   }
   if (boxes.length > 0) {
-    $('hint').textContent = 'The new tags go into a copy next to the file.';
+    $('hint').textContent = session.what === 'picture' || session.what === 'video'
+      ? 'The new date and place go into a copy next to the file. Empty the Location box to take the place out.'
+      : 'The new tags go into a copy next to the file.';
     boxes[0].input.focus();
   } else {
     $('hint').textContent = `A ${session.what}'s details can only be read here.`;
@@ -100,7 +104,7 @@ async function load() {
   const valid = session
     && session.kind === 'info' && text(session.what)
     && Array.isArray(session.facts) && session.facts.every((f) => Array.isArray(f) && f.length === 2 && f.every(text))
-    && Array.isArray(session.fields) && session.fields.every((f) => f && text(f.key) && text(f.label) && text(f.value));
+    && Array.isArray(session.fields) && session.fields.every((f) => f && text(f.key) && text(f.label) && text(f.value) && (f.hint === undefined || text(f.hint)));
   if (!valid) {
     session = null;
     show();
