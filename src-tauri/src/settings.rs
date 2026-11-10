@@ -108,6 +108,10 @@ pub struct Settings {
     pub transparency: Transparency,
     /// Which keys open each wheel, from the menu's Keys.
     pub keys: Keys,
+    /// The arrow keys move the wheel's highlight (macOS, Keys > Arrow Keys on the
+    /// Wheel). Off unless switched on there, as reading them needs Input Monitoring.
+    /// Windows and Linux read them always.
+    pub arrow_keys: bool,
 }
 
 /// The keys held with Shift that open a wheel: Shift alone, with Option (Alt on Windows
@@ -434,6 +438,15 @@ mod tests {
         let off = Settings { shelf_off: true, ..Settings::default() };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
         assert!(back.shelf_off);
+    }
+
+    #[test]
+    fn the_arrow_keys_are_off_unless_switched_on() {
+        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
+        assert!(!old.arrow_keys);
+        let on = Settings { arrow_keys: true, ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert!(back.arrow_keys);
     }
 
     #[test]
