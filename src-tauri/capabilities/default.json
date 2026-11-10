@@ -1,10 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The wheel and the editor only listen to events and call the app's own commands",
+  "description": "The app's own pages (wheel, editor, settings, shelf) only listen to events and call the app's own commands",
   "windows": [
     "wheel",
-    "editor"
+    "editor",
+    "settings",
+    "shelf"
   ],
   "permissions": [
     "core:event:allow-listen",

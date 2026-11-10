@@ -15,7 +15,6 @@ mod hub_picture;
 mod shelf_web;
 mod formats;
 #[cfg(target_os = "macos")]
-mod glass_slider;
 // Tested everywhere; used on Linux only.
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -29,6 +28,7 @@ mod mac_notification;
 mod menu;
 mod reveal;
 mod settings;
+mod settings_window;
 mod shelf;
 #[cfg(target_os = "macos")]
 mod shelf_window;
@@ -727,7 +727,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
+        .invoke_handler(tauri::generate_handler![settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
@@ -780,7 +780,6 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     {
         let mtm = objc2::MainThreadMarker::new().ok_or("setup isn't on the main thread")?;
         wheel_window::install(app.handle(), mtm)?;
-        glass_slider::install(app.handle(), mtm);
         drop_view::install(app.handle())?;
         shelf_window::install(app.handle(), mtm);
     }

@@ -378,13 +378,13 @@ pub fn update(app: &AppHandle) {
     }
     let app = app.clone();
     thread::spawn(move || {
-        menu::show_converter_update(&app, true);
+        crate::settings_window::converters_running(&app, true);
         let found: Vec<&'static Converter> = convert::CONVERTERS.iter().filter(|c| updatable(c) && convert::installed(c)).collect();
         log::line(&format!("updating converters: {}", names(&found)));
         let pm = get_package_manager();
         let report = pm.as_deref().map(|pm| update_all(pm, &found));
         INSTALLING.store(false, Ordering::SeqCst);
-        menu::show_converter_update(&app, false);
+        crate::settings_window::converters_running(&app, false);
         show(&app);
         match report {
             None => no_package_manager(&app, "update the converters"),

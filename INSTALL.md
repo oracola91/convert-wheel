@@ -43,7 +43,7 @@ xattr -dr com.apple.quarantine "/Applications/Pirouette.app"
 
 **Update:** the app updates itself (menu > Install Update). By hand: install the new `.dmg` the same way, or run the script again. A copy that updated itself from 0.2.x keeps its old folder name, `Convert Wheel.app`, but shows Pirouette inside; the script replaces it with `Pirouette.app`.
 
-**Uninstall:** turn off Open at Login in the menu, quit, and delete Pirouette (or Convert Wheel) from Applications. Its settings, working files and log are in `~/Library/Application Support/local.convertwheel`, `~/Library/Caches/local.convertwheel` and `~/Library/Logs/local.convertwheel`; delete them too for a clean removal.
+**Uninstall:** turn off Open at login in Settings, quit, and delete Pirouette (or Convert Wheel) from Applications. Its settings, working files and log are in `~/Library/Application Support/local.convertwheel`, `~/Library/Caches/local.convertwheel` and `~/Library/Logs/local.convertwheel`; delete them too for a clean removal.
 
 ## Windows
 

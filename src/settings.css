@@ -1,0 +1,357 @@
+/* The Settings window: tabs at the top, then groups of rows, each a label on the left
+   and its control on the right, as in the system's own settings. */
+:root {
+  --window: #f5f5f7;
+  --group: #ffffff;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --line: rgba(0, 0, 0, 0.08);
+  --button: rgba(0, 0, 0, 0.06);
+  --button-hover: rgba(0, 0, 0, 0.10);
+  --picked: #ffffff;
+  --picked-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --accent: #c2410c;
+  /* Words on the accent: white on the dark orange, near-black on the light one. */
+  --on-accent: #ffffff;
+  --focus: #0a66d8;
+  --field: #ffffff;
+  --field-edge: rgba(0, 0, 0, 0.16);
+  --problem: #b3261e;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --window: #1c1c1e;
+    --group: #2c2c2e;
+    --text: #f5f5f7;
+    --muted: #aeaeb2;
+    --line: rgba(255, 255, 255, 0.08);
+    --button: rgba(255, 255, 255, 0.08);
+    --button-hover: rgba(255, 255, 255, 0.14);
+    --picked: #636366;
+    --picked-shadow: none;
+    --accent: #ff8a3d;
+    --on-accent: #1d1d1f;
+    --focus: #4c9bff;
+    --field: #1c1c1e;
+    --field-edge: rgba(255, 255, 255, 0.16);
+    --problem: #ff6961;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--window);
+  color: var(--text);
+  font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Tabs: one segmented control, centred. */
+#tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  padding: 14px 16px 10px;
+  background: var(--window);
+}
+
+#tabs [role="tab"] {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 5px 16px;
+  background: var(--button);
+  color: var(--text);
+  font: inherit;
+  cursor: default;
+}
+
+#tabs [role="tab"]:first-child {
+  border-radius: 7px 0 0 7px;
+}
+
+#tabs [role="tab"]:last-child {
+  border-radius: 0 7px 7px 0;
+}
+
+#tabs [role="tab"][aria-selected="true"] {
+  background: var(--picked);
+  box-shadow: var(--picked-shadow);
+  font-weight: 600;
+}
+
+main {
+  padding: 4px 20px 24px;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+h2 {
+  margin: 18px 4px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.group {
+  background: var(--group);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 40px;
+  padding: 8px 14px;
+}
+
+.row + .row {
+  border-top: 1px solid var(--line);
+}
+
+.row > .label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A row whose control is wide (the format chips): the name on top. */
+.row.stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.row.stack .chips {
+  justify-content: flex-start;
+}
+
+.note {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.lead {
+  margin: 4px 4px 0;
+  color: var(--muted);
+}
+
+/* A switch: a checkbox drawn as the systems draw theirs. */
+input[type="checkbox"].switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border-radius: 10px;
+  background: var(--button-hover);
+  transition: background 0.15s;
+}
+
+input[type="checkbox"].switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s;
+}
+
+input[type="checkbox"].switch:checked {
+  background: var(--accent);
+}
+
+input[type="checkbox"].switch:checked::after {
+  transform: translateX(14px);
+}
+
+input:disabled {
+  opacity: 0.45;
+}
+
+select,
+button.action {
+  font: inherit;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--field-edge);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+button.action {
+  background: var(--button);
+  border-color: transparent;
+  padding: 5px 12px;
+}
+
+button.action:hover:not(:disabled) {
+  background: var(--button-hover);
+}
+
+button.action:disabled {
+  opacity: 0.55;
+}
+
+/* A choice of two to four: a small segmented control of radio buttons. */
+.segments {
+  display: inline-flex;
+  flex: none;
+  border-radius: 7px;
+  background: var(--button);
+  padding: 2px;
+}
+
+.segments label {
+  position: relative;
+  padding: 3px 10px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.segments input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+}
+
+.segments label:has(input:checked) {
+  background: var(--picked);
+  box-shadow: var(--picked-shadow);
+  font-weight: 600;
+}
+
+.segments label:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* Highlight colours: round swatches. */
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.swatches label {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+}
+
+.swatches input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+}
+
+.swatches label:has(input:checked) {
+  box-shadow: 0 0 0 2px var(--window), 0 0 0 4px var(--text);
+}
+
+.swatches label:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+}
+
+/* Formats on the wheel: chips per kind of file. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.chips label {
+  position: relative;
+  padding: 3px 9px;
+  border-radius: 12px;
+  background: var(--button);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chips input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+}
+
+.chips label:has(input:checked) {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.chips label:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+input[type="range"] {
+  width: 180px;
+  accent-color: var(--accent);
+}
+
+.ends {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+#about .group {
+  padding: 18px;
+  text-align: center;
+}
+
+#about h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+#about p {
+  margin: 4px 0 14px;
+  color: var(--muted);
+}
+
+#problem {
+  margin: 14px 4px 0;
+  color: var(--problem);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  input[type="checkbox"].switch,
+  input[type="checkbox"].switch::after {
+    transition: none;
+  }
+}
