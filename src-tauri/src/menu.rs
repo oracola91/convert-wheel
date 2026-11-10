@@ -27,6 +27,9 @@ const INSTALL: &str = "install";
 /// Where the Install item goes while converters are missing: under Stop Converting.
 const INSTALL_AT: usize = 4;
 const UPDATE: &str = "update";
+/// Newer versions of the converters, from the package manager that installed them.
+const UPDATE_CONVERTERS: &str = "update-converters";
+const UPDATE_CONVERTERS_LABEL: &str = "Update Converters…";
 const TOOLTIP: &str = "Convert Wheel: hold Shift while dragging a file";
 const SHOW_LOG: &str = "log";
 /// Longest "Last: …" line, so the menu stays a sensible width.
@@ -76,6 +79,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
     // Only in the menu once a drop found a converter missing; see show_install.
     let install = MenuItem::with_id(app, INSTALL, "Install", true, None::<&str>)?;
     let update = MenuItem::with_id(app, UPDATE, "Check for Updates…", true, None::<&str>)?;
+    let update_converters = MenuItem::with_id(app, UPDATE_CONVERTERS, UPDATE_CONVERTERS_LABEL, true, None::<&str>)?;
     let show_log = MenuItem::with_id(app, SHOW_LOG, "Show Log", true, None::<&str>)?;
 
     let login_label = if login::available() { "Open at Login" } else { "Open at Login (installed app only)" };
@@ -150,7 +154,12 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, QUIT, "Quit Convert Wheel", true, Some("CmdOrCtrl+Q"))?;
     let sep = || PredefinedMenuItem::separator(app);
     let (separator, separator2) = (sep()?, sep()?);
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&title, &hint, &last, &stop, &separator, &update, &login];
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![&title, &hint, &last, &stop, &separator, &update];
+    // Where the menu can install converters, it can update them too.
+    if converters::available() {
+        items.push(&update_converters);
+    }
+    items.push(&login);
     // Every system with a shelf: not Wayland, which places no window at the top.
     let shelf = CheckMenuItem::with_id(app, SHELF, "Shelf at the Top of the Screen", true, !current.shelf_off, None::<&str>)?;
     #[cfg(target_os = "linux")]
@@ -255,6 +264,13 @@ fn set_tooltip(app: &AppHandle, text: &str) {
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(text));
     }
+}
+
+/// "Updating Converters…", greyed out, while the package manager runs; the menu item
+/// again after.
+pub fn show_converter_update(app: &AppHandle, running: bool) {
+    let text = if running { "Updating Converters…" } else { UPDATE_CONVERTERS_LABEL };
+    set_text(app, UPDATE_CONVERTERS, text, !running);
 }
 
 /// Offers to install the converters drops found missing (`text` such as "Install
@@ -383,6 +399,7 @@ fn on_event(app: &AppHandle, event: MenuEvent) {
         LAST => reveal::show_last(app),
         STOP => crate::stop_converting(app),
         INSTALL => converters::install(app),
+        UPDATE_CONVERTERS => converters::update(app),
         UPDATE => {
             if update::pending(app).is_some() {
                 update::install_soon(app);
