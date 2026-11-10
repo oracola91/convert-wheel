@@ -259,6 +259,13 @@ impl Running {
 
 /// Longer file names are cut in the progress line, so the percent after them still
 /// fits in the menu.
+/// The name people see in the menu, the tooltip and notifications. macOS ships as
+/// Pirouette from 0.3.0. Windows and Linux keep Convert Wheel for now, as their
+/// installers do (`productName` in tauri.windows.conf.json and tauri.linux.conf.json):
+/// a renamed installer there would add a second copy next to the old one (Windows) or
+/// clash with the old package over /usr/bin/convert-wheel (Linux).
+pub(crate) const APP_NAME: &str = if cfg!(target_os = "macos") { "Pirouette" } else { "Convert Wheel" };
+
 const NAME_MAX_CHARS: usize = 32;
 
 /// How much of a QR code's text the notification shows; all of it is copied.
@@ -358,7 +365,7 @@ fn send_job(app: &AppHandle, job: Job) {
     if app.state::<Sender<Job>>().send(job).is_err() {
         JOBS.fetch_sub(1, Ordering::SeqCst);
         log::line("conversion worker is gone; drop not converted");
-        notify(app, "Convert Wheel stopped converting", "Quit Convert Wheel and open it again.");
+        notify(app, &format!("{APP_NAME} stopped converting"), &format!("Quit {APP_NAME} and open it again."));
     }
 }
 
@@ -382,7 +389,7 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
                     convert::under(&running.control, || run_job(app, &job, running))
                 }))
                 .unwrap_or_else(|_| {
-                    let body = "Convert Wheel hit an internal error.".to_string();
+                    let body = format!("{APP_NAME} hit an internal error.");
                     (format!("Couldn't {} the files", running.words.verb), body, Vec::new())
                 });
                 drop(finished);
@@ -703,7 +710,7 @@ fn main() {
             if args.iter().any(|a| a == "--update") {
                 update::check_soon(app);
             } else {
-                notify(app, "Convert Wheel is already running", "Hold Shift while dragging a file to open the wheel.");
+                notify(app, &format!("{APP_NAME} is already running"), "Hold Shift while dragging a file to open the wheel.");
             }
         }))
         .plugin(tauri_plugin_notification::init())
@@ -716,7 +723,7 @@ fn main() {
             // would vanish without a word.
             setup(app).map_err(|e| {
                 log::line(&format!("couldn't start: {e}"));
-                notify(app.handle(), "Convert Wheel couldn't start", &e.to_string());
+                notify(app.handle(), &format!("{APP_NAME} couldn't start"), &e.to_string());
                 e
             })
         })
@@ -786,7 +793,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     trigger::start(app.handle().clone());
     update::start(app.handle().clone());
     if let Some(problem) = settings_problem {
-        notify(app.handle(), "Convert Wheel settings", &problem);
+        notify(app.handle(), &format!("{APP_NAME} settings"), &problem);
     }
     if std::env::args().any(|a| a == "--update") {
         update::install_soon(app.handle());

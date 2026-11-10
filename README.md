@@ -1,4 +1,6 @@
-# Convert Wheel
+# Pirouette
+
+Called Convert Wheel before 0.3.0. On Windows and Linux it still installs under that name for now, so updates there keep replacing the old copy.
 
 Hold Shift while dragging a file. A wheel of formats appears under the cursor. Drop the file on a format to convert it.
 
@@ -171,7 +173,7 @@ On Windows the update runs the installer in passive mode (a progress bar, no que
 
 The ring icon in the menu bar opens:
 
-- **Open at Login**: adds or removes Convert Wheel in System Settings > General > Login Items. Only works for the installed app.
+- **Open at Login**: adds or removes Pirouette in System Settings > General > Login Items. Only works for the installed app.
 - **Shelf at the Top of the Screen**: on unless unticked (not on Wayland).
 - **Save Converted Files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
 - **Formats on the Wheel**: tick or untick formats per kind of file. Unticked formats stay off the wheel.
@@ -197,7 +199,7 @@ The ring icon in the menu bar opens:
 - **Install ffmpeg…**: appears when a drop needed a converter that isn't installed, and the notification points to it. It runs `brew install` on macOS, `winget install` on Windows, or on Ubuntu and Debian `apt-get install` through pkexec (the desktop asks for the admin password) for that converter (several in a row: "Install ffmpeg and MuPDF…"), checks the app can now find it, and says so; then drop the files again. Without Homebrew it opens brew.sh. Without winget it first registers App Installer, which brings winget (Microsoft's own fix: a new Windows account gets it only some time after the first sign-in); if winget is still missing, the Microsoft Store opens on App Installer. On Windows, choosing it accepts the package's terms as typing the command would, and packages that install for all users, such as LibreOffice, still ask for admin rights. The package manager's last lines go to the log. Other Linux systems get the notification that names the command; the setup script installs everything at once.
 - **Update Converters…** (where Install works): asks the same package manager for a newer version of every converter the app finds: `brew upgrade`, `winget upgrade`, or one `apt-get install --only-upgrade` for all of them on Ubuntu and Debian (one password; apt uses the package lists the system refreshed last, which Ubuntu does daily). A converter the package manager didn't install, such as a LibreOffice downloaded from its website, is left alone, and so is the bsdtar built into macOS and Windows. The notification says which ones were updated, which were already up to date, and which were left alone. One package manager job runs at a time, so Install waits for it.
 - **Check for Updates… / Install Update … and Restart**.
-- **Quit Convert Wheel**.
+- **Quit Pirouette** (Quit Convert Wheel on Windows and Linux).
 
 Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json` (Windows: `%APPDATA%\local.convertwheel`, Linux: `~/.config/local.convertwheel`). A settings file that can't be used is kept aside as `settings.json.bad` (or, if it can't be read at all, left alone and never saved over), and a notification says the settings were reset.
 
