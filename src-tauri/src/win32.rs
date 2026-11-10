@@ -273,12 +273,13 @@ impl WheelDropTarget {
         wheel::hover_at(x - wheel::SIZE / 2.0, wheel::SIZE / 2.0 - y, n)
     }
 
-    /// Lights up what is under the cursor and accepts the drop only over a format, and
-    /// only as a copy the source allows (`allowed` is what Windows passed in).
+    /// Lights up what is under the cursor and accepts the drop only over a format (or on
+    /// the middle once the arrow keys picked one), and only as a copy the source allows
+    /// (`allowed` is what Windows passed in).
     fn track(&self, pt: &POINTL, allowed: DROPEFFECT) -> DROPEFFECT {
         let hover = self.hover_at(pt);
         self.set_hover(hover);
-        if hover.segment.is_some() && self.has_files.get() && (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY {
+        if trigger::accepts_drop(&self.app, hover) && self.has_files.get() && (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY {
             DROPEFFECT_COPY
         } else {
             DROPEFFECT_NONE

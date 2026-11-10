@@ -52,8 +52,13 @@ define_class!(
         }
 
         #[unsafe(method(draggingExited:))]
-        fn dragging_exited(&self, _sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+        fn dragging_exited(&self, sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
             self.set_hover(Hover::NONE);
+            // Leaving the wheel happens at its edge. Exited with the file still inside
+            // means the drag was called off over it (Esc), so the wheel goes too.
+            if sender.is_some_and(|s| self.inside(s)) {
+                trigger::drag_ended_on_wheel(&self.ivars().app);
+            }
         }
 
         #[unsafe(method(prepareForDragOperation:))]
@@ -74,6 +79,8 @@ define_class!(
         #[unsafe(method(draggingEnded:))]
         fn dragging_ended(&self, _sender: &ProtocolObject<dyn NSDraggingInfo>) {
             self.forget_hover();
+            // The drag is over (dropped, or called off with Esc): no wheel without it.
+            trigger::drag_ended_on_wheel(&self.ivars().app);
         }
     }
 );
@@ -91,12 +98,22 @@ impl DropView {
         wheel::hover_at(p.x - size.width / 2.0, p.y - size.height / 2.0, n)
     }
 
-    /// Lights up the segment under the cursor and accepts the drop only there. Anywhere
-    /// else (the middle, the corners) the drop is refused, so macOS slides the file back.
+    /// Whether the dragged file is over this view (the wheel's square window).
+    fn inside(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+        let p = self.convertPoint_fromView(sender.draggingLocation(), None);
+        let size = self.bounds().size;
+        (1.0..size.width - 1.0).contains(&p.x) && (1.0..size.height - 1.0).contains(&p.y)
+    }
+
+    /// Lights up the segment under the cursor and accepts the drop only there, or on
+    /// the middle once the arrow keys picked a segment. Anywhere else (the middle with
+    /// nothing picked, the corners) the drop is refused, so macOS slides the file back.
+    /// macOS asks again every moment while the file rests, so a pick made with the
+    /// file already on the middle counts too.
     fn track(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
         let hover = self.hover(sender);
         self.set_hover(hover);
-        if hover.segment.is_some() {
+        if trigger::accepts_drop(&self.ivars().app, hover) {
             NSDragOperation::Copy
         } else {
             NSDragOperation::None
