@@ -289,7 +289,11 @@ fn read_back(exiftool: &Path, out: &Path, video: bool) -> Result<HashMap<String,
 
 /// Whether the copy says what the window asked for.
 fn verify(tags: &HashMap<String, String>, video: bool, changes: &[(String, String)]) -> Result<(), String> {
-    let named = |name: &str| -> Vec<&String> { tags.iter().filter(|(k, _)| k.rsplit(':').next() == Some(name)).map(|(_, v)| v).collect() };
+    // Composite tags are ExifTool's own sums of the others (some versions list them
+    // for "-GPS*"), not places stored in the file.
+    let named = |name: &str| -> Vec<&String> {
+        tags.iter().filter(|(k, _)| !k.starts_with("Composite:") && k.rsplit(':').next() == Some(name)).map(|(_, v)| v).collect()
+    };
     let near = |(a, b): (f64, f64), (c, d): (f64, f64)| (a - c).abs() < 1e-4 && (b - d).abs() < 1e-4;
     for (key, value) in changes {
         match key.as_str() {
@@ -598,6 +602,10 @@ mod tests {
         let photo = tags(&[("ExifIFD:DateTimeOriginal", "2024:05:01 12:34:56"), ("GPS:GPSLatitude", "48.85"), ("GPS:GPSLatitudeRef", "N"), ("GPS:GPSLongitude", "2.29"), ("GPS:GPSLongitudeRef", "W")]);
         assert!(verify(&photo, false, &ch("taken", "2024-05-01 12:34:56")).is_ok());
         assert!(verify(&photo, false, &ch("location", "48.85, -2.29")).is_ok());
+        let mut with_sums = photo.clone();
+        with_sums.insert("Composite:GPSLatitude".into(), "48.85".into());
+        with_sums.insert("Composite:GPSLongitude".into(), "-2.29".into());
+        assert!(verify(&with_sums, false, &ch("location", "48.85, -2.29")).is_ok());
         assert!(verify(&photo, false, &ch("location", "48.85, 2.29")).is_err());
         assert!(verify(&photo, false, &ch("location", "")).is_err());
         assert!(verify(&tags(&[]), false, &ch("location", "")).is_ok());
