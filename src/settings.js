@@ -119,7 +119,15 @@ function general(v) {
       },
       updating ? 'Updating…' : 'Update Converters…',
     );
-    parts.push(group('Converters', row('Newer versions of ffmpeg, ImageMagick and the others', button, 'Only those the package manager installed. A notification says what changed.')));
+    const names = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0]);
+    const installRow = v.missing.length > 0
+      ? row(
+        `Not installed: ${names(v.missing)}`,
+        h('button', { type: 'button', class: 'action', id: 'install-all', onclick: () => invoke('settings_action', { action: 'install-all' }).catch((e) => showProblem(String(e))) }, 'Install Missing Converters…'),
+        'All of them in one go (LibreOffice is a large download). A notification says when they are in.',
+      )
+      : row('All converters are installed', h('span', { class: 'note' }, ''));
+    parts.push(group('Converters', installRow, row('Newer versions of ffmpeg, ImageMagick and the others', button, 'Only those the package manager installed. A notification says what changed.')));
   }
   return parts;
 }
