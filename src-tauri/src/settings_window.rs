@@ -278,8 +278,9 @@ fn apply(app: &AppHandle, change: Change) -> Result<(), String> {
         }
         Change::Keys { .. } => crate::wheel::set_keys(saved.keys),
         #[cfg(windows)]
-        Change::SendTo { on } => {
-            std::thread::spawn(move || crate::send_to::set(on));
+        Change::SendTo { .. } => {
+            let handle = app.clone();
+            std::thread::spawn(move || crate::send_to::follow(&handle));
         }
         #[cfg(target_os = "macos")]
         Change::Arrows { on } => {

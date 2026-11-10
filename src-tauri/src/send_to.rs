@@ -5,6 +5,9 @@
 //! On unless switched off in Settings; nothing outside the user's own profile.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use tauri::{AppHandle, Manager};
 
 use windows::core::{Interface, HSTRING};
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
@@ -16,9 +19,17 @@ fn shortcut() -> Option<PathBuf> {
     Some(appdata.join("Microsoft\\Windows\\SendTo").join(format!("{}.lnk", crate::APP_NAME)))
 }
 
+/// Makes the Send To entry match the saved setting, one change at a time: two quick
+/// switches in Settings end with the entry as the last one left it.
+pub fn follow(app: &AppHandle) {
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    set(!app.state::<crate::settings::Store>().get().send_to_off);
+}
+
 /// Puts the Send To shortcut in place, pointing at this copy of the app (again on each
 /// start, so it follows an update to another folder), or takes it away.
-pub fn set(on: bool) {
+fn set(on: bool) {
     let Some(link) = shortcut() else {
         return;
     };
