@@ -2,6 +2,9 @@
 //! is chosen: with winget on Windows, with Homebrew on macOS, and on Ubuntu and Debian
 //! with apt-get through pkexec, which asks for the admin password in the desktop's own
 //! window. Other Linux systems get the message that names the command, as before.
+//! "Update Converters…" asks the same package manager for newer versions of the
+//! converters it installed. On Windows without winget, App Installer (which brings it)
+//! is registered first, and failing that the Microsoft Store opens on it.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -99,7 +102,7 @@ pub fn install(app: &AppHandle) {
         let wanted = app.state::<Missing>().list().clone();
         let mut done: Vec<&Converter> = Vec::new();
         let mut failed: Option<(&Converter, String)> = None;
-        let pm = package_manager();
+        let pm = get_package_manager();
         if let Some(pm) = &pm {
             for c in &wanted {
                 if !convert::installed(c) {
@@ -120,7 +123,7 @@ pub fn install(app: &AppHandle) {
         show(&app);
         if pm.is_none() {
             if !wanted.is_empty() {
-                no_package_manager(&app, &wanted);
+                no_package_manager(&app, &format!("install {}", names(&wanted)));
             }
         } else if let Some((c, e)) = failed {
             crate::notify(&app, &format!("Couldn't install {}", c.name), &e);
@@ -131,20 +134,73 @@ pub fn install(app: &AppHandle) {
     });
 }
 
-/// Without winget or Homebrew nothing can be installed: say where to get it.
-fn no_package_manager(app: &AppHandle, wanted: &[&Converter]) {
-    log::line(&format!("{PACKAGE_MANAGER} not found; can't install {}", names(wanted)));
-    let title = format!("{PACKAGE_MANAGER} is needed to install {}", names(wanted));
+/// Without winget or Homebrew nothing can be installed or updated (`doing`, such as
+/// "install ffmpeg"): say where to get it, and open that page.
+fn no_package_manager(app: &AppHandle, doing: &str) {
+    log::line(&format!("{PACKAGE_MANAGER} not found; can't {doing}"));
+    let title = format!("{PACKAGE_MANAGER} is needed to {doing}");
     if cfg!(target_os = "macos") {
-        crate::notify(app, &title, "Install Homebrew from brew.sh (opening now), then choose Install again.");
-        let mut open = Command::new("/usr/bin/open");
-        open.arg("https://brew.sh").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        if let Err(e) = open.status() {
-            log::line(&format!("couldn't open brew.sh: {e}"));
-        }
+        crate::notify(app, &title, "Install Homebrew from brew.sh (opening now), then try again.");
+        open_page("/usr/bin/open", "https://brew.sh");
+    } else if cfg!(windows) {
+        crate::notify(app, &title, "winget comes with App Installer: the Microsoft Store opens on it now. Install or update it, then try again.");
+        let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+        open_page(&system.join("explorer.exe").to_string_lossy(), APP_INSTALLER_STORE);
     } else {
-        crate::notify(app, &title, "Install App Installer from the Microsoft Store, then choose Install again.");
+        crate::notify(app, &title, "Install it with your distribution's package manager.");
     }
+}
+
+/// App Installer's page in the Microsoft Store app.
+const APP_INSTALLER_STORE: &str = "ms-windows-store://pdp/?ProductId=9NBLGGH4NNS1";
+
+/// Opens a web or Store page with the system's own opener (explorer.exe hands a
+/// Store link to the Store app). A fixed address, never one from a file.
+fn open_page(opener: &str, page: &str) {
+    let mut open = Command::new(opener);
+    open.arg(page).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    if let Err(e) = open.spawn() {
+        log::line(&format!("couldn't open {page}: {e}"));
+    }
+}
+
+/// The package manager. On Windows without winget, one try to get it first: winget
+/// comes with App Installer, which Windows registers for a new account only at its
+/// first sign-in, in the background, so it can still be missing for a while.
+fn get_package_manager() -> Option<PathBuf> {
+    let found = package_manager();
+    #[cfg(windows)]
+    if found.is_none() {
+        return register_app_installer();
+    }
+    found
+}
+
+/// Microsoft's own fix for a missing winget: register App Installer for this account.
+/// The winget alias shows up a moment after.
+#[cfg(windows)]
+fn register_app_installer() -> Option<PathBuf> {
+    log::line("winget not found; registering App Installer");
+    let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+    let mut cmd = Command::new(system.join("System32\\WindowsPowerShell\\v1.0\\powershell.exe"));
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe",
+    ]);
+    match run(cmd, "App Installer") {
+        Ok((status, output)) => log::line(&format!("App Installer ({status}): {}", output.join(" | "))),
+        Err(e) => log::line(&format!("couldn't register App Installer: {e}")),
+    }
+    for _ in 0..10 {
+        if let Some(pm) = package_manager() {
+            log::line("winget is there now");
+            return Some(pm);
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -173,10 +229,10 @@ fn package_manager() -> Option<PathBuf> {
 #[cfg(not(any(target_os = "macos", windows)))]
 const APT_GET: &str = "/usr/bin/apt-get";
 
-/// Whether the menu can offer to install a missing converter here. macOS and Windows
-/// always offer it (without Homebrew or winget the menu says how to get them); Linux
-/// only where apt-get and pkexec are.
-fn available() -> bool {
+/// Whether the menu can offer to install a missing converter, or to update them,
+/// here. macOS and Windows always offer it (without Homebrew or winget the menu says
+/// how to get them); Linux only where apt-get and pkexec are.
+pub(crate) fn available() -> bool {
     AVAILABLE || package_manager().is_some()
 }
 
@@ -213,7 +269,7 @@ fn install_one(pm: &Path, c: &Converter) -> Result<(), String> {
     cmd.args(install_args(c));
     #[cfg(target_os = "macos")]
     cmd.env("HOMEBREW_NO_ENV_HINTS", "1");
-    let (status, output) = run(cmd)?;
+    let (status, output) = run(cmd, PACKAGE_MANAGER)?;
     log::line(&format!("{PACKAGE_MANAGER} ({status}): {}", output.join(" | ")));
     if convert::installed(c) {
         return Ok(());
@@ -229,19 +285,260 @@ fn install_one(pm: &Path, c: &Converter) -> Result<(), String> {
     if cfg!(target_os = "linux") && matches!(status.code(), Some(126 | 127)) {
         return Err("The admin password wasn't given, so nothing was installed.".into());
     }
+    Err(stopped(status))
+}
+
+/// "winget stopped with code 0x8A150011. Show Log has what it said."
+fn stopped(status: ExitStatus) -> String {
     let code = match status.code() {
         // winget's codes are Windows error numbers, which are written in hex.
         Some(code) if cfg!(windows) => format!(" with code {:#010X}", code as u32),
         Some(code) => format!(" with code {code}"),
         None => String::new(),
     };
-    Err(format!("{PACKAGE_MANAGER} stopped{code}. Show Log has what it said."))
+    format!("{PACKAGE_MANAGER} stopped{code}. Show Log has what it said.")
 }
 
-/// Runs a package manager to the end or LIMIT, both its outputs into one temporary
-/// file (not a pipe, which a chatty tool could fill and stall on). Returns how it ended
-/// and its last lines.
-fn run(mut cmd: Command) -> Result<(ExitStatus, Vec<String>), String> {
+/// What asking for a newer version of one converter came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    /// A newer version is installed now.
+    Newer,
+    /// There was nothing newer.
+    Current,
+    /// The package manager didn't install it (the converter came some other way), so
+    /// it is left alone.
+    NotOurs,
+}
+
+/// How "Update Converters…" went, converter by converter.
+#[derive(Default)]
+struct Report {
+    newer: Vec<&'static Converter>,
+    current: Vec<&'static Converter>,
+    not_ours: Vec<&'static Converter>,
+    failed: Vec<&'static Converter>,
+    /// What went wrong with the first that failed.
+    error: Option<String>,
+}
+
+impl Report {
+    fn add(&mut self, c: &'static Converter, outcome: Result<Outcome, String>) {
+        match outcome {
+            Ok(Outcome::Newer) => self.newer.push(c),
+            Ok(Outcome::Current) => self.current.push(c),
+            Ok(Outcome::NotOurs) => self.not_ours.push(c),
+            Err(e) => {
+                log::line(&format!("couldn't update {}: {e}", c.name));
+                self.failed.push(c);
+                self.error.get_or_insert(e);
+            }
+        }
+    }
+
+    /// The notification's title and text.
+    fn summary(&self) -> (String, String) {
+        let mut lines = Vec::new();
+        if !self.newer.is_empty() && !self.failed.is_empty() {
+            lines.push(format!("Updated: {}.", names(&self.newer)));
+        }
+        if !self.current.is_empty() {
+            lines.push(format!("Up to date: {}.", names(&self.current)));
+        }
+        if !self.not_ours.is_empty() {
+            lines.push(format!("Not installed with {PACKAGE_MANAGER}, so left alone: {}.", names(&self.not_ours)));
+        }
+        let title = if !self.failed.is_empty() {
+            lines.insert(0, self.error.clone().unwrap_or_default());
+            format!("Couldn't update {}", names(&self.failed))
+        } else if !self.newer.is_empty() {
+            let verb = if self.newer.len() == 1 { "is" } else { "are" };
+            format!("{} {verb} updated", names(&self.newer))
+        } else if self.current.is_empty() && self.not_ours.is_empty() {
+            return ("No converters to update".into(), "None of them is installed yet.".into());
+        } else {
+            "The converters are up to date".into()
+        };
+        (title, lines.join(" "))
+    }
+}
+
+/// The converters this system's package manager provides. bsdtar is built into macOS
+/// and Windows, and the app uses that one there.
+fn updatable(c: &Converter) -> bool {
+    c.tool != "bsdtar" || cfg!(not(any(target_os = "macos", windows)))
+}
+
+/// The menu's "Update Converters…": asks the package manager for a newer version of
+/// each converter the app finds, on a thread of its own, and says what changed. One
+/// package manager job at a time, shared with Install.
+pub fn update(app: &AppHandle) {
+    if INSTALLING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    thread::spawn(move || {
+        menu::show_converter_update(&app, true);
+        let found: Vec<&'static Converter> = convert::CONVERTERS.iter().filter(|c| updatable(c) && convert::installed(c)).collect();
+        log::line(&format!("updating converters: {}", names(&found)));
+        let pm = get_package_manager();
+        let report = pm.as_deref().map(|pm| update_all(pm, &found));
+        INSTALLING.store(false, Ordering::SeqCst);
+        menu::show_converter_update(&app, false);
+        show(&app);
+        match report {
+            None => no_package_manager(&app, "update the converters"),
+            Some(report) => {
+                let (title, text) = report.summary();
+                log::line(&format!("{title}. {text}"));
+                crate::notify(&app, &title, &text);
+            }
+        }
+    });
+}
+
+/// macOS: `brew upgrade`, one converter after another. Homebrew only upgrades what it
+/// installed, so the version it lists before and after says what happened.
+#[cfg(target_os = "macos")]
+fn update_all(pm: &Path, found: &[&'static Converter]) -> Report {
+    let mut report = Report::default();
+    for c in found {
+        let outcome = match brew_version(pm, c) {
+            None => Ok(Outcome::NotOurs),
+            Some(before) => {
+                let mut cmd = Command::new(pm);
+                cmd.arg("upgrade").args(c.brew.split_whitespace()).env("HOMEBREW_NO_ENV_HINTS", "1");
+                run(cmd, PACKAGE_MANAGER).and_then(|(status, output)| {
+                    log::line(&format!("{PACKAGE_MANAGER} upgrade {} ({status}): {}", c.name, output.join(" | ")));
+                    match brew_version(pm, c) {
+                        Some(after) if after != before => Ok(Outcome::Newer),
+                        _ if status.success() => Ok(Outcome::Current),
+                        _ => Err(stopped(status)),
+                    }
+                })
+            }
+        };
+        report.add(c, outcome);
+    }
+    report
+}
+
+/// "ffmpeg 9.0.2_1", or None when Homebrew didn't install it.
+#[cfg(target_os = "macos")]
+fn brew_version(pm: &Path, c: &Converter) -> Option<String> {
+    let mut cmd = Command::new(pm);
+    cmd.args(["list", "--versions"]).args(c.brew.split_whitespace()).env("HOMEBREW_NO_ENV_HINTS", "1");
+    cmd.stdin(Stdio::null()).stderr(Stdio::null());
+    let out = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// Windows: `winget upgrade`, one converter after another, from winget's own source
+/// and without questions, as Install does.
+#[cfg(windows)]
+fn update_all(pm: &Path, found: &[&'static Converter]) -> Report {
+    let mut report = Report::default();
+    for c in found {
+        let mut cmd = Command::new(pm);
+        cmd.args([
+            "upgrade",
+            "--id",
+            c.winget,
+            "--exact",
+            "--source",
+            "winget",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+        ]);
+        let outcome = run(cmd, PACKAGE_MANAGER).and_then(|(status, output)| {
+            log::line(&format!("{PACKAGE_MANAGER} upgrade {} ({status}): {}", c.name, output.join(" | ")));
+            winget_outcome(status.code(), &output).ok_or_else(|| stopped(status))
+        });
+        report.add(c, outcome);
+    }
+    report
+}
+
+/// What `winget upgrade` did, from its exit code and last lines; None when it failed.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn winget_outcome(code: Option<i32>, output: &[String]) -> Option<Outcome> {
+    // APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE and _NO_APPLICATIONS_FOUND.
+    const NOTHING_NEWER: u32 = 0x8A15_002B;
+    const NOT_INSTALLED: u32 = 0x8A15_0014;
+    let said = |words: &str| output.iter().any(|l| l.contains(words));
+    match code.map(|c| c as u32) {
+        Some(NOT_INSTALLED) => Some(Outcome::NotOurs),
+        _ if said("No installed package found") => Some(Outcome::NotOurs),
+        Some(NOTHING_NEWER) => Some(Outcome::Current),
+        Some(0) if said("No available upgrade found") || said("No newer package versions") => Some(Outcome::Current),
+        Some(0) => Some(Outcome::Newer),
+        _ => None,
+    }
+}
+
+/// Linux: one `apt-get install --only-upgrade` for all of them, so the password is
+/// asked once. apt uses the package lists the system refreshed last (Ubuntu does so
+/// every day); dpkg's version before and after says what changed.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn update_all(pm: &Path, found: &[&'static Converter]) -> Report {
+    let mut report = Report::default();
+    let mut ours = Vec::new();
+    for c in found {
+        match dpkg_version(c.apt) {
+            Some(before) => ours.push((*c, before)),
+            None => report.add(c, Ok(Outcome::NotOurs)),
+        }
+    }
+    if ours.is_empty() {
+        return report;
+    }
+    let mut cmd = Command::new(pm);
+    cmd.args(["env", "DEBIAN_FRONTEND=noninteractive", APT_GET, "install", "--only-upgrade", "-y"]);
+    cmd.args(ours.iter().map(|(c, _)| c.apt));
+    let ran = run(cmd, PACKAGE_MANAGER);
+    if let Ok((status, output)) = &ran {
+        log::line(&format!("{PACKAGE_MANAGER} upgrade ({status}): {}", output.join(" | ")));
+    }
+    for (c, before) in ours {
+        let changed = dpkg_version(c.apt).is_some_and(|after| after != before);
+        let outcome = match &ran {
+            _ if changed => Ok(Outcome::Newer),
+            Ok((status, _)) if status.success() => Ok(Outcome::Current),
+            Ok((status, _)) if matches!(status.code(), Some(126 | 127)) => Err("The admin password wasn't given, so nothing was updated.".into()),
+            Ok((status, _)) => Err(stopped(*status)),
+            Err(e) => Err(e.clone()),
+        };
+        report.add(c, outcome);
+    }
+    report
+}
+
+/// The installed version of a Debian package, or None when it isn't installed.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn dpkg_version(package: &str) -> Option<String> {
+    let out = Command::new("/usr/bin/dpkg-query")
+        .args(["-W", "-f=${Status}|${Version}", package])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    installed_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// dpkg-query's "install ok installed|7:6.1.1" gives "7:6.1.1"; a package removed but
+/// with its settings kept ("deinstall ok config-files|…") gives None.
+#[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+fn installed_version(text: &str) -> Option<String> {
+    let (status, version) = text.trim().split_once('|')?;
+    (status.ends_with(" installed") && !version.is_empty()).then(|| version.to_string())
+}
+
+/// Runs a package manager (or, on Windows, PowerShell: `what` names it) to the end or
+/// LIMIT, both its outputs into one temporary file (not a pipe, which a chatty tool
+/// could fill and stall on). Returns how it ended and its last lines.
+fn run(mut cmd: Command, what: &str) -> Result<(ExitStatus, Vec<String>), String> {
     let mut out = tempfile::tempfile().map_err(|e| format!("work file: {e}"))?;
     let stdout = out.try_clone().map_err(|e| format!("work file: {e}"))?;
     let stderr = out.try_clone().map_err(|e| format!("work file: {e}"))?;
@@ -253,7 +550,7 @@ fn run(mut cmd: Command) -> Result<(ExitStatus, Vec<String>), String> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = cmd.spawn().map_err(|e| format!("could not start {PACKAGE_MANAGER}: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("could not start {what}: {e}"))?;
     let deadline = Instant::now() + LIMIT;
     let status = loop {
         match child.try_wait() {
@@ -261,11 +558,11 @@ fn run(mut cmd: Command) -> Result<(ExitStatus, Vec<String>), String> {
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(500)),
             Ok(None) => {
                 convert::stop(&mut child);
-                return Err(format!("{PACKAGE_MANAGER} took longer than {} min and was stopped", LIMIT.as_secs() / 60));
+                return Err(format!("{what} took longer than {} min and was stopped", LIMIT.as_secs() / 60));
             }
             Err(e) => {
                 convert::stop(&mut child);
-                return Err(format!("{PACKAGE_MANAGER}: {e}"));
+                return Err(format!("{what}: {e}"));
             }
         }
     };
@@ -372,5 +669,49 @@ mod tests {
         let lines = last_lines(&many, None);
         assert_eq!(lines.len(), LOG_LINES);
         assert_eq!(lines.last().map(String::as_str), Some("line 40"));
+    }
+
+    #[test]
+    fn the_update_report_says_what_changed() {
+        let (ffmpeg, pandoc, mupdf) = (named("ffmpeg"), named("pandoc"), named("mutool"));
+        let mut r = Report::default();
+        assert_eq!(r.summary().0, "No converters to update");
+        r.add(ffmpeg, Ok(Outcome::Newer));
+        r.add(pandoc, Ok(Outcome::Current));
+        assert_eq!(r.summary(), ("ffmpeg is updated".into(), "Up to date: pandoc.".into()));
+        r.add(mupdf, Ok(Outcome::NotOurs));
+        assert_eq!(r.summary().1, format!("Up to date: pandoc. Not installed with {PACKAGE_MANAGER}, so left alone: MuPDF."));
+        r.add(named("magick"), Err("it broke".into()));
+        r.add(named("soffice"), Err("this too".into()));
+        let (title, text) = r.summary();
+        assert_eq!(title, "Couldn't update ImageMagick and LibreOffice");
+        assert!(text.starts_with("it broke Updated: ffmpeg."), "{text}");
+        let mut quiet = Report::default();
+        quiet.add(pandoc, Ok(Outcome::Current));
+        assert_eq!(quiet.summary().0, "The converters are up to date");
+    }
+
+    #[test]
+    fn winget_upgrade_is_read_from_its_code_and_words() {
+        let none: Vec<String> = Vec::new();
+        assert_eq!(winget_outcome(Some(0), &none), Some(Outcome::Newer));
+        assert_eq!(winget_outcome(Some(0x8A15_002B_u32 as i32), &none), Some(Outcome::Current));
+        assert_eq!(winget_outcome(Some(0x8A15_0014_u32 as i32), &none), Some(Outcome::NotOurs));
+        assert_eq!(winget_outcome(Some(0), &["No available upgrade found.".to_string()]), Some(Outcome::Current));
+        assert_eq!(winget_outcome(Some(1), &["No installed package found matching input criteria.".to_string()]), Some(Outcome::NotOurs));
+        assert_eq!(winget_outcome(Some(0x8A15_0011_u32 as i32), &none), None);
+    }
+
+    #[test]
+    fn dpkg_says_which_version_is_installed() {
+        assert_eq!(installed_version("install ok installed|7:6.1.1-3ubuntu5\n"), Some("7:6.1.1-3ubuntu5".into()));
+        assert_eq!(installed_version("deinstall ok config-files|1.0"), None);
+        assert_eq!(installed_version(""), None);
+    }
+
+    #[test]
+    fn bsdtar_is_only_updated_where_the_system_does_not_bring_it() {
+        assert!(updatable(named("ffmpeg")));
+        assert_eq!(updatable(named("bsdtar")), cfg!(target_os = "linux"));
     }
 }
