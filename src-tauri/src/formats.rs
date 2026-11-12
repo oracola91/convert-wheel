@@ -51,8 +51,8 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
         // Camera RAW (RAW, at the end) is read only: macOS's own decoder, or an
         // ImageMagick built with LibRaw (convert.rs, raw_to_tiff).
         &[
-            "jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp", "gif", "avif", "dng", "cr2", "cr3", "nef", "nrw",
-            "arw", "orf", "rw2", "raf", "pef", "srw",
+            "jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp", "gif", "avif", "svg", "dng", "cr2", "cr3", "nef",
+            "nrw", "arw", "orf", "rw2", "raf", "pef", "srw",
         ],
         &["jpg", "png", "heic", "webp", "tiff", "gif", "avif", "bmp", "ico", "pdf", "svg"],
     ),
@@ -72,12 +72,16 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
         &["pdf", "docx", "odt", "html", "md", "txt", "epub"],
     ),
     // Apple's Numbers and Keynote files go in through LibreOffice, which reads them.
-    (Kind::Sheet, &["xlsx", "xls", "ods", "csv", "numbers"], &["pdf", "xlsx", "ods", "csv"]),
-    (Kind::Slides, &["pptx", "ppt", "odp", "key"], &["pdf", "pptx", "odp"]),
+    (Kind::Sheet, &["xlsx", "xls", "ods", "csv", "tsv", "numbers"], &["pdf", "xlsx", "ods", "csv", "tsv"]),
+    // JPG and PNG: a picture of each slide.
+    (Kind::Slides, &["pptx", "ppt", "odp", "key"], &["pdf", "pptx", "odp", "jpg", "png"]),
     // Pictures of the pages, or the text (as a Word file it is text only: the PDF's
     // layout isn't kept).
-    (Kind::Pdf, &["pdf"], &["docx", "jpg", "png", "txt"]),
-    (Kind::Subtitles, &["srt", "vtt"], &["srt", "vtt"]),
+    // SVG: each page as vector shapes. Markdown and EPUB: the text, like Word. PPTX: a
+    // slide with a picture of each page.
+    (Kind::Pdf, &["pdf"], &["docx", "jpg", "png", "txt", "svg", "md", "epub", "pptx"]),
+    // TXT: only the words, without times.
+    (Kind::Subtitles, &["srt", "vtt"], &["srt", "vtt", "txt"]),
 ];
 
 /// The Tools wheel: what can be done to a file while it keeps its format, by the id
@@ -397,9 +401,13 @@ mod tests {
     fn new_formats_are_offered() {
         assert!(formats_for(&v(&["/tmp/a.png"]), all_shown).ends_with(&["bmp", "ico", "pdf", "svg"]));
         assert!(formats_for(&v(&["/tmp/a.heic", "/tmp/b.gif"]), all_shown).contains(&"svg"));
-        assert!(!formats_for(&v(&["/tmp/a.pdf"]), all_shown).contains(&"svg"));
+        assert_eq!(formats_for(&v(&["/tmp/a.pdf"]), all_shown), ["docx", "jpg", "png", "txt", "svg", "md", "epub", "pptx"]);
+        assert!(formats_for(&v(&["/tmp/a.svg"]), all_shown).contains(&"png"));
+        assert!(!formats_for(&v(&["/tmp/a.svg"]), all_shown).contains(&"svg"));
+        assert!(formats_for(&v(&["/tmp/a.pptx"]), all_shown).ends_with(&["jpg", "png"]));
+        assert!(formats_for(&v(&["/tmp/a.tsv"]), all_shown).contains(&"csv"));
         assert!(formats_for(&v(&["/tmp/a.mov"]), all_shown).contains(&"wmv"));
-        assert_eq!(formats_for(&v(&["/tmp/a.srt"]), all_shown), ["vtt"]);
+        assert_eq!(formats_for(&v(&["/tmp/a.srt"]), all_shown), ["vtt", "txt"]);
         assert!(formats_for(&v(&["/tmp/a.pages"]), all_shown).contains(&"docx"));
         assert_eq!(formats_for(&v(&["/tmp/a.key", "/tmp/b.numbers"]), all_shown), ["pdf"]);
     }

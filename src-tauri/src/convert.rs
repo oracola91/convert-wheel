@@ -178,12 +178,23 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
             file(if target == "svg" { to_svg(&tiff, &out, work.path()) } else { image(&tiff, target, &out) })
         }),
         (None, Kind::Image) if target == "svg" => file(to_svg(&input, &out, work.path())),
+        // An SVG: drawn as a picture by the app itself first, then converted from that.
+        (None, Kind::Image) if ext == "svg" => {
+            let drawn = work.path().join("drawn.png");
+            file(draw_svg(&input, &drawn).and_then(|()| image(&drawn, target, &out)))
+        }
         (None, Kind::Image) => file(image(&input, target, &out)),
         (None, Kind::Audio) => file(audio(&input, target, &out)),
         (None, Kind::Video) => file(video(&input, &ext, target, &out)),
         (None, Kind::Doc) => file(document(&input, &ext, target, &out, &work)),
+        // A picture of each slide: the slides as a PDF first, then its pages drawn.
+        (None, Kind::Slides) if matches!(target, "jpg" | "png") => {
+            let slides = work.path().join("slides.pdf");
+            libreoffice(&input, "pdf", &slides).and_then(|()| pdf(&slides, target, &out, &work))
+        }
         (None, Kind::Sheet | Kind::Slides) => file(libreoffice(&input, target, &out)),
         (None, Kind::Pdf) => pdf(&input, target, &out, &work),
+        (None, Kind::Subtitles) if target == "txt" => file(subtitle_text(&input, &out)),
         (None, Kind::Subtitles) => file(ffmpeg(&input, &["-map", "0:s:0"], &out, QUICK)),
     };
     // Tool messages often start with a full path; keep only file names.
@@ -1268,9 +1279,20 @@ fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
         Some("csv") => {
             cmd.arg("--infilter=CSV:44,34,76,1");
         }
+        // Tab-separated: the same reader with a tab (9) between the fields.
+        Some("tsv") => {
+            cmd.arg("--infilter=CSV:9,34,76,1");
+        }
         _ => {}
     }
-    cmd.args(["--convert-to", target, "--outdir"]).arg(&outdir).arg(src);
+    // CSV and TSV: LibreOffice's CSV writer with a comma or a tab between the fields,
+    // UTF-8 (76), said each time: otherwise it keeps what the file was read with.
+    let to = match target {
+        "csv" => "csv:Text - txt - csv (StarCalc):44,34,76",
+        "tsv" => "tsv:Text - txt - csv (StarCalc):9,34,76",
+        other => other,
+    };
+    cmd.args(["--convert-to", to, "--outdir"]).arg(&outdir).arg(src);
     run(cmd, OFFICE)?;
     // LibreOffice names the result after the input and can exit 0 without writing it.
     let stem = src.file_stem().ok_or("no file name")?.to_string_lossy();
@@ -1292,23 +1314,8 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
         return Err("this PDF has no pages".into());
     }
     match target {
-        "png" | "jpg" => {
-            let dir = work.path().join("pages");
-            fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
-            let last = count.min(MAX_PAGES);
-            for first in (1..=last).step_by(PAGE_BATCH) {
-                let pages = format!("{first}-{}", (first + PAGE_BATCH - 1).min(last));
-                // Inside the pages folder, so the "%d" in the output name is the only
-                // "%" mutool sees, whatever the work folder's path holds.
-                mutool.run(&dir, &["draw", "-q", "-r", PAGE_DPI, "-w", PAGE_MAX_PIXELS, "-h", PAGE_MAX_PIXELS, "-o", "%d.png"], &pages)?;
-                if folder_size(&dir)? > PAGES_BUDGET {
-                    return Err("this PDF's pages are too large to draw: the pictures would take more than 1 GB".into());
-                }
-            }
-            let mut files: Vec<PathBuf> = (1..=last).map(|n| dir.join(format!("{n}.png"))).collect();
-            if let Some(missing) = files.iter().position(|p| !p.is_file()) {
-                return Err(format!("MuPDF didn't draw page {} of this PDF", missing + 1));
-            }
+        "png" | "jpg" | "svg" => {
+            let mut files = draw_pages(&mutool, work.path(), count, if target == "svg" { "svg" } else { "png" })?;
             if target == "jpg" {
                 for png in &mut files {
                     mutool.time_left()?;
@@ -1323,7 +1330,28 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
             }
             Ok(Output::Pages { files, cut: count > MAX_PAGES })
         }
-        "txt" | "docx" => {
+        // A slide with a picture of each page, through pandoc: the pictures go inside the
+        // Markdown it reads, as data, so its sandbox never has to open another file.
+        "pptx" => {
+            if count > MAX_PAGES {
+                return Err(format!("this PDF has {count} pages: PowerPoint files are made from PDFs up to {MAX_PAGES} pages"));
+            }
+            use base64::Engine;
+            let pictures = draw_pages(&mutool, work.path(), count, "png")?;
+            let mut slides = String::new();
+            for (n, png) in pictures.iter().enumerate() {
+                let bytes = fs::read(png).map_err(|e| format!("work folder: {e}"))?;
+                if n > 0 {
+                    slides.push_str("\n---\n\n");
+                }
+                slides.push_str(&format!("![](data:image/png;base64,{})\n", base64::engine::general_purpose::STANDARD.encode(bytes)));
+            }
+            let md = work.path().join("slides.md");
+            fs::write(&md, slides).map_err(|e| format!("work folder: {e}"))?;
+            pandoc(&md, "md", "pptx", out)?;
+            Ok(Output::File)
+        }
+        "txt" | "docx" | "md" | "epub" => {
             if count > MAX_TEXT_PAGES {
                 return Err(format!("this PDF has {count} pages: the text can be taken out of PDFs up to {MAX_TEXT_PAGES} pages"));
             }
@@ -1347,12 +1375,100 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
             } else {
                 let html = work.path().join("text.html");
                 fs::write(&html, paragraphs_html(&text)).map_err(|e| format!("work folder: {e}"))?;
-                pandoc(&html, "html", "docx", out)?;
+                pandoc(&html, "html", target, out)?;
             }
             Ok(Output::File)
         }
         other => Err(format!("a PDF can't become .{other}")),
     }
+}
+
+/// The pages of a PDF drawn into a "pages" folder in `work`, as "1.png", "2.png", ...
+/// (or ".svg": vector shapes), at most MAX_PAGES of them and within PAGES_BUDGET.
+fn draw_pages(mutool: &Mutool, work: &Path, count: usize, ext: &str) -> Result<Vec<PathBuf>, String> {
+    let dir = work.join("pages");
+    fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
+    let last = count.min(MAX_PAGES);
+    let name = format!("%d.{ext}");
+    for first in (1..=last).step_by(PAGE_BATCH) {
+        let pages = format!("{first}-{}", (first + PAGE_BATCH - 1).min(last));
+        // Inside the pages folder, so the "%d" in the output name is the only "%"
+        // mutool sees, whatever the work folder's path holds.
+        if ext == "svg" {
+            mutool.run(&dir, &["draw", "-q", "-F", "svg", "-o", &name], &pages)?;
+        } else {
+            mutool.run(&dir, &["draw", "-q", "-r", PAGE_DPI, "-w", PAGE_MAX_PIXELS, "-h", PAGE_MAX_PIXELS, "-o", &name], &pages)?;
+        }
+        if folder_size(&dir)? > PAGES_BUDGET {
+            return Err("this PDF's pages are too large to draw: the pictures would take more than 1 GB".into());
+        }
+    }
+    let files: Vec<PathBuf> = (1..=last).map(|n| dir.join(format!("{n}.{ext}"))).collect();
+    if let Some(missing) = files.iter().position(|p| !p.is_file()) {
+        return Err(format!("MuPDF didn't draw page {} of this PDF", missing + 1));
+    }
+    Ok(files)
+}
+
+/// Subtitles as plain text: the words of each cue, without numbers, times, styling
+/// tags or notes, one cue to a paragraph.
+fn subtitle_text(src: &Path, out: &Path) -> Result<(), String> {
+    let size = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?.len();
+    if size > 20 * 1024 * 1024 {
+        return Err("these subtitles are larger than 20 MB".into());
+    }
+    let raw = fs::read(src).map_err(|e| format!("can't read the file: {e}"))?;
+    let text = subtitle_words(&String::from_utf8_lossy(&raw));
+    if text.is_empty() {
+        return Err("these subtitles have no words".into());
+    }
+    fs::write(out, text + "\n").map_err(|e| format!("work folder: {e}"))
+}
+
+/// The words of SRT or WebVTT subtitles, a cue to a paragraph.
+fn subtitle_words(text: &str) -> String {
+    let mut cues: Vec<String> = Vec::new();
+    for block in text.replace("\r\n", "\n").split("\n\n") {
+        let lines: Vec<&str> = block.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let Some(at) = lines.iter().position(|l| l.contains("-->")) else {
+            continue;
+        };
+        // Lines before the times are the cue's number or name; after them, its words.
+        let words: Vec<String> = lines[at + 1..].iter().map(|l| strip_tags(l)).filter(|l| !l.is_empty()).collect();
+        if !words.is_empty() {
+            cues.push(words.join(" "));
+        }
+    }
+    cues.join("\n\n")
+}
+
+/// A subtitle line without <i>, <b>, <font ...>, <c.yellow> or {\an8}-style tags.
+fn strip_tags(line: &str) -> String {
+    let mut out = String::new();
+    let mut skip: Option<char> = None;
+    for c in line.chars() {
+        match (skip, c) {
+            (None, '<') => skip = Some('>'),
+            (None, '{') => skip = Some('}'),
+            (Some(end), c) if c == end => skip = None,
+            (Some(_), _) => {}
+            (None, c) => out.push(c),
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// An SVG drawn as a PNG by this app itself (`--draw-svg`, convert/svg.rs), in a
+/// process of its own so a drawing that never ends is stopped like any other tool.
+fn draw_svg(src: &Path, png: &Path) -> Result<(), String> {
+    let me = std::env::current_exe().map_err(|e| format!("can't find {} itself to draw the SVG with: {e}", crate::APP_NAME))?;
+    let mut draw = Command::new(me);
+    draw.arg("--draw-svg").arg(src).arg(png);
+    run(draw, QUICK)?;
+    if !png.is_file() {
+        return Err("the SVG was drawn as nothing".into());
+    }
+    Ok(())
 }
 
 /// Most pages Split makes files of; the folder says so when the PDF had more.
@@ -4703,6 +4819,85 @@ mod tests {
         // "v1.2 notes.docx" must look for "v1.2 notes.pdf", not "v1.pdf"
         let stem = Path::new("/x/v1.2 notes.docx").file_stem().unwrap().to_string_lossy();
         assert_eq!(format!("{stem}.pdf"), "v1.2 notes.pdf");
+    }
+
+    #[test]
+    fn subtitles_become_their_words() {
+        let srt = "1\r\n00:00:01,000 --> 00:00:02,000\r\n<i>Hello</i> there\r\nfriend\r\n\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\n{\\an8}Bye\r\n";
+        assert_eq!(subtitle_words(srt), "Hello there friend\n\nBye");
+        let vtt = "WEBVTT\n\nNOTE made by hand\n\nintro\n00:01.000 --> 00:02.000 align:start\n<c.yellow>Hi</c>\n";
+        assert_eq!(subtitle_words(vtt), "Hi");
+        let work = tempfile::tempdir().unwrap();
+        let file = work.path().join("film.srt");
+        fs::write(&file, srt).unwrap();
+        let txt = convert(&file, "txt", None, work.path()).unwrap();
+        assert_eq!(txt, work.path().join("film.txt"));
+        assert_eq!(fs::read_to_string(&txt).unwrap(), "Hello there friend\n\nBye\n");
+    }
+
+    #[test]
+    fn pdfs_become_svg_markdown_epub_and_slides() {
+        if tool("mutool").is_err() {
+            eprintln!("mutool isn't installed: PDF formats not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let pdf = work.path().join("notes.pdf");
+        fs::write(&pdf, tiny_pdf(&["First page", "Second page"])).unwrap();
+        let folder = convert(&pdf, "svg", None, work.path()).unwrap();
+        assert_eq!(folder, work.path().join("notes (SVG)"));
+        let page = fs::read_to_string(folder.join("notes 1.svg")).unwrap();
+        assert!(page.contains("<svg"), "{page}");
+        if tool("pandoc").is_err() {
+            eprintln!("pandoc isn't installed: PDF to Markdown, EPUB and PPTX not tested");
+            return;
+        }
+        let md = convert(&pdf, "md", None, work.path()).unwrap();
+        let text = fs::read_to_string(&md).unwrap();
+        assert!(text.contains("First page") && text.contains("Second page"), "{text}");
+        let epub = convert(&pdf, "epub", None, work.path()).unwrap();
+        assert!(fs::read(&epub).unwrap().starts_with(b"PK"));
+        let pptx = convert(&pdf, "pptx", None, work.path()).unwrap();
+        assert_eq!(pptx, work.path().join("notes.pptx"));
+        let listing = Command::new("unzip").arg("-l").arg(&pptx).output();
+        if let Ok(listing) = listing {
+            let names = String::from_utf8_lossy(&listing.stdout);
+            assert!(names.contains("ppt/slides/slide2.xml") && names.contains("ppt/media/"), "{names}");
+        }
+    }
+
+    #[test]
+    fn spreadsheets_go_to_tsv_and_slides_to_pictures() {
+        if soffice().is_err() {
+            eprintln!("LibreOffice isn't installed: TSV and slide pictures not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let csv = work.path().join("table.csv");
+        fs::write(&csv, "name,count\napples,3\n").unwrap();
+        let tsv = convert(&csv, "tsv", None, work.path()).unwrap();
+        assert_eq!(tsv, work.path().join("table.tsv"));
+        assert_eq!(fs::read_to_string(&tsv).unwrap().lines().next(), Some("name\tcount"));
+        let back = work.path().join("again.tsv");
+        fs::copy(&tsv, &back).unwrap();
+        let csv2 = convert(&back, "csv", None, work.path()).unwrap();
+        assert_eq!(fs::read_to_string(&csv2).unwrap().lines().nth(1), Some("apples,3"));
+        if tool("mutool").is_err() {
+            return;
+        }
+        // Slides: a two-slide deck (made by pandoc) becomes a folder with a picture of
+        // each slide.
+        let Ok(pandoc) = tool("pandoc") else {
+            return;
+        };
+        let md = work.path().join("deck.md");
+        fs::write(&md, "# One\n\nFirst\n\n# Two\n\nSecond\n").unwrap();
+        let deck = work.path().join("deck.pptx");
+        assert!(Command::new(pandoc).arg("-o").arg(&deck).arg(&md).status().unwrap().success());
+        let folder = convert(&deck, "png", None, work.path()).unwrap();
+        assert_eq!(folder, work.path().join("deck (PNG)"));
+        assert!(fs::read(folder.join("deck 1.png")).unwrap().starts_with(b"\x89PNG"));
+        assert!(folder.join("deck 2.png").is_file());
     }
 
     #[test]

@@ -736,6 +736,10 @@ fn main() {
     if args.first().map(String::as_str) == Some("--trace") {
         std::process::exit(convert::svg::trace_main(&args[1..]));
     }
+    // Drawing an SVG for conversion, likewise in a process of its own.
+    if args.first().map(String::as_str) == Some("--draw-svg") {
+        std::process::exit(convert::svg::draw_main(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("--convert") {
         // A Windows release build has no console of its own; borrow the one it was
         // started from so the results and errors show up there.
