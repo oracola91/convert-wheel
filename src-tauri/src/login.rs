@@ -44,7 +44,11 @@ mod imp {
     };
 
     const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    const NAME: PCWSTR = w!("Convert Wheel");
+    /// The value's name: the app's name (crate::APP_NAME), which the uninstaller also
+    /// takes away.
+    const NAME: PCWSTR = w!("Pirouette");
+    /// Its name up to 0.3.x (crate::OLD_NAME).
+    const OLD_NAME: PCWSTR = w!("Convert Wheel");
 
     /// A development build would register a path that disappears on the next build.
     pub fn available() -> bool {
@@ -57,16 +61,15 @@ mod imp {
         Ok(format!("\"{}\"", exe.display()))
     }
 
-    /// On only if the entry starts this copy; an entry left by a moved or removed copy
-    /// counts as off, and turning it on rewrites it.
-    pub fn is_enabled() -> bool {
+    /// The command under value `name`, if there is one.
+    fn read(name: PCWSTR) -> Option<String> {
         let mut buf = [0u16; 1024];
         let mut size = (buf.len() * 2) as u32;
         let read = unsafe {
             RegGetValueW(
                 HKEY_CURRENT_USER,
                 RUN,
-                NAME,
+                name,
                 RRF_RT_REG_SZ,
                 None,
                 Some(buf.as_mut_ptr().cast()),
@@ -74,10 +77,39 @@ mod imp {
             )
         };
         if read.is_err() {
-            return false;
+            return None;
         }
         let len = (size as usize / 2).saturating_sub(1).min(buf.len());
-        command().is_ok_and(|c| String::from_utf16_lossy(&buf[..len]).eq_ignore_ascii_case(&c))
+        Some(String::from_utf16_lossy(&buf[..len]))
+    }
+
+    /// On only if the entry starts this copy; an entry left by a moved or removed copy
+    /// counts as off, and turning it on rewrites it.
+    pub fn is_enabled() -> bool {
+        read(NAME).is_some_and(|v| command().is_ok_and(|c| v.eq_ignore_ascii_case(&c)))
+    }
+
+    /// Open at Login under the old name (an MSI update from 0.3.x keeps it; the .exe
+    /// update moves it itself, windows/hooks.nsh): the same choice under the new name,
+    /// starting this copy, and the old value goes.
+    pub fn move_old_entry() {
+        if !available() || read(OLD_NAME).is_none() {
+            return;
+        }
+        match set_enabled(true) {
+            Ok(()) => {
+                let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, OLD_NAME) };
+                crate::log::line("Open at Login now under the new name");
+            }
+            Err(e) => crate::log::line(&format!("couldn't move Open at Login to the new name: {e}")),
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn the_run_values_carry_the_app_names() {
+        assert_eq!(unsafe { NAME.to_string() }.unwrap(), crate::APP_NAME);
+        assert_eq!(unsafe { OLD_NAME.to_string() }.unwrap(), crate::OLD_NAME);
     }
 
     pub fn set_enabled(on: bool) -> Result<(), String> {
@@ -142,7 +174,8 @@ mod imp {
             .filter(|p| p.is_file())
             .map_or_else(|| std::env::current_exe().map_err(|e| e.to_string()), Ok)?;
         let desktop = format!(
-            "[Desktop Entry]\nType=Application\nName=Convert Wheel\nExec={}\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
+            "[Desktop Entry]\nType=Application\nName={}\nExec={}\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
+            crate::APP_NAME,
             exec_quote(&exe.to_string_lossy())
         );
         fs::create_dir_all(entry.parent().ok_or("no autostart folder")?)

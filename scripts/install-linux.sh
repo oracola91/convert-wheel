@@ -1,12 +1,12 @@
 #!/bin/sh
-# Sets up Convert Wheel on Ubuntu or Debian in one go:
+# Sets up Pirouette (called Convert Wheel up to 0.3.x) on Ubuntu or Debian in one go:
 #
 #   curl -fsSL https://raw.githubusercontent.com/oracola91/convert-wheel/main/scripts/install-linux.sh | sh
 #
 # 1. the converters: ffmpeg, ImageMagick, LibreOffice (Writer, Calc, Impress), MuPDF,
 #    bsdtar (archives) and pandoc, pandoc from its own releases unless an up-to-date
 #    working one is there;
-# 2. the newest Convert Wheel release, after checking its signature with the project's
+# 2. the newest Pirouette release, after checking its signature with the project's
 #    update key (the same check the app makes on every update) and the version in it;
 # 3. Open at Login;
 # 4. on GNOME, the keyboard shortcut Super+Shift+C that opens the wheel (on Wayland,
@@ -38,7 +38,7 @@ SHORTCUT='<Shift><Super>c'
 
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 fail() {
-    printf '\nConvert Wheel setup stopped: %s\n' "$*" >&2
+    printf '\nPirouette setup stopped: %s\n' "$*" >&2
     exit 1
 }
 
@@ -144,7 +144,7 @@ gnome_shortcut() {
             gsettings set "$one" binding "$SHORTCUT" || return 1
             ;;
     esac
-    gsettings set "$one" name 'Convert Wheel' || return 1
+    gsettings set "$one" name 'Pirouette' || return 1
     gsettings set "$one" command "$EXE --show" || return 1
     # Without a running desktop session gsettings keeps changes in memory only, so read
     # everything back.
@@ -189,7 +189,7 @@ main() {
         pandoc_ok || fail "pandoc still can't write Word files in its sandbox: $(tail -n 1 "$work/pandoc.err")"
     fi
 
-    step "2/5 Convert Wheel"
+    step "2/5 Pirouette"
     if [ $# -gt 0 ]; then
         tag="v$1"
     else
@@ -198,12 +198,18 @@ main() {
         printf '%s' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' || fail "couldn't find the newest release on GitHub."
     fi
     version=${tag#v}
-    deb="$work/Convert.Wheel_${version}_amd64.deb"
-    fetch -o "$deb" "https://github.com/$REPO/releases/download/$tag/$(basename "$deb")" ||
-        fail "couldn't download Convert Wheel $version."
-    fetch -o "$work/latest.json" "https://github.com/$REPO/releases/download/$tag/latest.json"
+    # The .deb's name comes from the release's own list: it was Convert.Wheel_... up
+    # to 0.3.x and is Pirouette_... after. The signature check below names it again.
+    fetch -o "$work/latest.json" "https://github.com/$REPO/releases/download/$tag/latest.json" ||
+        fail "couldn't download the list of release $version."
+    name=$(python3 -I -c 'import json,os,sys; print(os.path.basename(json.load(open(sys.argv[1]))["platforms"]["linux-x86_64-deb"]["url"]))' "$work/latest.json" 2>/dev/null) ||
+        fail "release $version lists no .deb."
+    printf '%s' "$name" | grep -Eqx '[A-Za-z.]+_[0-9]+[.][0-9]+[.][0-9]+_amd64[.]deb' || fail "release $version lists an odd .deb name."
+    deb="$work/$name"
+    fetch -o "$deb" "https://github.com/$REPO/releases/download/$tag/$name" ||
+        fail "couldn't download Pirouette $version."
     signed "$deb" "$work/latest.json" "$version" || fail "the download isn't the signed release; nothing was installed."
-    echo "Signature checked: Convert Wheel $version, signed with the project's update key."
+    echo "Signature checked: Pirouette $version, signed with the project's update key."
     chmod 644 "$deb"
     apt_get install -y "$deb"
     [ -x "$EXE" ] || fail "$EXE isn't there after installing."
@@ -212,9 +218,9 @@ main() {
     step "3/5 Open at Login"
     autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
     mkdir -p "$autostart"
-    printf '[Desktop Entry]\nType=Application\nName=Convert Wheel\nExec="%s"\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n' \
+    printf '[Desktop Entry]\nType=Application\nName=Pirouette\nExec="%s"\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n' \
         "$EXE" >"$autostart/convert-wheel.desktop"
-    echo "On. To turn it off, untick Open at Login in the Convert Wheel menu."
+    echo "On. To turn it off, untick Open at Login in Pirouette's Settings."
 
     step "4/5 Keyboard shortcut"
     key=""
@@ -226,7 +232,7 @@ main() {
         echo "Not set here. Add one in your desktop's keyboard settings: command '$EXE --show', key Super+Shift+C."
     fi
 
-    step "5/5 Starting Convert Wheel"
+    step "5/5 Starting Pirouette"
     if pgrep -x convert-wheel >/dev/null; then
         echo "It's already running. Quit it from its menu and start it again to use the version just installed."
     elif [ -n "${SSH_CONNECTION:-}" ] || [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
@@ -241,7 +247,7 @@ main() {
         fi
     fi
 
-    step "Done: Convert Wheel $version"
+    step "Done: Pirouette $version"
     case "${XDG_SESSION_TYPE:-}" in
         x11) echo "Hold Shift while dragging a file in Files, and the wheel opens. Drop the file on a format." ;;
         wayland)

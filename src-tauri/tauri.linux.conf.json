@@ -1,5 +1,4 @@
 {
-  "productName": "Convert Wheel",
   "app": {
     "windows": [
       {
@@ -29,7 +28,16 @@
     "shortDescription": "Hold Shift while dragging a file to convert it",
     "linux": {
       "deb": {
-        "desktopTemplate": "linux/convert-wheel.desktop"
+        "desktopTemplate": "linux/convert-wheel.desktop",
+        "conflicts": [
+          "convert-wheel"
+        ],
+        "replaces": [
+          "convert-wheel"
+        ],
+        "provides": [
+          "convert-wheel"
+        ]
       }
     }
   }

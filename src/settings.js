@@ -90,8 +90,8 @@ function general(v) {
   // The keyboard wheel: how each system hands it the selected files.
   const entry = {
     macos: ['Finder: right-click > Services > Open in Pirouette Wheel', 'Set a key for it in System Settings > Keyboard > Keyboard Shortcuts > Services. Then ← → pick, Enter applies, Esc closes.'],
-    windows: ['File Explorer: right-click > Send to > Convert Wheel', 'Then ← → pick, Enter applies, Esc closes.'],
-    linux: ['Files: right-click > Open With > Convert Wheel', 'Then ← → pick, Enter applies, Esc closes.'],
+    windows: ['File Explorer: right-click > Send to > Pirouette', 'Then ← → pick, Enter applies, Esc closes.'],
+    linux: ['Files: right-click > Open With > Pirouette', 'Then ← → pick, Enter applies, Esc closes.'],
   }[v.system];
   const keyboardRow = v.send_to !== null
     ? row(entry[0], toggle('send-to', v.send_to, (e) => change({ what: 'send-to', on: e.target.checked })), entry[1])
