@@ -68,5 +68,7 @@ Var OldDesktopShortcut
   ; an update leaves it.
   ${If} $UpdateMode <> 1
     Delete "$APPDATA\Microsoft\Windows\SendTo\${PRODUCTNAME}.lnk"
+    ; And the link its notifications carry (win_toast.rs).
+    DeleteRegKey HKCU "Software\Classes\pirouette"
   ${EndIf}
 !macroend
