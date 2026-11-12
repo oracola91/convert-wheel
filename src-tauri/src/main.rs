@@ -184,6 +184,7 @@ impl Words {
             "tool:resize" => tool("Resizing {}", "Resized", "Resized {} files", "resize", "Stopped resizing"),
             "tool:flip" => tool("Flipping {}", "Flipped", "Flipped {} files", "flip", "Stopped flipping"),
             "tool:mute" => tool("Taking the sound out of {}", "Muted", "Muted {} files", "mute", "Stopped muting"),
+            "tool:snapshot" => tool("Taking a picture of {}", "Saved the picture", "Saved pictures of {} files", "take a picture of", "Stopped taking pictures"),
             "tool:lock" => tool(
                 "Adding a password to {}",
                 "Locked with a password",
@@ -796,7 +797,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_enter, settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_resize, editor::editor_lock, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
+        .invoke_handler(tauri::generate_handler![wheel_enter, settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_resize, editor::editor_lock, editor::editor_frame, editor::editor_snapshot, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {

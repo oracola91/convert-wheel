@@ -112,6 +112,8 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
                 ("tool:speed", Some(Edit::Speed(percent))) => format!("{}x speed", speed_text(percent)),
                 // Resize names the size: "photo (1920 px).jpg".
                 ("tool:resize", Some(Edit::Resize(side))) => format!("{side} px"),
+                // Snapshot names the moment: "clip (frame at 1m05s).jpg".
+                ("tool:snapshot", Some(Edit::Snapshot(ms))) => format!("frame at {}", moment_text(ms)),
                 _ => tool_suffix(t).to_string(),
             };
             (format!("{base} ({suffix})"), tool_out_ext(t, &ext))
@@ -469,6 +471,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:resize" => "resized",
         "tool:flip" => "flipped",
         "tool:mute" => "no sound",
+        "tool:snapshot" => "frame",
         "tool:lock" => "locked",
         "tool:parts" => "parts",
         "tool:join" => "joined",
@@ -505,6 +508,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:resize" => "resized",
         "tool:flip" => "flipped",
         "tool:mute" => "muted",
+        "tool:snapshot" => "turned into a picture",
         "tool:lock" => "locked with a password",
         "tool:parts" => "split into parts",
         "tool:join" => "joined",
@@ -517,7 +521,7 @@ fn tool_done(tool: &str) -> &'static str {
 /// a QR code's text.
 fn tool_out_ext(tool_id: &str, ext: &str) -> String {
     match tool_id {
-        "tool:still" => "jpg".into(),
+        "tool:still" | "tool:snapshot" => "jpg".into(),
         "tool:qr" => "txt".into(),
         _ => formats::canonical(ext).into(),
     }
@@ -571,6 +575,13 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             ffmpeg(src, &args, out, VIDEO)
         }
         "tool:still" => ffmpeg(src, &["-map", "0:v:0", "-frames:v", "1", "-q:v", "2", "-update", "1"], out, QUICK),
+        // The moment chosen in its window, as a JPEG at the video's own size.
+        "tool:snapshot" => {
+            let Some(Edit::Snapshot(ms)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Snapshot opens its window from the wheel".into());
+            };
+            frame_at(src, ms, out)
+        }
         // The picture as it is, copied, without any sound track. Quick: nothing is
         // encoded again.
         "tool:mute" => {
@@ -1062,6 +1073,46 @@ pub fn video_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     let frame = work.path().join("frame.jpg");
     ffmpeg(src, &["-map", "0:v:0", "-vf", "thumbnail", "-frames:v", "1", "-q:v", "2", "-update", "1"], &frame, QUICK)?;
     preview(&frame)
+}
+
+/// One frame of the video's main picture at `ms`, upright, as a JPEG at `out`. Seeking
+/// before reading (-ss ahead of -i) is quick even far into a long video.
+fn frame_at(src: &Path, ms: u64, out: &Path) -> Result<(), String> {
+    let at = format!("{}.{:03}", ms / 1000, ms % 1000);
+    let mut cmd = Command::new(tool("ffmpeg")?);
+    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", &at]);
+    cmd.args(["-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-i"])
+        .arg(format!("file:{}", src.display()))
+        .args(["-map", MAIN_PICTURE, "-frames:v", "1", "-q:v", "2", "-update", "1"])
+        .arg(out);
+    run(cmd, QUICK)?;
+    if !out.is_file() {
+        return Err("there is no picture at that moment".into());
+    }
+    Ok(())
+}
+
+/// Snapshot's window: the frame at `ms`, made into the preview the way a picture's is.
+pub fn frame_preview(src: &Path, ms: u64) -> Result<Vec<u8>, String> {
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let frame = work.path().join("frame.jpg");
+    frame_at(src, ms, &frame)?;
+    preview(&frame).map(|(_, _, jpeg)| jpeg)
+}
+
+/// A moment for a file name: "12s", "1m05s", "1h02m03s" (no colons, which Windows
+/// doesn't allow in names).
+pub fn moment_text(ms: u64) -> String {
+    let total = ms / 1000;
+    let (h, m, s) = (total / 3600, total / 60 % 60, total % 60);
+    match (h, m) {
+        (0, 0) => format!("{s}s"),
+        (0, _) => format!("{m}m{s:02}s"),
+        _ => format!("{h}h{m:02}m{s:02}s"),
+    }
 }
 
 /// Black Out's window: a typical frame of the video's main picture (MAIN_PICTURE),
@@ -2367,6 +2418,8 @@ pub enum Edit {
     Info(Vec<(String, String)>),
     /// Resize: the longest side, in pixels.
     Resize(u32),
+    /// Snapshot: the moment, in milliseconds from the start.
+    Snapshot(u64),
     /// Password: the one to open the PDF with.
     Password(Password),
 }
@@ -4561,6 +4614,15 @@ mod tests {
         let resized = under(&small, || convert(&clip, "tool:resize", None, work.path())).unwrap();
         assert_eq!(resized, work.path().join("clip (160 px).mp4"));
         assert_eq!(video_size(&resized), "160x120");
+
+        // Snapshot: the moment chosen, at the video's own size, named after the moment.
+        assert!(frame_preview(&clip, 1500).unwrap().starts_with(&[0xFF, 0xD8]));
+        let moment = Control::with_edit(Quality::default(), Some(Edit::Snapshot(1500)));
+        let shot = under(&moment, || convert(&clip, "tool:snapshot", None, work.path())).unwrap();
+        assert_eq!(shot, work.path().join("clip (frame at 1s).jpg"));
+        assert_eq!(picture_size(&shot), "320x240");
+        assert_eq!(moment_text(65_000), "1m05s");
+        assert_eq!(moment_text(3_723_000), "1h02m03s");
 
         // Crop: the window's frame is the video's size, upright; the box comes out at
         // its own size, turned first when asked.

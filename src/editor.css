@@ -741,3 +741,22 @@ footer.rows {
   width: auto;
   padding: 0;
 }
+
+/* Snapshot: the frame fitted into the stage, and a full-width slider under it. */
+#stage.snapshot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#stage.snapshot #frame {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+#panel input[type="range"] {
+  width: 100%;
+  padding: 0;
+  box-sizing: border-box;
+}
