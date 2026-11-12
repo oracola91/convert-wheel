@@ -317,7 +317,7 @@ pub(crate) fn stop_converting(app: &AppHandle) {
 /// Esc or a click in the middle of a wheel that was opened from the keyboard shortcut.
 #[tauri::command]
 fn wheel_cancel(app: AppHandle) {
-    trigger::hide_wheel(&app, false, None);
+    trigger::cancel(&app);
 }
 
 /// The wheel's page: the cursor rested on More, so show the next set of items.

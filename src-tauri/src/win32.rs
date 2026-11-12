@@ -26,10 +26,11 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_LBUTTON, VK_LEFT, VK_MENU, VK_RBUTTON, VK_RIGHT, VK_SHIFT, VK_UP,
 };
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IsWindow,
-    SetWindowLongPtrW,
+    EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW,
+    GetWindowThreadProcessId, IsWindow, SetForegroundWindow, SetWindowLongPtrW,
     SetWindowPos, ShowWindow, WindowFromPoint, GA_PARENT, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, SM_CXDRAG,
     SM_CYDRAG, SM_SWAPBUTTON, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SWP_SHOWWINDOW, SW_HIDE, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX,
@@ -202,6 +203,55 @@ pub fn open(app: &AppHandle) {
     let x = (pt.x - size / 2).min(work.right - size).max(work.left);
     let y = (pt.y - size / 2).min(work.bottom - size).max(work.top);
     let _ = unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, size, size, SWP_NOACTIVATE | SWP_SHOWWINDOW) };
+}
+
+/// The keyboard wheel (Send To) takes the keyboard, so Enter, Esc, the arrows and Tab
+/// all reach its page. Main thread, after `open`. Says whether the wheel is in front.
+///
+/// Tauri's own set_focus can't do this: it acts only on windows Tauri showed itself,
+/// and `open` shows the wheel with SetWindowPos. The wheel is also a window that
+/// never takes the focus (a Shift+drag must leave it with File Explorer), so that is
+/// switched off here and back on in `give_keys_back`. Windows lets this copy come to
+/// the front because the Send To start handed it that right (main.rs).
+pub fn take_keys(app: &AppHandle) -> bool {
+    let Some(hwnd) = wheel_hwnd(app) else {
+        return false;
+    };
+    set_no_activate(hwnd, false);
+    let mut front = unsafe { SetForegroundWindow(hwnd) }.as_bool();
+    if !front {
+        // The right was used up (another click in the meantime): share the front
+        // window's input for a moment, the usual way round.
+        let other = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), None) };
+        let me = unsafe { GetCurrentThreadId() };
+        if other != 0 && other != me && unsafe { AttachThreadInput(me, other, true) }.as_bool() {
+            front = unsafe { SetForegroundWindow(hwnd) }.as_bool();
+            let _ = unsafe { AttachThreadInput(me, other, false) };
+        }
+    }
+    // WebView2 draws the page in a window of its own: the focus has to move into it.
+    if let Some(win) = app.get_webview_window("wheel") {
+        let page: &tauri::Webview = win.as_ref();
+        let _ = page.set_focus();
+    }
+    front && unsafe { GetForegroundWindow() } == hwnd
+}
+
+/// After the keyboard wheel: the wheel is again a window that never takes the focus.
+/// Not Tauri's set_focusable: for a window Tauri thinks is hidden, that hides it at
+/// once and puts back the frame `make_bare_popup` took off.
+pub fn give_keys_back(app: &AppHandle) {
+    if let Some(hwnd) = wheel_hwnd(app) {
+        set_no_activate(hwnd, true);
+    }
+}
+
+fn set_no_activate(hwnd: HWND, on: bool) {
+    let flag = WS_EX_NOACTIVATE.0 as isize;
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, if on { ex | flag } else { ex & !flag });
+    }
 }
 
 /// Lets the page's close animation play, then hides the wheel unless a newer one
