@@ -47,6 +47,7 @@ const TOOLS = {
   'tool:flip': ['Flip', 'Mirror left to right'],
   'tool:mute': ['Mute', 'Without the sound'],
   'tool:snapshot': ['Snapshot', 'A picture of any moment'],
+  'tool:percent': ['To %', 'Each to a share of its size'],
   'tool:lock': ['Password', 'Lock it with a password'],
   'tool:parts': ['Split', 'Split into parts'],
   'tool:join': ['Join', 'Join into one'],

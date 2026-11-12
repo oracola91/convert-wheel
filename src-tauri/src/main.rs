@@ -184,6 +184,13 @@ impl Words {
             "tool:resize" => tool("Resizing {}", "Resized", "Resized {} files", "resize", "Stopped resizing"),
             "tool:flip" => tool("Flipping {}", "Flipped", "Flipped {} files", "flip", "Stopped flipping"),
             "tool:mute" => tool("Taking the sound out of {}", "Muted", "Muted {} files", "mute", "Stopped muting"),
+            "tool:percent" => tool(
+                "Compressing {} to a share of its size",
+                "Compressed",
+                "Compressed {} files",
+                "compress",
+                "Stopped compressing",
+            ),
             "tool:snapshot" => tool("Taking a picture of {}", "Saved the picture", "Saved pictures of {} files", "take a picture of", "Stopped taking pictures"),
             "tool:lock" => tool(
                 "Adding a password to {}",
@@ -385,6 +392,11 @@ pub(crate) fn enqueue_edit(app: &AppHandle, path: String, format: &str, edit: co
     send_job(app, Job { paths: vec![path], format: format.into(), edit: Some(edit) });
 }
 
+/// Queues several files with the same choice from one window (Compress to %).
+pub(crate) fn enqueue_edits(app: &AppHandle, paths: Vec<String>, format: &str, edit: convert::Edit) {
+    send_job(app, Job { paths, format: format.into(), edit: Some(edit) });
+}
+
 fn send_job(app: &AppHandle, job: Job) {
     JOBS.fetch_add(1, Ordering::SeqCst);
     if app.state::<Sender<Job>>().send(job).is_err() {
@@ -462,6 +474,7 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
                 | "tool:target"
                 | "tool:flip"
                 | "tool:resize"
+                | "tool:percent"
         );
     let slow = encodes
         && job.paths.iter().any(|p| {
@@ -797,7 +810,7 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_enter, settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_resize, editor::editor_lock, editor::editor_frame, editor::editor_snapshot, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
+        .invoke_handler(tauri::generate_handler![wheel_enter, settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_resize, editor::editor_lock, editor::editor_frame, editor::editor_snapshot, editor::editor_percent, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {

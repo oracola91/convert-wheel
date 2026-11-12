@@ -185,6 +185,14 @@ const TOOLS: &[(&str, &[&str])] = &[
             "opus", "wma", "pdf",
         ],
     ),
+    // Several files at once, each to the same share of its own size (from its window).
+    (
+        "tool:percent",
+        &[
+            "jpg", "jpeg", "heic", "heif", "webp", "avif", "mp4", "mov", "m4v", "mkv", "webm", "mp3", "m4a", "aac", "ogg",
+            "opus", "wma", "pdf",
+        ],
+    ),
     (
         "tool:join",
         &[
@@ -230,6 +238,8 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
             exts.iter().all(|e| ins.contains(&e.as_str()))
                 && (!combines(id) || paths.len() > 1)
                 && (!opens_editor(id) || paths.len() == 1)
+                // One file has To a Size (with Half and Quarter); this is for several.
+                && (*id != "tool:percent" || paths.len() > 1)
                 // Join takes sound files or video files, not the two together.
                 && (*id != "tool:join" || exts.iter().all(|e| kind_of(e) == kind_of(&exts[0])))
         })
@@ -437,7 +447,7 @@ mod tests {
             "tool:crop", "tool:target", "tool:info",
         ];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG"])), one);
-        let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:flip", "tool:qr", "tool:onepdf", "tool:collage"];
+        let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:flip", "tool:qr", "tool:onepdf", "tool:collage", "tool:percent"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), two);
         // BMP has no metadata to remove and nothing to compress it with.
         // Crop opens a window for one picture: not offered for two.
@@ -477,14 +487,17 @@ mod tests {
             tools_for(&v(&["/tmp/a.wav"])),
             ["tool:clean", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:loudness", "tool:mono", "tool:info"]
         );
-        assert_eq!(tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])), ["tool:compress", "tool:clean", "tool:flip", "tool:mute", "tool:still", "tool:join"]);
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])),
+            ["tool:compress", "tool:clean", "tool:flip", "tool:mute", "tool:still", "tool:percent", "tool:join"]
+        );
         // Sound and video together: each is compressed or cleaned in its own way, but
         // Join takes one kind only.
-        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean", "tool:percent"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
         assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller", "tool:lock", "tool:target", "tool:info"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller", "tool:percent"]);
         assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
         assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));
         assert!(TOOLS.iter().all(|(id, _)| is_tool(id)));
