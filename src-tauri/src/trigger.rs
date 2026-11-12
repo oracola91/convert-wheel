@@ -259,18 +259,42 @@ pub(crate) fn open_for_keys(app: &AppHandle, paths: Vec<String>) {
             #[allow(deprecated)]
             objc2_app_kit::NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
         }
+        #[cfg(windows)]
+        crate::log::line(if crate::win32::take_keys(&handle) {
+            "keyboard wheel has the keys"
+        } else {
+            "keyboard wheel couldn't come to the front; the keys stay with the app in front"
+        });
+        #[cfg(not(windows))]
         if let Some(win) = handle.get_webview_window("wheel") {
             let _ = win.set_focusable(true);
             let _ = win.set_focus();
         }
     });
-    close_later(app, generation, KEYBOARD_TIMEOUT, false);
+    let handle = app.clone();
+    thread::spawn(move || {
+        thread::sleep(KEYBOARD_TIMEOUT);
+        if hide_wheel(&handle, false, Some(generation)) {
+            crate::log::line("keyboard wheel closed by itself: no choice in a minute");
+        }
+    });
+}
+
+/// Esc, or a click in the middle, on a wheel that has the keyboard.
+pub(crate) fn cancel(app: &AppHandle) {
+    let keyboard = KEYBOARD.load(std::sync::atomic::Ordering::SeqCst);
+    if hide_wheel(app, false, None) && keyboard {
+        crate::log::line("keyboard wheel closed with Esc or a click in the middle");
+    }
 }
 
 /// After the keyboard wheel: the wheel can't take the keys during a drag again, and
 /// on macOS (`deactivate`, when it closed) the app in front before gets them back.
 /// On the main thread.
 fn give_keys_back(app: &AppHandle, deactivate: bool) {
+    #[cfg(windows)]
+    crate::win32::give_keys_back(app);
+    #[cfg(not(windows))]
     if let Some(win) = app.get_webview_window("wheel") {
         let _ = win.set_focusable(false);
     }
@@ -291,9 +315,12 @@ pub(crate) fn apply_pick(app: &AppHandle) {
         return;
     }
     let Some(i) = *wheel::lock(&state.picked) else {
+        crate::log::line("keyboard wheel: Enter with nothing picked yet");
         return;
     };
-    if wheel::lock(&state.formats).get(i).copied() == Some(wheel::MORE) {
+    let item = wheel::lock(&state.formats).get(i).copied();
+    crate::log::line(&format!("keyboard wheel: Enter on {}", item.unwrap_or("nothing")));
+    if item == Some(wheel::MORE) {
         turn_page(app, true);
         return;
     }
@@ -326,6 +353,7 @@ pub(crate) fn show_pinned(app: &AppHandle, which: Which) {
 
 /// Closes wheel `generation` after `delay`, unless it closed or a newer one opened
 /// in the meantime. With `only_if_waiting`, only while it still has no files.
+#[cfg(any(windows, target_os = "linux"))]
 fn close_later(app: &AppHandle, generation: u64, delay: Duration, only_if_waiting: bool) {
     let app = app.clone();
     thread::spawn(move || {
@@ -613,10 +641,10 @@ pub(crate) fn released(app: &AppHandle) {
 
 /// Closes the wheel. `accepted` tells the page a format was chosen, so it can keep
 /// that segment lit while the wheel shrinks away. With `expected`, only that wheel.
-/// Closing twice does nothing.
-pub fn hide_wheel(app: &AppHandle, accepted: bool, expected: Option<u64>) {
+/// Closing twice does nothing. Says whether this call closed it.
+pub fn hide_wheel(app: &AppHandle, accepted: bool, expected: Option<u64>) -> bool {
     let Some(generation) = app.state::<WheelState>().close(expected) else {
-        return;
+        return false;
     };
     let _ = app.emit("wheel-close", accepted);
     let keyboard = KEYBOARD.swap(false, std::sync::atomic::Ordering::SeqCst);
@@ -635,6 +663,7 @@ pub fn hide_wheel(app: &AppHandle, accepted: bool, expected: Option<u64>) {
         crate::linux::close(&handle, generation);
         let _ = (&handle, generation);
     });
+    true
 }
 
 #[cfg(target_os = "macos")]
