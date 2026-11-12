@@ -91,6 +91,8 @@ pub struct View {
     send_to: Option<bool>,
     /// The converters not found that "Install Missing Converters…" would install.
     missing: Vec<&'static str>,
+    /// An install or update is running now (from the menu or an earlier click).
+    busy: bool,
     kinds: Vec<KindView>,
     keys: Vec<WheelKeys>,
     combos: Vec<Choice>,
@@ -161,6 +163,7 @@ fn view(app: &AppHandle) -> View {
         converters: converters::available(),
         send_to: cfg!(windows).then_some(!s.send_to_off),
         missing: if converters::available() { converters::not_installed().iter().map(|c| c.name).collect() } else { Vec::new() },
+        busy: converters::busy(),
         kinds,
         keys: WHEELS.iter().map(|(which, wheel, label)| WheelKeys { wheel, label, combo: s.keys.get(*which).map(Combo::key) }).collect(),
         combos: Combo::ALL.iter().map(|c| Choice { key: c.key(), label: c.label() }).collect(),
@@ -277,6 +280,8 @@ fn apply(app: &AppHandle, change: Change) -> Result<(), String> {
             crate::shelf_web::setting_changed(app);
         }
         Change::Keys { .. } => crate::wheel::set_keys(saved.keys),
+        // For Show Log: the next wheel should light up in this colour.
+        Change::Highlight { .. } => log::line(&format!("highlight colour now {}", saved.highlight.key())),
         #[cfg(windows)]
         Change::SendTo { .. } => {
             let handle = app.clone();
@@ -346,6 +351,13 @@ pub fn settings_action(app: AppHandle, action: String) -> Result<(), String> {
 /// its button waits meanwhile.
 pub fn converters_running(app: &AppHandle, running: bool) {
     let _ = app.emit_to(LABEL, "converters-updating", running);
+}
+
+/// Tells an open Settings window that an install of missing converters is running or
+/// done: its button says "Installing…" meanwhile, and at the end the window looks
+/// again at what is missing.
+pub fn converters_installing(app: &AppHandle, running: bool) {
+    let _ = app.emit_to(LABEL, "converters-installing", running);
 }
 
 /// Opens the Settings window, or brings the open one to the front.
