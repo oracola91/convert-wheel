@@ -237,14 +237,21 @@ fn read_line(reader: &mut impl BufRead) -> Option<String> {
 }
 
 /// A drag GNOME Shell's extension reports: `from` is the app it started in, then a
-/// "keys" line per poll until "end". Opens and switches the wheel as the X11 poll does;
-/// the extension puts the window under the pointer.
+/// "keys" line per poll until "end", and an "arrow" line per arrow key pressed while
+/// the wheel is open. Opens and switches the wheel as the X11 poll does; the extension
+/// puts the window under the pointer.
 fn follow_drag(app: &AppHandle, from: &str, reader: &mut impl BufRead) {
     let from = from.to_lowercase();
     // No window had the focus (the desktop, on some systems): let it through.
     let mut drag = Drag::new(from == "-" || FILE_MANAGERS.contains(&from.as_str()));
     let mut keys = KeyFollower::default();
     while let Some(line) = read_line(reader) {
+        if let Some(key) = crate::gnome_shell::arrow(&line) {
+            if drag.shown {
+                trigger::arrow(app, key);
+            }
+            continue;
+        }
         let Some(held) = line.strip_prefix("keys ").and_then(Keys::parse) else {
             break;
         };
