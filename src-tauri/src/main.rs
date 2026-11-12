@@ -43,6 +43,8 @@ mod wheel;
 mod wheel_window;
 #[cfg(windows)]
 mod win32;
+#[cfg(windows)]
+mod win_toast;
 
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
@@ -622,6 +624,14 @@ fn show_notification(app: &AppHandle, id: i32, title: &str, body: &str, files: &
         let _ = id;
         mac_notification::show(app, title, body, files);
     }
+    // Windows: with a link, so a click from the notification list works too.
+    #[cfg(windows)]
+    if !win_toast::from_build_folder() {
+        match win_toast::show(&app.config().identifier, id, title, body) {
+            Ok(()) => return,
+            Err(e) => log::line(&format!("notification with a link not shown ({}); trying without", e.message())),
+        }
+    }
     #[cfg(not(target_os = "macos"))]
     if let Err(e) = app.notification().builder().id(id).title(title).body(body).show() {
         log::line(&format!("notification not shown ({e}): {title}: {body}"));
@@ -675,7 +685,9 @@ fn main() {
     // on first, so the running copy's keyboard wheel can come to the front instead of
     // opening behind Explorer.
     #[cfg(windows)]
-    if trigger::files_in_args(&std::env::args().collect::<Vec<_>>(), &std::env::current_dir().unwrap_or_default()).is_some() {
+    if trigger::files_in_args(&std::env::args().collect::<Vec<_>>(), &std::env::current_dir().unwrap_or_default()).is_some()
+        || std::env::args().skip(1).any(|a| win_toast::is_link(&a))
+    {
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY);
         }
@@ -729,6 +741,15 @@ fn main() {
         // opens a second wheel and menu icon. `--update` from a second copy only checks:
         // installing is for the menu or a fresh start with `--update`.
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            #[cfg(windows)]
+            if let Some(link) = args.iter().skip(1).find(|a| win_toast::is_link(a)) {
+                // A click on a notification, maybe from the notification list.
+                match win_toast::clicked(link) {
+                    Some(id) => reveal::show_notified(app, id),
+                    None => log::line("a notification from an earlier start was clicked"),
+                }
+                return;
+            }
             if args.iter().any(|a| a == "--update") {
                 update::check_soon(app);
             } else if let Some(files) = trigger::files_in_args(&args, std::path::Path::new(&cwd)) {
@@ -819,6 +840,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // Windows: Open at Login kept from a copy under the old name.
     #[cfg(windows)]
     login::move_old_entry();
+    // Windows: notifications' links open this copy.
+    #[cfg(windows)]
+    win_toast::register();
     // Windows: the Send To entry for the keyboard wheel, kept pointing at this copy.
     #[cfg(windows)]
     {
