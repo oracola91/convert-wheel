@@ -14,7 +14,7 @@ Every version is on the repo's [Releases page](https://github.com/oracola91/conv
 | Ubuntu, Debian | `Pirouette_<version>_amd64.deb` |
 | Other Linux | `Pirouette_<version>_amd64.AppImage` |
 
-None of the files is code-signed yet, so each system warns once on first launch. The steps below say how to get past that.
+None of the files is signed with a certificate the systems trust, so Windows and macOS warn once on first launch. This stays so: see [Why the files aren't signed](#why-the-files-arent-signed), which also says how to open them safely. Check a download against `SHA256SUMS.txt` first ([Checking a download](#checking-a-download)).
 
 Pirouette does the converting with five free tools that are installed separately: **ffmpeg** (audio, video), **ImageMagick** (images), **pandoc** (documents), **LibreOffice** (office files, and documents to PDF) and **MuPDF** (PDFs to pictures and text). Install them first; the commands are in each section. A format whose tool is missing fails with a notification. On macOS and Windows that notification points to **Install …** in the app's menu, which installs the tool with Homebrew or winget; on Linux it names the install command.
 
@@ -68,7 +68,11 @@ Or install only the ones you need, when you need them: when a drop needs a missi
   msiexec /i "Pirouette_<version>_x64_en-US.msi" /qn
   ```
 
-**3. First launch:** SmartScreen warns about an unknown publisher. Click "More info", then "Run anyway".
+**3. First launch:** SmartScreen warns about an unknown publisher. Check the file first ([Checking a download](#checking-a-download)), then click "More info", then "Run anyway". Or take the "downloaded from the internet" mark off the checked file before opening it, and SmartScreen doesn't ask: right-click it > Properties > tick **Unblock** > OK, or in PowerShell:
+
+  ```
+  Unblock-File .\Pirouette_<version>_x64-setup.exe
+  ```
 
 **4. Use it:** the app's icon sits in the taskbar's notification area (it may be under the ^ arrow). Hold Shift while dragging a file in File Explorer or on the desktop and the wheel opens. It says "Drop here" until the file reaches it, then shows the formats.
 
@@ -152,6 +156,21 @@ sha256sum -c SHA256SUMS.txt --ignore-missing         # Linux
 ```
 
 On Windows, compare `Get-FileHash .\<file> -Algorithm SHA256` with the file's line in `SHA256SUMS.txt`.
+
+## Why the files aren't signed
+
+Pirouette is a personal, open-source project. A code-signing certificate that Windows SmartScreen and macOS Gatekeeper trust costs money every year, its key has to live on a hardware token or a paid cloud signing service (a CA/Browser Forum rule since June 2023), and Microsoft's own signing service takes individuals only in the USA and Canada. So the Windows installers are not signed, and the Mac app is signed only with the project's own certificate, which Gatekeeper doesn't know. The warnings say exactly that: the publisher is unknown, not that the file is harmful.
+
+What protects a download instead:
+
+- **The checksums.** Every release lists the SHA-256 of each file in `SHA256SUMS.txt`, made by the same GitHub build that made the files. Check the file before opening it (above). If it doesn't match, delete it.
+- **The update signature.** Once installed, the app updates itself only with files signed with the project's update key, and checks that signature itself (see *What protects an update* in the README). Updates carry no download mark, so no warning appears for them.
+
+Getting past the warning, for a file you checked:
+
+- **Windows:** "More info" > "Run anyway" in the SmartScreen window, or before opening: right-click > Properties > **Unblock**, or `Unblock-File .\<file>` in PowerShell. This only removes the mark from that one file. Don't switch SmartScreen off for the whole computer.
+- **macOS:** open it once, then System Settings > Privacy & Security > "Open Anyway", or `xattr -dr com.apple.quarantine "/Applications/Pirouette.app"` (macOS steps above).
+- **Linux:** no warning. The `.deb` installs as usual; an AppImage only needs `chmod +x`.
 
 ## Making a release
 

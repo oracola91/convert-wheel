@@ -323,6 +323,6 @@ jobs:
           | Other Linux | \`Pirouette_${version}_amd64.AppImage\` |
           | macOS (Apple silicon) | \`Pirouette_${version}_aarch64.dmg\` |
 
-          The installers are not code-signed yet. Updates are signed with the project's update key, with the version recorded in the signature, and the app refuses an update that doesn't match. SHA256SUMS.txt lists the files' checksums.
+          The installers are not code-signed (a personal project; INSTALL.md, *Why the files aren't signed*, says how to open a checked file). Updates are signed with the project's update key, with the version recorded in the signature, and the app refuses an update that doesn't match. SHA256SUMS.txt lists the files' checksums.
           EOF
           gh release create "$GITHUB_REF_NAME" release/* --repo "$REPO" --draft --title "Pirouette $version" --notes-file notes.md
