@@ -441,4 +441,23 @@ mod tests {
             assert!(SWATCHES.iter().any(|(k, _)| *k == h.key()), "{}", h.key());
         }
     }
+
+    /// The CSP (style-src 'self') drops style="…" attributes: pages set styles through
+    /// element.style. One such attribute left the Highlight swatches blank (2026-11-12).
+    #[test]
+    fn no_page_sets_a_style_attribute() {
+        let pages = [
+            ("settings.js", include_str!("../../src/settings.js")),
+            ("wheel.js", include_str!("../../src/wheel.js")),
+            ("shelf.js", include_str!("../../src/shelf.js")),
+            ("float.js", include_str!("../../src/float.js")),
+            ("editor.js", include_str!("../../src/editor.js")),
+            ("markup.js", include_str!("../../src/markup.js")),
+        ];
+        for (name, js) in pages {
+            for bad in ["style: `", "style: '", "setAttribute('style'", "style=\""] {
+                assert!(!js.contains(bad), "{name} sets a style attribute ({bad})");
+            }
+        }
+    }
 }

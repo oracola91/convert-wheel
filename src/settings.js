@@ -176,9 +176,13 @@ function wheel(v) {
   const swatches = h(
     'div',
     { class: 'swatches', role: 'radiogroup', 'aria-label': 'Highlight colour' },
-    v.colors.map((c) =>
-      h('label', { style: `background:${c.color}`, title: c.label }, h('input', { type: 'radio', name: 'highlight', id: `highlight-${c.key}`, value: c.key, 'aria-label': c.label, checked: c.key === v.highlight, onchange: () => change({ what: 'highlight', color: c.key }) })),
-    ),
+    v.colors.map((c) => {
+      const swatch = h('label', { title: c.label }, h('input', { type: 'radio', name: 'highlight', id: `highlight-${c.key}`, value: c.key, 'aria-label': c.label, checked: c.key === v.highlight, onchange: () => change({ what: 'highlight', color: c.key }) }));
+      // Through the style object: the app's CSP (style-src 'self') drops an inline
+      // style attribute, which left every swatch blank (Mac test 2026-11-12).
+      swatch.style.background = c.color;
+      return swatch;
+    }),
   );
 
   const mac = v.system === 'macos';
