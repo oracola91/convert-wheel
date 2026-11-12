@@ -408,9 +408,10 @@ listen('wheel-show', (event) => {
   nameWheel();
   if (picture && picture.path !== paths[0]) picture = null;
   pinned = event.payload?.pinned === true;
-  pinnedKeys = 'false/false';
+  latched = 'none';
+  tapping = null;
   picked = null;
-  if (pinned && !pending) say(`Wheel open, ${formats.length} items. Left and Right choose, Enter applies, Escape closes.`);
+  if (pinned && !pending) say(`Wheel open, ${formats.length} items. Left and Right choose, Enter applies, Escape closes, Tab switches wheels.`);
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   const highlight = event.payload?.highlight;
   document.documentElement.dataset.highlight = HIGHLIGHTS.includes(highlight) ? highlight : 'orange';
@@ -443,6 +444,7 @@ listen('wheel-formats', (event) => {
   if (moreTimer && formats[formats.length - 1] === 'more') keep = { segment: formats.length - 1, hub: false };
   else stopMore();
   nameWheel();
+  if (pinned && !pending) say(`${svg.getAttribute('aria-label')}, ${formats.length} items.`);
   // No fade-in: in the wheel's window macOS can hold an animation at its first
   // frame, which left a switched-to wheel with invisible segments.
   build();
@@ -530,17 +532,39 @@ document.addEventListener('keydown', (event) => {
     invoke('wheel_enter').catch(() => {});
   }
 });
-// The shortcut's wheel has the keyboard (Linux): Alt and Control switch wheels, as
-// Option and Control do during a Shift+drag.
-let pinnedKeys = '';
-function pinnedSwitch(event) {
-  if (!open || !pinned) return;
-  const now = `${event.altKey}/${event.ctrlKey}`;
-  if (now === pinnedKeys) return;
-  pinnedKeys = now;
-  invoke('wheel_keys', { alt: event.altKey, control: event.ctrlKey }).catch(() => {});
+// A wheel that has the keyboard (the keyboard wheel; the shortcut's wheel on Linux):
+// a tap of Option (Alt) or Control switches to the wheel those keys open during a
+// Shift+drag and it stays, so Left, Right and Enter work on it with the key let go;
+// the same tap again goes back. Tab and Shift+Tab go round all three. Holding the key
+// was the first idea (2026-11-10), but the wheel went back as soon as the key was let
+// go, and Control with an arrow is the system's own (macOS: move to another desktop).
+const LATCHES = ['none', 'alt', 'control'];
+let latched = 'none';
+// The modifier pressed with no other key since: a tap if it comes up alone.
+let tapping = null;
+function latch(to) {
+  latched = to;
+  invoke('wheel_keys', { alt: to === 'alt', control: to === 'control' }).catch(() => {});
 }
-document.addEventListener('keydown', pinnedSwitch);
+document.addEventListener('keydown', (event) => {
+  if (!open || !pinned) return;
+  if (event.key === 'Alt' || event.key === 'Control') {
+    if (!event.repeat) tapping = event.key;
+    return;
+  }
+  tapping = null;
+  if (event.key === 'Tab') {
+    event.preventDefault();
+    const at = LATCHES.indexOf(latched);
+    latch(LATCHES[(at + (event.shiftKey ? LATCHES.length - 1 : 1)) % LATCHES.length]);
+  }
+});
+document.addEventListener('keyup', (event) => {
+  if (!open || !pinned || event.key !== tapping) return;
+  tapping = null;
+  const key = event.key === 'Alt' ? 'alt' : 'control';
+  latch(latched === key ? 'none' : key);
+});
 
 // Arrow keys: the segment they picked (any system, from its own key polling), and on
 // the shortcut's wheel, which has the keyboard (Linux), the keys themselves.
@@ -566,7 +590,6 @@ document.addEventListener('keydown', (event) => {
   event.preventDefault();
   invoke('wheel_arrow', { key: ARROWS[event.key] }).catch(() => {});
 });
-document.addEventListener('keyup', pinnedSwitch);
 svg.addEventListener('click', (event) => {
   if (open && pinned && event.target === hub) cancel();
 });
