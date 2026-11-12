@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Password</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="lock.js" defer></script>
+</head>
+<body>
+  <main>
+    <section id="panel">
+      <p id="what"></p>
+      <label for="password">Password</label>
+      <input id="password" class="wide" type="password" autocomplete="new-password" spellcheck="false">
+      <label for="again">The same again</label>
+      <input id="again" class="wide" type="password" autocomplete="new-password" spellcheck="false">
+      <label class="check"><input id="show" type="checkbox"> Show the password</label>
+      <p id="hint"></p>
+      <p id="problem" role="alert" hidden></p>
+    </section>
+    <footer>
+      <div class="end">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="button" id="apply" class="primary">Add Password</button>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>

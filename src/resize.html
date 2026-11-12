@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Resize</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="resize.js" defer></script>
+</head>
+<body>
+  <main>
+    <section id="panel">
+      <p id="what"></p>
+      <label for="side">Longest side, in pixels</label>
+      <div class="row">
+        <input id="side" inputmode="numeric" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="presets" class="group" role="group" aria-label="Sizes"></div>
+      <p id="hint"></p>
+      <p id="problem" role="alert" hidden></p>
+    </section>
+    <footer>
+      <div class="end">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="button" id="apply" class="primary">Resize</button>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>

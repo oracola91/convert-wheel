@@ -110,6 +110,8 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
                 ("tool:target", Some(Edit::Size(bytes))) => format!("under {}", size_text(bytes)),
                 // Speed names the speed: "clip (2x speed).mov".
                 ("tool:speed", Some(Edit::Speed(percent))) => format!("{}x speed", speed_text(percent)),
+                // Resize names the size: "photo (1920 px).jpg".
+                ("tool:resize", Some(Edit::Resize(side))) => format!("{side} px"),
                 _ => tool_suffix(t).to_string(),
             };
             (format!("{base} ({suffix})"), tool_out_ext(t, &ext))
@@ -171,6 +173,10 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
         (Some(_), _) => Err("the Tools wheel has no tools for this kind of file yet".to_string()),
+        // Camera RAW: decoded to a TIFF first, then converted from that.
+        (None, Kind::Image) if formats::is_raw(&ext) => raw_to_tiff(&input, &ext, &out).and_then(|tiff| {
+            file(if target == "svg" { to_svg(&tiff, &out, work.path()) } else { image(&tiff, target, &out) })
+        }),
         (None, Kind::Image) if target == "svg" => file(to_svg(&input, &out, work.path())),
         (None, Kind::Image) => file(image(&input, target, &out)),
         (None, Kind::Audio) => file(audio(&input, target, &out)),
@@ -283,6 +289,73 @@ fn sniff_image(head: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Whether the start of a file fits its camera RAW extension: most are TIFF inside,
+/// Olympus, Panasonic and Fujifilm have their own, Canon's CR3 is an ISO media file.
+fn raw_head_ok(head: &[u8], ext: &str) -> bool {
+    let at = |i: usize, sig: &[u8]| head.get(i..i + sig.len()) == Some(sig);
+    let tiff = at(0, b"II*\0") || at(0, b"MM\0*");
+    match ext {
+        "orf" => at(0, b"IIRO") || at(0, b"IIRS") || at(0, b"MMOR") || tiff,
+        "rw2" => at(0, b"IIU\0") || tiff,
+        "raf" => at(0, b"FUJIFILMCCD-RAW"),
+        "cr3" => at(4, b"ftyp") && at(8, b"crx "),
+        _ => tiff,
+    }
+}
+
+/// A camera RAW file as a 16-bit TIFF in the work folder (next to `out`), for
+/// ImageMagick to convert from. macOS decodes it itself with sips (Apple's own RAW
+/// engine, the one Preview uses). Elsewhere ImageMagick does, but only when it was
+/// built with LibRaw: without it, it would hand the file to an outside program from
+/// its delegates list, which the app doesn't let it do.
+fn raw_to_tiff(src: &Path, ext: &str, out: &Path) -> Result<PathBuf, String> {
+    if !raw_head_ok(&read_head(src)?, ext) {
+        return Err(format!("this is not a valid .{ext} file"));
+    }
+    let tiff = out.with_file_name("raw.tiff");
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = Command::new("/usr/bin/sips");
+        cmd.args(["-s", "format", "tiff"]).arg(src).arg("--out").arg(&tiff);
+        run(cmd, QUICK)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let magick = magick()?;
+        if !magick_reads_raw(&magick) {
+            return Err(
+                "this ImageMagick can't read camera RAW: it was built without LibRaw (\"magick -version\" lists \"raw\" under Delegates when it can)"
+                    .into(),
+            );
+        }
+        let mut cmd = Command::new(magick);
+        cmd.args(IMAGE_LIMITS).arg(format!("{ext}:{}[0]", src.display())).arg(format!("tiff:{}", tiff.display()));
+        run(cmd, QUICK)?;
+    }
+    if !tiff.is_file() {
+        return Err("the RAW decoder wrote no picture".into());
+    }
+    Ok(tiff)
+}
+
+/// Whether this ImageMagick was built with LibRaw: "raw" among its built-in delegates.
+#[cfg(not(target_os = "macos"))]
+fn magick_reads_raw(magick: &Path) -> bool {
+    let mut cmd = Command::new(magick);
+    cmd.arg("-version").stdin(Stdio::null()).stderr(Stdio::null());
+    quiet(&mut cmd);
+    cmd.output().is_ok_and(|out| delegates_have_raw(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// "Delegates (built-in): bzlib ... raw ..." from `magick -version`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn delegates_have_raw(version: &str) -> bool {
+    version
+        .lines()
+        .find(|l| l.starts_with("Delegates"))
+        .is_some_and(|l| l.split_whitespace().any(|w| w == "raw"))
+}
+
 fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     // Naming the real input format stops ImageMagick from picking a decoder itself.
     // The real format, not the extension, so a PNG saved as .jpg still converts.
@@ -382,6 +455,10 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "new speed",
+        "tool:resize" => "resized",
+        "tool:flip" => "flipped",
+        "tool:mute" => "no sound",
+        "tool:lock" => "locked",
         "tool:parts" => "parts",
         "tool:join" => "joined",
         "tool:target" => "compressed",
@@ -414,6 +491,10 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "sped up or slowed down",
+        "tool:resize" => "resized",
+        "tool:flip" => "flipped",
+        "tool:mute" => "muted",
+        "tool:lock" => "locked with a password",
         "tool:parts" => "split into parts",
         "tool:join" => "joined",
         "tool:target" => "compressed to a size",
@@ -479,6 +560,37 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             ffmpeg(src, &args, out, VIDEO)
         }
         "tool:still" => ffmpeg(src, &["-map", "0:v:0", "-frames:v", "1", "-q:v", "2", "-update", "1"], out, QUICK),
+        // The picture as it is, copied, without any sound track. Quick: nothing is
+        // encoded again.
+        "tool:mute" => {
+            let mut args = vec!["-map", MAIN_PICTURE, "-c:v", "copy", "-an", "-map_metadata", "0"];
+            args.extend(faststart(own));
+            ffmpeg(src, &args, out, AUDIO)
+        }
+        // Mirrored left to right, or at a new size (the longest side as chosen, the
+        // other in proportion, kept even); encoded again in the file's own format, at
+        // the menu's quality, with the first sound.
+        "tool:flip" | "tool:resize" => {
+            let filter = if tool_id == "tool:flip" {
+                "hflip".to_string()
+            } else {
+                let Some(Edit::Resize(side)) = control().and_then(|c| c.edit.clone()) else {
+                    return Err("Resize opens its window from the wheel".into());
+                };
+                if !(RESIZE_MIN..=RESIZE_VIDEO_MAX).contains(&side) {
+                    return Err(format!("pick a size from {RESIZE_MIN} to {RESIZE_VIDEO_MAX} pixels"));
+                }
+                resize_filter(side)
+            };
+            let codec = video_codec(own).ok_or_else(|| format!("{} files can't be {}", own.to_uppercase(), tool_done(tool_id)))?;
+            let frames = match video_fit(own) {
+                Some(fit) => format!("{filter},{fit}"),
+                None => filter,
+            };
+            let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", &frames, "-map_metadata", "0"];
+            args.extend(codec);
+            ffmpeg(src, &args, out, VIDEO)
+        }
         // The box chosen in the Crop window, on the picture upright (ffmpeg turns a
         // phone's video by its tag first) and then turned as chosen there; encoded again
         // in the file's own format, at the menu's quality.
@@ -579,6 +691,12 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+/// ffmpeg's scale for Resize: the longer side becomes `side`, the other follows in
+/// proportion and stays even (-2), as the encoders need.
+fn resize_filter(side: u32) -> String {
+    format!("scale=w='if(gte(iw,ih),{side},-2)':h='if(gte(iw,ih),-2,{side})'")
 }
 
 /// The part of a sound or video from `start_ms` to `end_ms`, cut exactly where asked:
@@ -684,6 +802,18 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
         // IPTC), and comments.
         "tool:clean" => cmd.args(["+profile", "!icc,*", "+set", "comment"]),
         "tool:rotate" => cmd.args(["-rotate", "90"]),
+        // Mirrored left to right.
+        "tool:flip" => cmd.arg("-flop"),
+        // The longest side as chosen, the other in proportion; larger works too.
+        "tool:resize" => {
+            let Some(Edit::Resize(side)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Resize opens its window from the wheel".into());
+            };
+            if !(RESIZE_MIN..=RESIZE_PICTURE_MAX).contains(&side) {
+                return Err(format!("pick a size from {RESIZE_MIN} to {RESIZE_PICTURE_MAX} pixels"));
+            }
+            cmd.args(["-resize", &format!("{side}x{side}")])
+        }
         "tool:crop" => {
             let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Crop opens its window from the wheel".into());
@@ -1286,6 +1416,13 @@ fn smaller_gently(mutool: &Mutool, work: &Path, out_name: &str) -> Result<(), St
     Err("MuPDF crashes on this PDF, so it can't be made smaller here. The PDF itself is unchanged.".into())
 }
 
+/// Password's MuPDF script: the PDF saved again, encrypted with AES-256, with the
+/// password from password.txt beside it (checked: no comma, see Password::new).
+const PDF_LOCK: &str = r#"var password = read("password.txt");
+var doc = Document.openDocument(scriptArgs[0]);
+doc.save(scriptArgs[1], "encrypt=aes-256,user-password=" + password + ",owner-password=" + password);
+"#;
+
 /// Runs a Tools wheel tool on a PDF (Merge, which takes several, is `combine`).
 fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Output, String> {
     let mutool = Mutool { path: tool("mutool")?, src, deadline: Instant::now() + PDF_TOTAL };
@@ -1331,6 +1468,21 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
             fs::write(work.path().join("info.js"), info::PDF_WRITE).map_err(|e| format!("work file: {e}"))?;
             let after = info::pdf_args(out_name, &changes)?;
             mutool.run_args(work.path(), &["run", "info.js"], &after.iter().map(String::as_str).collect::<Vec<_>>())?;
+            Ok(Output::File)
+        }
+        // AES-256, the same password to open and to change it. MuPDF's script reads the
+        // password from a file in the private work folder, so it is never on a command
+        // line, where other users of the computer could see it.
+        "tool:lock" => {
+            let Some(Edit::Password(password)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Password opens its window from the wheel".into());
+            };
+            fs::write(work.path().join("lock.js"), PDF_LOCK).map_err(|e| format!("work file: {e}"))?;
+            let secret = work.path().join("password.txt");
+            fs::write(&secret, password.0.as_bytes()).map_err(|e| format!("work file: {e}"))?;
+            let locked = mutool.run_args(work.path(), &["run", "lock.js"], &[out_name]);
+            let _ = fs::remove_file(&secret);
+            locked?;
             Ok(Output::File)
         }
         "tool:smaller" => {
@@ -2090,7 +2242,53 @@ pub enum Edit {
     Order(Vec<u32>),
     /// Info: the tags changed in its window, by name, with their new values.
     Info(Vec<(String, String)>),
+    /// Resize: the longest side, in pixels.
+    Resize(u32),
+    /// Password: the one to open the PDF with.
+    Password(Password),
 }
+
+/// A PDF's new password, from its window. Never printed: Debug shows only that there
+/// is one, so it can't end up in a log line.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Password(String);
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password(..)")
+    }
+}
+
+impl Password {
+    /// One line of 1 to MAX_PASSWORD characters, without a comma (MuPDF takes its save
+    /// options as one comma-separated list) or control characters.
+    pub fn new(text: String) -> Result<Password, String> {
+        if text.is_empty() {
+            return Err("type a password first".into());
+        }
+        if text.chars().count() > MAX_PASSWORD || text.len() > MAX_PASSWORD_BYTES {
+            return Err(format!("a password can be at most {MAX_PASSWORD} characters"));
+        }
+        if text.contains(',') {
+            return Err("a password can't contain a comma".into());
+        }
+        if text.chars().any(char::is_control) {
+            return Err("a password can't contain tabs or line breaks".into());
+        }
+        Ok(Password(text))
+    }
+}
+
+/// Longest PDF password: AES-256 PDFs (revision 6) take at most 127 bytes of it, so
+/// also fewer characters where they need more than one byte.
+pub const MAX_PASSWORD: usize = 64;
+const MAX_PASSWORD_BYTES: usize = 127;
+
+/// Resize's limits for the longest side: a picture up to ImageMagick's own limit here,
+/// a video up to 8K.
+pub const RESIZE_MIN: u32 = 16;
+pub const RESIZE_PICTURE_MAX: u32 = 16_000;
+pub const RESIZE_VIDEO_MAX: u32 = 7_680;
 
 /// Adjust, from its window: brightness, contrast and saturation in percent, where 100
 /// leaves it as it was.
@@ -3736,6 +3934,24 @@ mod tests {
         assert_eq!(rotated, work.path().join("photo (rotated).jpg"));
         assert_eq!(picture_size(&rotated), "30x40");
 
+        // Resize: the longest side as chosen (larger works too), the name says it.
+        let wide = Control::with_edit(Quality::default(), Some(Edit::Resize(100)));
+        let big = under(&wide, || convert(&photo, "tool:resize", None, work.path())).unwrap();
+        assert_eq!(big, work.path().join("photo (100 px).jpg"));
+        assert_eq!(picture_size(&big), "100x75");
+        assert_eq!(convert(&photo, "tool:resize", None, work.path()).unwrap_err(), "Resize opens its window from the wheel");
+
+        // Flip: red on the left becomes red on the right.
+        let halves = work.path().join("halves.png");
+        let mut make = Command::new(magick().unwrap());
+        make.args(["-size", "20x10", "xc:red", "-size", "20x10", "xc:blue", "+append"]).arg(&halves);
+        assert!(make.status().unwrap().success());
+        let flipped = convert(&halves, "tool:flip", None, work.path()).unwrap();
+        assert_eq!(flipped, work.path().join("halves (flipped).png"));
+        assert_eq!(picture_size(&flipped), "40x10");
+        let left = Command::new(magick().unwrap()).arg(&flipped).args(["-format", "%[fx:p{0,0}.b]", "info:"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&left.stdout).trim(), "1", "blue is on the left now");
+
         let clean = convert(&photo, "tool:clean", None, work.path()).unwrap();
         assert_eq!(clean, work.path().join("photo (no metadata).jpg"));
         assert!(!has(&clean, b"WHERE-I-WAS") && !has(&clean, b"Exif\0\0"));
@@ -3794,6 +4010,21 @@ mod tests {
         let one = work.path().join("one.pdf");
         fs::write(&one, tiny_pdf(&["Only"])).unwrap();
         assert_eq!(convert(&one, "tool:split", None, work.path()).unwrap_err(), "this PDF has only one page");
+
+        // Password: AES-256; MuPDF can't read the pages without it, can with it, and the
+        // password is in no file the app leaves behind.
+        let password = Password::new("s3cret pass=".into()).unwrap();
+        let secret = Control::with_edit(Quality::default(), Some(Edit::Password(password)));
+        let locked = under(&secret, || convert(&three, "tool:lock", None, work.path())).unwrap();
+        assert_eq!(locked, work.path().join("report (locked).pdf"));
+        // (A PDF's numbers, such as its page count, are never encrypted; its content is.)
+        let refused = Command::new(tool("mutool").unwrap()).arg("info").arg(&locked).output().unwrap();
+        let said = String::from_utf8_lossy(&refused.stderr).to_lowercase();
+        assert!(!refused.status.success() && said.contains("password"), "it opens only with the password: {said}");
+        let opened = Command::new(tool("mutool").unwrap()).args(["info", "-p", "s3cret pass="]).arg(&locked).output().unwrap();
+        assert!(String::from_utf8_lossy(&opened.stdout).contains("Pages: 3"), "{}", String::from_utf8_lossy(&opened.stdout));
+        assert!(!fs::read(&locked).unwrap().windows(6).any(|w| w == b"s3cret"));
+        assert_eq!(convert(&three, "tool:lock", None, work.path()).unwrap_err(), "Password opens its window from the wheel");
 
         // Reorder: a picture of each page for its window, then the pages in the order
         // the window sent.
@@ -4186,6 +4417,22 @@ mod tests {
         assert!((0.9..1.15).contains(&length), "{length}");
         assert_eq!(convert(&clip, "tool:speed", None, work.path()).unwrap_err(), "Speed opens its window from the wheel");
 
+        // Mute: the picture copied, no sound left.
+        let muted = convert(&clip, "tool:mute", None, work.path()).unwrap();
+        assert_eq!(muted, work.path().join("clip (no sound).mp4"));
+        assert_eq!(video_size(&muted), "320x240");
+        assert!(sample_rate(&muted, &work.path().join("probe-muted")).is_none(), "the sound is gone");
+        assert!(sample_rate(&clip, &work.path().join("probe-clip")).is_some(), "the original keeps it");
+
+        // Flip and Resize: encoded again, at the new size for Resize.
+        let flipped = convert(&clip, "tool:flip", None, work.path()).unwrap();
+        assert_eq!(flipped, work.path().join("clip (flipped).mp4"));
+        assert_eq!(video_size(&flipped), "320x240");
+        let small = Control::with_edit(Quality::default(), Some(Edit::Resize(160)));
+        let resized = under(&small, || convert(&clip, "tool:resize", None, work.path())).unwrap();
+        assert_eq!(resized, work.path().join("clip (160 px).mp4"));
+        assert_eq!(video_size(&resized), "160x120");
+
         // Crop: the window's frame is the video's size, upright; the box comes out at
         // its own size, turned first when asked.
         let (width, height, jpeg) = video_preview(&clip).unwrap();
@@ -4443,5 +4690,57 @@ mod tests {
         // "v1.2 notes.docx" must look for "v1.2 notes.pdf", not "v1.pdf"
         let stem = Path::new("/x/v1.2 notes.docx").file_stem().unwrap().to_string_lossy();
         assert_eq!(format!("{stem}.pdf"), "v1.2 notes.pdf");
+    }
+
+    #[test]
+    fn passwords_the_pdf_can_take() {
+        assert!(Password::new("correct horse battery".into()).is_ok());
+        assert!(Password::new("pässwörd=1".into()).is_ok());
+        assert_eq!(Password::new(String::new()).unwrap_err(), "type a password first");
+        assert_eq!(Password::new("a,b".into()).unwrap_err(), "a password can't contain a comma");
+        assert!(Password::new("tab\there".into()).is_err());
+        assert!(Password::new("x".repeat(MAX_PASSWORD + 1)).is_err());
+        assert!(Password::new("é".repeat(MAX_PASSWORD)).is_err(), "128 bytes is over what AES-256 PDFs take");
+        assert_eq!(format!("{:?}", Password::new("hunter2".into()).unwrap()), "Password(..)");
+        assert!(!format!("{:?}", Edit::Password(Password::new("hunter2".into()).unwrap())).contains("hunter2"));
+    }
+
+    #[test]
+    fn camera_raw_files_are_checked_by_their_start() {
+        assert!(raw_head_ok(b"II*\0\x08\0\0\0", "cr2"));
+        assert!(raw_head_ok(b"MM\0*\0\0\0\x08", "nef"));
+        assert!(raw_head_ok(b"IIRO\x08\0\0\0", "orf"));
+        assert!(raw_head_ok(b"IIU\0\x08\0\0\0", "rw2"));
+        assert!(raw_head_ok(b"FUJIFILMCCD-RAW 0201", "raf"));
+        assert!(raw_head_ok(b"\0\0\0\x18ftypcrx \0\0\0\x01", "cr3"));
+        assert!(!raw_head_ok(&[0xFF, 0xD8, 0xFF, 0xE0], "dng"), "a JPEG named .dng");
+        assert!(!raw_head_ok(b"\0\0\0\x18ftypheic", "cr3"));
+        assert!(delegates_have_raw("Version: ImageMagick 7.1.2\nDelegates (built-in): bzlib heic jpeg lcms png raw tiff webp zlib\n"));
+        assert!(!delegates_have_raw("Delegates (built-in): bzlib heic jpeg png tiff\n"));
+        assert!(!delegates_have_raw("Delegates (built-in): bzlib rawish\n"));
+    }
+
+    /// macOS decodes camera RAW itself (sips). A TIFF named .dng stands in for one:
+    /// sips reads by content, and a DNG is a TIFF inside.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn camera_raw_goes_through_macos_own_decoder() {
+        if magick().is_err() {
+            eprintln!("ImageMagick isn't installed: RAW not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let tiff = work.path().join("made.tiff");
+        let mut make = Command::new(magick().unwrap());
+        make.args(["-size", "40x30", "gradient:red-blue"]).arg(&tiff);
+        assert!(make.status().unwrap().success());
+        let dng = work.path().join("photo.dng");
+        fs::rename(&tiff, &dng).unwrap();
+        let jpg = convert(&dng, "jpg", None, work.path()).unwrap();
+        assert_eq!(jpg, work.path().join("photo.jpg"));
+        assert_eq!(picture_size(&jpg), "40x30");
+        let fake = work.path().join("fake.nef");
+        fs::write(&fake, [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10]).unwrap();
+        assert_eq!(convert(&fake, "jpg", None, work.path()).unwrap_err(), "this is not a valid .nef file");
     }
 }

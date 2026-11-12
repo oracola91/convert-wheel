@@ -72,6 +72,11 @@ enum View {
     Order { pages: Vec<String> },
     /// What the file is, what it says (label, value) and the tags that can be changed.
     Info { what: &'static str, facts: Vec<(String, String)>, fields: Vec<convert::info::Field> },
+    /// Resize: the picture's or video's size upright, what it is ("picture", "video"),
+    /// and the smallest and largest longest side the app takes.
+    Resize { width: u32, height: u32, what: &'static str, min: u32, max: u32 },
+    /// Password: the longest password the app takes.
+    Lock { max: usize },
 }
 
 impl View {
@@ -86,6 +91,8 @@ impl View {
             View::Parts { .. } => "parts.html",
             View::Order { .. } => "order.html",
             View::Info { .. } => "info.html",
+            View::Resize { .. } => "resize.html",
+            View::Lock { .. } => "lock.html",
         }
     }
 
@@ -94,6 +101,8 @@ impl View {
         match self {
             View::Size { .. } => ((480.0, 370.0), (420.0, 330.0)),
             View::Speed { .. } => ((480.0, 300.0), (420.0, 280.0)),
+            View::Resize { .. } => ((480.0, 340.0), (420.0, 320.0)),
+            View::Lock { .. } => ((440.0, 300.0), (400.0, 280.0)),
             View::Parts { .. } => ((480.0, 360.0), (420.0, 330.0)),
             View::Info { .. } => ((480.0, 560.0), (420.0, 360.0)),
             // Room for all of Mark Up's tools on one row.
@@ -115,6 +124,8 @@ impl View {
             View::Parts { .. } => format!("Split: {name}"),
             View::Order { .. } => format!("Reorder: {name}"),
             View::Info { .. } => format!("Info: {name}"),
+            View::Resize { .. } => format!("Resize: {name}"),
+            View::Lock { .. } => format!("Password: {name}"),
         }
     }
 }
@@ -127,7 +138,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Black Out, Trim, Bleep, Speed, Split, Reorder, Info and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Black Out, Trim, Bleep, Speed, Split, Reorder, Info, Resize, Password and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -141,6 +152,10 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
         } else if tool == "tool:order" {
             convert::page_pictures(&path)
                 .map(|pngs| View::Order { pages: pngs.iter().map(|png| data_url("image/png", png)).collect() })
+        } else if tool == "tool:resize" {
+            resize_view(&path)
+        } else if tool == "tool:lock" {
+            Ok(View::Lock { max: convert::MAX_PASSWORD })
         } else if tool == "tool:info" {
             convert::info::read(&path).map(|i| View::Info { what: i.what, facts: i.facts, fields: i.fields })
         } else if tool == "tool:markup" {
@@ -237,6 +252,16 @@ fn size_view(path: &Path) -> Result<View, String> {
     })
 }
 
+/// What Resize shows: the size upright (a video's from one of its frames), and the
+/// limits for the longest side.
+fn resize_view(path: &Path) -> Result<View, String> {
+    let ext = crate::formats::extension(path).unwrap_or_default();
+    let video = crate::formats::kind_of(&ext) == Some(crate::formats::Kind::Video);
+    let (width, height, _) = if video { convert::video_preview(path)? } else { convert::preview(path)? };
+    let (what, max) = if video { ("video", convert::RESIZE_VIDEO_MAX) } else { ("picture", convert::RESIZE_PICTURE_MAX) };
+    Ok(View::Resize { width, height, what, min: convert::RESIZE_MIN, max })
+}
+
 /// For Speed and Split: how long the file plays, and whether it is a video or a sound.
 fn play_length(path: &Path) -> Result<(u64, &'static str), String> {
     let ext = crate::formats::extension(path).unwrap_or_default();
@@ -309,6 +334,28 @@ pub fn editor_size(app: AppHandle, editing: State<Editing>, bytes: u64) -> Resul
         View::Size { bytes: own, .. } if bytes >= 1_000 && bytes < *own => Ok(Edit::Size(bytes)),
         View::Size { .. } => Err("pick a size under the file's own, of at least 1 KB".into()),
         _ => Err("this window doesn't compress".into()),
+    })
+}
+
+/// Resize: a longest side within the limits, and not the size it already has.
+#[tauri::command]
+pub fn editor_resize(app: AppHandle, editing: State<Editing>, side: u32) -> Result<(), String> {
+    finish(&app, &editing, "tool:resize", |view| match view {
+        View::Resize { width, height, min, max, .. } if (*min..=*max).contains(&side) && side != (*width).max(*height) => {
+            Ok(Edit::Resize(side))
+        }
+        View::Resize { width, height, .. } if side == (*width).max(*height) => Err("that is the size it has already".into()),
+        View::Resize { min, max, .. } => Err(format!("pick a size from {min} to {max} pixels")),
+        _ => Err("this window doesn't resize".into()),
+    })
+}
+
+/// Password: one the app takes (convert::Password::new says why not).
+#[tauri::command]
+pub fn editor_lock(app: AppHandle, editing: State<Editing>, password: String) -> Result<(), String> {
+    finish(&app, &editing, "tool:lock", |view| match view {
+        View::Lock { .. } => convert::Password::new(password).map(Edit::Password),
+        _ => Err("this window doesn't add a password".into()),
     })
 }
 
