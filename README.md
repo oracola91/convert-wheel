@@ -137,7 +137,7 @@ A wheel shows at most ten segments. When it has more to offer, it shows them a s
 
 Select files in the file manager and hand them to the wheel, no drag needed:
 
-- **macOS**: Finder's right-click > **Quick Actions** > **Open in Pirouette Wheel** (Finder lists it there; other apps show it under their menu's Services). Finder hands over the files itself, so Pirouette asks for no permission. A key for it can be set in System Settings > Keyboard > Keyboard Shortcuts > Services (Files and Folders).
+- **macOS**: Finder's right-click menu > **Open in Pirouette Wheel**, at the bottom of the menu below Quick Actions (with many Services installed, Finder groups them in a Services submenu; other apps show it under their menu's Services). Finder hands over the files itself, so Pirouette asks for no permission. A key for it can be set in System Settings > Keyboard > Keyboard Shortcuts > Services (Files and Folders).
 - **Windows**: File Explorer's right-click > **Send to > Convert Wheel**: a shortcut in your own SendTo folder, made at start and switched off in Settings > General.
 - **Linux**: Files' right-click > **Open With** > Convert Wheel (the app's own desktop entry lists the file types it takes).
 
