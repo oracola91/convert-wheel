@@ -26,7 +26,7 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// After this many failed daily checks in a row, say so once instead of only logging.
 const QUIET_FAILURES: u32 = 3;
-const RELEASES: &str = "https://github.com/oracola91/convert-wheel/releases";
+const RELEASES: &str = "https://github.com/oracola91/pirouette/releases";
 
 /// The newer version found by the last check, if any.
 #[derive(Default)]

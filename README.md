@@ -6,7 +6,7 @@ Hold Shift while dragging a file. A wheel of formats appears under the cursor. D
 
 This is our own build, written from scratch.
 
-**To install it, see [INSTALL.md](INSTALL.md).** Installers for every system are on the [Releases page](https://github.com/oracola91/convert-wheel/releases).
+**To install it, see [INSTALL.md](INSTALL.md).** Installers for every system are on the [Releases page](https://github.com/oracola91/pirouette/releases).
 
 ## Status (macOS)
 
@@ -177,7 +177,7 @@ Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS
 
 ## Updates
 
-From version 0.1.1 the app updates itself from this repo's [Releases page](https://github.com/oracola91/convert-wheel/releases). Thirty seconds after it starts, then once a day, it reads `latest.json` from the newest published release (a request to github.com, through the system proxy). When there is a newer version, a notification says so and the menu shows **Install Update … and Restart**. Nothing installs until the user chooses it, or starts the app with `convert-wheel --update`. Conversions still running are finished first.
+From version 0.1.1 the app updates itself from this repo's [Releases page](https://github.com/oracola91/pirouette/releases). Thirty seconds after it starts, then once a day, it reads `latest.json` from the newest published release (a request to github.com, through the system proxy). When there is a newer version, a notification says so and the menu shows **Install Update … and Restart**. Nothing installs until the user chooses it, or starts the app with `convert-wheel --update`. Conversions still running are finished first.
 
 **What protects an update.** Every update file is signed with the project's update key (minisign, Ed25519), and the signature records the version it was made for. The app checks the signature against the public key built into it (`plugins.updater.pubkey` in `tauri.conf.json`) and refuses an update whose signature or version doesn't match (`requireSignedVersion`), so a changed file, a fake one, or an older build relabelled as newer is not installed. Only newer versions install. Files the app downloads itself carry no "downloaded from the internet" mark, so updates don't go through SmartScreen or Gatekeeper: the signature check is the control.
 
