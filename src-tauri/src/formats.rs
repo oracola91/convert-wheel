@@ -176,6 +176,8 @@ const TOOLS: &[(&str, &[&str])] = &[
     // A password to open it, from its window.
     ("tool:lock", &["pdf"]),
     ("tool:still", &["mp4", "mov", "m4v", "mkv", "webm", "avi"]),
+    // A picture of the moment chosen in its window.
+    ("tool:snapshot", &["mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"]),
     (
         "tool:target",
         &[
@@ -252,6 +254,7 @@ pub fn opens_editor(id: &str) -> bool {
             | "tool:target"
             | "tool:resize"
             | "tool:lock"
+            | "tool:snapshot"
     )
 }
 
@@ -454,14 +457,14 @@ mod tests {
             tools_for(&v(&["/tmp/a.MOV"])),
             [
                 "tool:compress", "tool:resize", "tool:clean", "tool:flip", "tool:mute", "tool:crop", "tool:blackout", "tool:trim", "tool:bleep",
-                "tool:speed", "tool:parts", "tool:still", "tool:target", "tool:info"
+                "tool:speed", "tool:parts", "tool:still", "tool:snapshot", "tool:target", "tool:info"
             ]
         );
         assert_eq!(
             tools_for(&v(&["/tmp/a.avi"])),
             [
                 "tool:resize", "tool:clean", "tool:flip", "tool:mute", "tool:crop", "tool:blackout", "tool:trim", "tool:bleep", "tool:speed",
-                "tool:parts", "tool:still", "tool:info"
+                "tool:parts", "tool:still", "tool:snapshot", "tool:info"
             ]
         );
         assert_eq!(

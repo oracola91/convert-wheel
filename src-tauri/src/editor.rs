@@ -77,6 +77,8 @@ enum View {
     Resize { width: u32, height: u32, what: &'static str, min: u32, max: u32 },
     /// Password: the longest password the app takes.
     Lock { max: usize },
+    /// Snapshot: how long the video plays; frames come one at a time (editor_frame).
+    Snapshot { length_ms: u64 },
 }
 
 impl View {
@@ -93,6 +95,7 @@ impl View {
             View::Info { .. } => "info.html",
             View::Resize { .. } => "resize.html",
             View::Lock { .. } => "lock.html",
+            View::Snapshot { .. } => "snapshot.html",
         }
     }
 
@@ -103,6 +106,7 @@ impl View {
             View::Speed { .. } => ((480.0, 300.0), (420.0, 280.0)),
             View::Resize { .. } => ((480.0, 340.0), (420.0, 320.0)),
             View::Lock { .. } => ((440.0, 300.0), (400.0, 280.0)),
+            View::Snapshot { .. } => ((720.0, 560.0), (520.0, 440.0)),
             View::Parts { .. } => ((480.0, 360.0), (420.0, 330.0)),
             View::Info { .. } => ((480.0, 560.0), (420.0, 360.0)),
             // Room for all of Mark Up's tools on one row.
@@ -126,6 +130,7 @@ impl View {
             View::Info { .. } => format!("Info: {name}"),
             View::Resize { .. } => format!("Resize: {name}"),
             View::Lock { .. } => format!("Password: {name}"),
+            View::Snapshot { .. } => format!("Snapshot: {name}"),
         }
     }
 }
@@ -138,7 +143,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Black Out, Trim, Bleep, Speed, Split, Reorder, Info, Resize, Password and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Black Out, Trim, Bleep, Speed, Split, Reorder, Info, Resize, Password, Snapshot and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -154,6 +159,8 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
                 .map(|pngs| View::Order { pages: pngs.iter().map(|png| data_url("image/png", png)).collect() })
         } else if tool == "tool:resize" {
             resize_view(&path)
+        } else if tool == "tool:snapshot" {
+            convert::length_ms(&path).map(|length_ms| View::Snapshot { length_ms })
         } else if tool == "tool:lock" {
             Ok(View::Lock { max: convert::MAX_PASSWORD })
         } else if tool == "tool:info" {
@@ -424,6 +431,28 @@ pub fn editor_info(app: AppHandle, editing: State<Editing>, changes: Vec<(String
     finish(&app, &editing, "tool:info", |view| match view {
         View::Info { fields, .. } => convert::info::check(&changes, fields).map(|()| Edit::Info(changes)),
         _ => Err("this window doesn't change tags".into()),
+    })
+}
+
+/// Snapshot's window: the frame at `ms`, as a JPEG data: URL. On a thread of its own,
+/// as ffmpeg takes a moment.
+#[tauri::command(async)]
+pub fn editor_frame(editing: State<'_, Editing>, ms: u64) -> Result<String, String> {
+    let path = match editing.lock().as_ref() {
+        Some(Session { path, view: View::Snapshot { length_ms }, .. }) if ms <= *length_ms => path.clone(),
+        Some(Session { view: View::Snapshot { .. }, .. }) => return Err("that moment is past the end".into()),
+        _ => return Err("this window shows no video".into()),
+    };
+    convert::frame_preview(&path, ms).map(|jpeg| data_url("image/jpeg", &jpeg))
+}
+
+/// Snapshot: a moment within the video.
+#[tauri::command]
+pub fn editor_snapshot(app: AppHandle, editing: State<Editing>, ms: u64) -> Result<(), String> {
+    finish(&app, &editing, "tool:snapshot", |view| match view {
+        View::Snapshot { length_ms } if ms <= *length_ms => Ok(Edit::Snapshot(ms)),
+        View::Snapshot { .. } => Err("that moment is past the end".into()),
+        _ => Err("this window takes no snapshot".into()),
     })
 }
 
