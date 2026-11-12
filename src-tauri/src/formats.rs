@@ -48,7 +48,12 @@ impl Kind {
 const KINDS: &[(Kind, &[&str], &[&str])] = &[
     (
         Kind::Image,
-        &["jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp", "gif", "avif"],
+        // Camera RAW (RAW, at the end) is read only: macOS's own decoder, or an
+        // ImageMagick built with LibRaw (convert.rs, raw_to_tiff).
+        &[
+            "jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp", "gif", "avif", "dng", "cr2", "cr3", "nef", "nrw",
+            "arw", "orf", "rw2", "raf", "pef", "srw",
+        ],
         &["jpg", "png", "heic", "webp", "tiff", "gif", "avif", "bmp", "ico", "pdf", "svg"],
     ),
     (
@@ -79,6 +84,18 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
 /// the wheel and the converter use, with the formats each tool takes. Animated GIFs are
 /// left out: a tool would have to handle every frame (One PDF takes their first).
 /// Merge and One PDF need two files or more.
+/// Camera RAW files: read as pictures, never written.
+pub const RAW: &[&str] = &["dng", "cr2", "cr3", "nef", "nrw", "arw", "orf", "rw2", "raf", "pef", "srw"];
+
+/// What a camera RAW photo becomes: the photo formats and PDF. Not a traced SVG, an
+/// icon, a 256-colour GIF or a BMP, which make no sense for a camera's photo.
+const RAW_OUTPUTS: &[&str] = &["jpg", "png", "heic", "webp", "tiff", "avif", "pdf"];
+
+/// A camera RAW extension (lower case).
+pub fn is_raw(ext: &str) -> bool {
+    RAW.contains(&ext)
+}
+
 const TOOLS: &[(&str, &[&str])] = &[
     (
         "tool:compress",
@@ -88,6 +105,11 @@ const TOOLS: &[(&str, &[&str])] = &[
         ],
     ),
     ("tool:half", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    // Any size: the longest side, from its window.
+    (
+        "tool:resize",
+        &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"],
+    ),
     (
         "tool:clean",
         &[
@@ -96,6 +118,13 @@ const TOOLS: &[(&str, &[&str])] = &[
         ],
     ),
     ("tool:rotate", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
+    // Mirrored left to right.
+    (
+        "tool:flip",
+        &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"],
+    ),
+    // The picture without its sound, copied as it is.
+    ("tool:mute", &["mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"]),
     ("tool:qr", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp", "gif"]),
     ("tool:adjust", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
     ("tool:markup", &["jpg", "jpeg", "png", "heic", "heif", "webp", "avif", "tiff", "tif", "bmp"]),
@@ -140,6 +169,8 @@ const TOOLS: &[(&str, &[&str])] = &[
     ("tool:split", &["pdf"]),
     ("tool:order", &["pdf"]),
     ("tool:smaller", &["pdf"]),
+    // A password to open it, from its window.
+    ("tool:lock", &["pdf"]),
     ("tool:still", &["mp4", "mov", "m4v", "mkv", "webm", "avi"]),
     (
         "tool:target",
@@ -202,7 +233,22 @@ pub fn tools_for(paths: &[String]) -> Vec<&'static str> {
 
 /// A tool that first opens the editing window (one file at a time) instead of running.
 pub fn opens_editor(id: &str) -> bool {
-    matches!(id, "tool:crop" | "tool:adjust" | "tool:markup" | "tool:blackout" | "tool:trim" | "tool:bleep" | "tool:speed" | "tool:parts" | "tool:order" | "tool:info" | "tool:target")
+    matches!(
+        id,
+        "tool:crop"
+            | "tool:adjust"
+            | "tool:markup"
+            | "tool:blackout"
+            | "tool:trim"
+            | "tool:bleep"
+            | "tool:speed"
+            | "tool:parts"
+            | "tool:order"
+            | "tool:info"
+            | "tool:target"
+            | "tool:resize"
+            | "tool:lock"
+    )
 }
 
 /// The Actions wheel: what can be done with the dragged files themselves, whatever
@@ -255,6 +301,9 @@ pub fn kind_of(ext: &str) -> Option<Kind> {
 }
 
 pub fn outputs_for(ext: &str) -> &'static [&'static str] {
+    if is_raw(ext) {
+        return RAW_OUTPUTS;
+    }
     KINDS
         .iter()
         .find(|(_, ins, _)| ins.contains(&ext))
@@ -356,6 +405,15 @@ mod tests {
     }
 
     #[test]
+    fn camera_raw_becomes_photos_only() {
+        assert_eq!(formats_for(&v(&["/tmp/a.CR2"]), all_shown), ["jpg", "png", "heic", "webp", "tiff", "avif", "pdf"]);
+        assert_eq!(kind_of("nef"), Some(Kind::Image));
+        assert!(formats_for(&v(&["/tmp/a.dng", "/tmp/b.jpg"]), all_shown).contains(&"png"));
+        assert!(!formats_for(&v(&["/tmp/a.dng", "/tmp/b.jpg"]), all_shown).contains(&"svg"));
+        assert!(tools_for(&v(&["/tmp/a.arw"])).is_empty());
+    }
+
+    #[test]
     fn word_files_offer_pdf() {
         assert!(formats_for(&v(&["/tmp/a.docx"]), all_shown).contains(&"pdf"));
         assert!(formats_for(&v(&["/tmp/a.doc"]), all_shown).contains(&"docx"));
@@ -363,28 +421,40 @@ mod tests {
 
     #[test]
     fn tools_are_offered_when_every_file_takes_them() {
-        let one = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:adjust", "tool:markup", "tool:crop", "tool:target", "tool:info"];
+        let one = [
+            "tool:compress", "tool:half", "tool:resize", "tool:clean", "tool:rotate", "tool:flip", "tool:qr", "tool:adjust", "tool:markup",
+            "tool:crop", "tool:target", "tool:info",
+        ];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG"])), one);
-        let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:qr", "tool:onepdf", "tool:collage"];
+        let two = ["tool:compress", "tool:half", "tool:clean", "tool:rotate", "tool:flip", "tool:qr", "tool:onepdf", "tool:collage"];
         assert_eq!(tools_for(&v(&["/tmp/a.JPG", "/tmp/b.heic"])), two);
         // BMP has no metadata to remove and nothing to compress it with.
         // Crop opens a window for one picture: not offered for two.
         assert_eq!(
             tools_for(&v(&["/tmp/a.png", "/tmp/b.bmp"])),
-            ["tool:half", "tool:rotate", "tool:qr", "tool:onepdf", "tool:collage"]
+            ["tool:half", "tool:rotate", "tool:flip", "tool:qr", "tool:onepdf", "tool:collage"]
         );
-        assert_eq!(tools_for(&v(&["/tmp/a.bmp"])), ["tool:half", "tool:rotate", "tool:qr", "tool:adjust", "tool:markup", "tool:crop"]);
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.bmp"])),
+            ["tool:half", "tool:resize", "tool:rotate", "tool:flip", "tool:qr", "tool:adjust", "tool:markup", "tool:crop"]
+        );
         // An animated GIF's first frame can still hold a QR code.
         assert_eq!(tools_for(&v(&["/tmp/a.gif"])), ["tool:qr"]);
         assert_eq!(tools_for(&v(&["/tmp/a.gif", "/tmp/b.jpg"])), ["tool:qr", "tool:onepdf", "tool:collage"]);
         // Trim opens a window for one file.
         assert_eq!(
             tools_for(&v(&["/tmp/a.MOV"])),
-            ["tool:compress", "tool:clean", "tool:crop", "tool:blackout", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:target", "tool:info"]
+            [
+                "tool:compress", "tool:resize", "tool:clean", "tool:flip", "tool:mute", "tool:crop", "tool:blackout", "tool:trim", "tool:bleep",
+                "tool:speed", "tool:parts", "tool:still", "tool:target", "tool:info"
+            ]
         );
         assert_eq!(
             tools_for(&v(&["/tmp/a.avi"])),
-            ["tool:clean", "tool:crop", "tool:blackout", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:still", "tool:info"]
+            [
+                "tool:resize", "tool:clean", "tool:flip", "tool:mute", "tool:crop", "tool:blackout", "tool:trim", "tool:bleep", "tool:speed",
+                "tool:parts", "tool:still", "tool:info"
+            ]
         );
         assert_eq!(
             tools_for(&v(&["/tmp/a.mp3"])),
@@ -396,13 +466,13 @@ mod tests {
             tools_for(&v(&["/tmp/a.wav"])),
             ["tool:clean", "tool:trim", "tool:bleep", "tool:speed", "tool:parts", "tool:loudness", "tool:mono", "tool:info"]
         );
-        assert_eq!(tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])), ["tool:compress", "tool:clean", "tool:still", "tool:join"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.mp4", "/tmp/b.MOV"])), ["tool:compress", "tool:clean", "tool:flip", "tool:mute", "tool:still", "tool:join"]);
         // Sound and video together: each is compressed or cleaned in its own way, but
         // Join takes one kind only.
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
-        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller", "tool:target", "tool:info"]);
+        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller", "tool:lock", "tool:target", "tool:info"]);
         assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller"]);
         assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
         assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));
