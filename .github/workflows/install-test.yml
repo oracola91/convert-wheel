@@ -48,10 +48,12 @@ jobs:
           mine=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/convert-wheel/
           theirs=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/
           gsettings set $keys custom-keybindings "['$theirs']"
+          # The package is pirouette from the rename on, convert-wheel up to 0.3.x.
+          installed() { dpkg-query -W -f='${Version}' pirouette 2>/dev/null || dpkg-query -W -f='${Version}' convert-wheel; }
           sh scripts/install-linux.sh
           # A key the user picked must survive a second run.
           gsettings set $keys.custom-keybinding:$mine binding '<Super>w'
-          sh scripts/install-linux.sh "$(dpkg-query -W -f='${Version}' convert-wheel)"
+          sh scripts/install-linux.sh "$(installed)"
           gsettings get $keys custom-keybindings
           [ "$(gsettings get $keys custom-keybindings)" = "['$theirs', '$mine']" ]
           [ "$(gsettings get $keys.custom-keybinding:$mine command)" = "'/usr/bin/convert-wheel --show'" ]
@@ -77,7 +79,7 @@ jobs:
           head -c 2 notes.docx | grep -q PK
           grep -q '<h1' notes.html
           head -c 5 notes.pdf | grep -q '%PDF-'
-          version=$(dpkg-query -W -f='${Version}' convert-wheel)
+          version=$(installed)
           if dpkg --compare-versions "$version" ge 0.2.0; then
             convert-wheel --convert png "$PWD/notes.pdf"
             convert-wheel --convert txt "$PWD/notes.pdf"

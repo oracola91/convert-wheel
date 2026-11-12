@@ -1,6 +1,6 @@
 # Pirouette
 
-Called Convert Wheel before 0.3.0. On Windows and Linux it still installs under that name for now, so updates there keep replacing the old copy.
+Called Convert Wheel before. On Windows and Linux it kept that name up to 0.3.x; copies there take the new name when they update (the old copy is removed, settings stay).
 
 Hold Shift while dragging a file. A wheel of formats appears under the cursor. Drop the file on a format to convert it.
 
@@ -138,8 +138,8 @@ A wheel shows at most ten segments. When it has more to offer, it shows them a s
 Select files in the file manager and hand them to the wheel, no drag needed:
 
 - **macOS**: Finder's right-click menu > **Open in Pirouette Wheel**, at the bottom of the menu below Quick Actions (with many Services installed, Finder groups them in a Services submenu; other apps show it under their menu's Services). Finder hands over the files itself, so Pirouette asks for no permission. A key for it can be set in System Settings > Keyboard > Keyboard Shortcuts > Services (Files and Folders).
-- **Windows**: File Explorer's right-click > **Send to > Convert Wheel**: a shortcut in your own SendTo folder, made at start and switched off in Settings > General.
-- **Linux**: Files' right-click > **Open With** > Convert Wheel (the app's own desktop entry lists the file types it takes).
+- **Windows**: File Explorer's right-click > **Send to > Pirouette**: a shortcut in your own SendTo folder, made at start and switched off in Settings > General.
+- **Linux**: Files' right-click > **Open With** > Pirouette (the app's own desktop entry lists the file types it takes).
 
 The wheel opens in the middle with the keyboard: Left and Right pick a segment, Up and Down show the next or previous set, **Enter** applies the picked item, **Esc** closes, and a tap of Option (Alt) or Control switches to the Tools or Actions wheel (the one those keys open during a drag) and the same tap again goes back; **Tab** and Shift+Tab go round all three. The wheel stays switched with the key let go, so Left, Right and Enter work on it (holding Control with an arrow is the system's: on macOS it moves to another desktop). It closes by itself after a minute. On macOS the keys need no Input Monitoring here: the wheel has the keyboard itself. (Council 2026-11-10: the system hands over the selection; no global hotkey and no reading of another app's selection.)
 
@@ -188,7 +188,7 @@ The ring icon in the menu bar opens a short menu:
 - **Install ffmpeg…**: appears when a drop needed a converter that isn't installed, and the notification points to it. It runs `brew install` on macOS, `winget install` on Windows, or on Ubuntu and Debian `apt-get install` through pkexec (the desktop asks for the admin password) for that converter (several in a row: "Install ffmpeg and MuPDF…"), checks the app can now find it, and says so; then drop the files again. Without Homebrew it opens brew.sh. Without winget it first registers App Installer, which brings winget (Microsoft's own fix: a new Windows account gets it only some time after the first sign-in); if winget is still missing, the Microsoft Store opens on App Installer. On Windows, choosing it accepts the package's terms as typing the command would, and packages that install for all users, such as LibreOffice, still ask for admin rights. The package manager's last lines go to the log. Other Linux systems get the notification that names the command; the setup script installs everything at once.
 - **Settings…** (Cmd+, on macOS): the Settings window, below.
 - **Check for Updates… / Install Update … and Restart**.
-- **Quit Pirouette** (Quit Convert Wheel on Windows and Linux).
+- **Quit Pirouette**.
 
 Stop Converting shows only while a drop converts, and Install only while a drop found a converter missing.
 

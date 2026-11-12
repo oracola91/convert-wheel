@@ -262,12 +262,15 @@ impl Running {
 
 /// Longer file names are cut in the progress line, so the percent after them still
 /// fits in the menu.
-/// The name people see in the menu, the tooltip and notifications. macOS ships as
-/// Pirouette from 0.3.0. Windows and Linux keep Convert Wheel for now, as their
-/// installers do (`productName` in tauri.windows.conf.json and tauri.linux.conf.json):
-/// a renamed installer there would add a second copy next to the old one (Windows) or
-/// clash with the old package over /usr/bin/convert-wheel (Linux).
-pub(crate) const APP_NAME: &str = if cfg!(target_os = "macos") { "Pirouette" } else { "Convert Wheel" };
+/// The name people see in the menu, the tooltip and notifications. Pirouette on macOS
+/// from 0.3.0; Windows and Linux were still Convert Wheel up to 0.3.x. Their installers
+/// take the old copy away: on Windows the .exe uninstalls it first
+/// (windows/hooks.nsh) and the .msi keeps its upgrade code; on Linux the .deb replaces
+/// the convert-wheel package. The program file stays convert-wheel everywhere.
+pub(crate) const APP_NAME: &str = "Pirouette";
+/// The name Windows and Linux used up to 0.3.x, for moving what carried it.
+#[cfg(windows)]
+pub(crate) const OLD_NAME: &str = "Convert Wheel";
 
 const NAME_MAX_CHARS: usize = 32;
 
@@ -813,6 +816,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     shelf_web::start(app.handle());
     trigger::start(app.handle().clone());
+    // Windows: Open at Login kept from a copy under the old name.
+    #[cfg(windows)]
+    login::move_old_entry();
     // Windows: the Send To entry for the keyboard wheel, kept pointing at this copy.
     #[cfg(windows)]
     {

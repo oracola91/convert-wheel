@@ -1,6 +1,6 @@
 # Installing Pirouette
 
-Called Convert Wheel before 0.3.0. The Windows and Linux files below still carry that name.
+Called Convert Wheel before. On Windows and Linux it kept that name up to 0.3.x; copies there take the new name when they update (the old copy is removed, settings stay). Files up to 0.3.x are named `Convert.Wheel_…`.
 
 Every version is on the repo's [Releases page](https://github.com/oracola91/convert-wheel/releases).
 
@@ -9,14 +9,14 @@ Every version is on the repo's [Releases page](https://github.com/oracola91/conv
 | System | File |
 |---|---|
 | macOS, Apple silicon | `Pirouette_<version>_aarch64.dmg` (`Convert.Wheel_…` up to 0.2.1) |
-| Windows, one user, no admin rights | `Convert.Wheel_<version>_x64-setup.exe` |
-| Windows, all users, management tools | `Convert.Wheel_<version>_x64_en-US.msi` |
-| Ubuntu, Debian | `Convert.Wheel_<version>_amd64.deb` |
-| Other Linux | `Convert.Wheel_<version>_amd64.AppImage` |
+| Windows, one user, no admin rights | `Pirouette_<version>_x64-setup.exe` |
+| Windows, all users, management tools | `Pirouette_<version>_x64_en-US.msi` |
+| Ubuntu, Debian | `Pirouette_<version>_amd64.deb` |
+| Other Linux | `Pirouette_<version>_amd64.AppImage` |
 
 None of the files is code-signed yet, so each system warns once on first launch. The steps below say how to get past that.
 
-Convert Wheel does the converting with five free tools that are installed separately: **ffmpeg** (audio, video), **ImageMagick** (images), **pandoc** (documents), **LibreOffice** (office files, and documents to PDF) and **MuPDF** (PDFs to pictures and text). Install them first; the commands are in each section. A format whose tool is missing fails with a notification. On macOS and Windows that notification points to **Install …** in the app's menu, which installs the tool with Homebrew or winget; on Linux it names the install command.
+Pirouette does the converting with five free tools that are installed separately: **ffmpeg** (audio, video), **ImageMagick** (images), **pandoc** (documents), **LibreOffice** (office files, and documents to PDF) and **MuPDF** (PDFs to pictures and text). Install them first; the commands are in each section. A format whose tool is missing fails with a notification. On macOS and Windows that notification points to **Install …** in the app's menu, which installs the tool with Homebrew or winget; on Linux it names the install command.
 
 ## macOS
 
@@ -65,18 +65,18 @@ Or install only the ones you need, when you need them: when a drop needs a missi
 - **`.msi`**: installs for all users in Program Files and needs admin rights. Silently, for a management tool or a script:
 
   ```
-  msiexec /i "Convert.Wheel_<version>_x64_en-US.msi" /qn
+  msiexec /i "Pirouette_<version>_x64_en-US.msi" /qn
   ```
 
 **3. First launch:** SmartScreen warns about an unknown publisher. Click "More info", then "Run anyway".
 
 **4. Use it:** the app's icon sits in the taskbar's notification area (it may be under the ^ arrow). Hold Shift while dragging a file in File Explorer or on the desktop and the wheel opens. It says "Drop here" until the file reaches it, then shows the formats.
 
-**Without a drag:** select files in File Explorer, right-click > **Send to > Convert Wheel** (on Windows 11 under "Show more options"): the wheel opens with the keyboard (arrows pick, Enter applies, Esc closes). The Send To entry is made at start; Settings > General switches it off.
+**Without a drag:** select files in File Explorer, right-click > **Send to > Pirouette** (on Windows 11 under "Show more options"): the wheel opens with the keyboard (arrows pick, Enter applies, Esc closes). The Send To entry is made at start; Settings > General switches it off.
 
 **Update:** the app updates itself (menu > Install Update), and Open at Login stays as it was. By hand: run the new installer over the old one. The `.exe` then removes the old version first ("Uninstall before installing" is ticked); your settings stay, unless you tick "Delete the application data", but Open at Login is switched off, so turn it on again in the menu.
 
-**Uninstall:** Settings > Apps > Installed apps > Convert Wheel > Uninstall. The `.exe`'s uninstaller also removes Open at Login. For the `.msi`, turn off Open at Login in the icon's menu first (its uninstaller doesn't remove it), then uninstall, or `msiexec /x "Convert.Wheel_<version>_x64_en-US.msi" /qn`. Settings are in `%APPDATA%\local.convertwheel`, working files in `%LOCALAPPDATA%\convertwheel`, the log in `%LOCALAPPDATA%\local.convertwheel\logs`.
+**Uninstall:** Settings > Apps > Installed apps > Pirouette > Uninstall. The `.exe`'s uninstaller also removes Open at Login. For the `.msi`, turn off Open at Login in the icon's menu first (its uninstaller doesn't remove it), then uninstall, or `msiexec /x "Pirouette_<version>_x64_en-US.msi" /qn`. Settings are in `%APPDATA%\local.convertwheel`, working files in `%LOCALAPPDATA%\convertwheel`, the log in `%LOCALAPPDATA%\local.convertwheel\logs`.
 
 ## Linux
 
@@ -115,7 +115,7 @@ sudo apt install ./pandoc-3.12.1-1-amd64.deb
 - **Ubuntu, Debian:** apt installs the downloaded file and whatever it needs:
 
   ```sh
-  sudo apt install ./Convert.Wheel_<version>_amd64.deb
+  sudo apt install ./Pirouette_<version>_amd64.deb
   ```
 
   Start it from the app menu, or run `convert-wheel`.
@@ -123,13 +123,13 @@ sudo apt install ./pandoc-3.12.1-1-amd64.deb
 - **Other Linux:** make the AppImage runnable and start it. Ubuntu 22.04 and later also need FUSE 2 for AppImages (`sudo apt install libfuse2`, or `libfuse2t64` on 24.04).
 
   ```sh
-  chmod +x Convert.Wheel_<version>_amd64.AppImage
-  ./Convert.Wheel_<version>_amd64.AppImage
+  chmod +x Pirouette_<version>_amd64.AppImage
+  ./Pirouette_<version>_amd64.AppImage
   ```
 
 **3. Use it:** how the wheel opens depends on the desktop session. `echo $XDG_SESSION_TYPE` says which one is running.
 
-**Without a drag (any session):** in Files, right-click a file > **Open With** > Convert Wheel: the wheel opens with the keyboard (arrows pick, Enter applies, Esc closes).
+**Without a drag (any session):** in Files, right-click a file > **Open With** > Pirouette: the wheel opens with the keyboard (arrows pick, Enter applies, Esc closes).
 
 - **x11:** hold Shift while dragging a file in the file manager (Files, Nemo, Caja, Thunar, Dolphin, PCManFM) or on the desktop.
 - **wayland** (the default on current Ubuntu and Fedora): Wayland doesn't let apps watch the mouse, so the wheel opens from a keyboard shortcut. In Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts, add one with the command `convert-wheel --show` (for the AppImage: its full path, then ` --show`) and a key such as Super+Shift+C. Press it, then drag a file onto the wheel. Esc or a click in the middle closes it; it also closes by itself after 20 seconds.
@@ -138,7 +138,7 @@ The menu icon needs AppIndicator support: on by default in Ubuntu, an extension 
 
 **Update:** the app updates itself (menu > Install Update). For the `.deb` this installs as root, so it asks for your password: normally in the system's own dialog; where that isn't available, in a plain box titled "Authentication Required". Enter it only right after you chose Install Update. By hand: install the newer `.deb` the same way.
 
-**Uninstall:** turn off Open at Login in the icon's menu (the package doesn't remove it), then `sudo apt remove convert-wheel` (or delete the AppImage). Remove the Convert Wheel shortcut in Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts, and if nothing else needs them, the converters (`sudo apt remove pandoc mupdf-tools` and so on). Settings are in `~/.config/local.convertwheel`, working files in `~/.cache/convertwheel`, the log in `~/.local/share/local.convertwheel/logs`.
+**Uninstall:** turn off Open at Login in the icon's menu (the package doesn't remove it), then `sudo apt remove pirouette` (`convert-wheel` up to 0.3.x) or delete the AppImage. Remove the Pirouette shortcut (Convert Wheel up to 0.3.x) in Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts, and if nothing else needs them, the converters (`sudo apt remove pandoc mupdf-tools` and so on). Settings are in `~/.config/local.convertwheel`, working files in `~/.cache/convertwheel`, the log in `~/.local/share/local.convertwheel/logs`.
 
 **Known gaps:** Ubuntu's ImageMagick 6 refuses to write PDFs (a security policy) and may lack HEIC and AVIF support.
 

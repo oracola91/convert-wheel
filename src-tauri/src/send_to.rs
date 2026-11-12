@@ -1,4 +1,4 @@
-//! Windows: "Send to > Convert Wheel" in File Explorer's right-click menu, for the
+//! Windows: "Send to > Pirouette" in File Explorer's right-click menu, for the
 //! keyboard wheel (council 2026-11-10, keyboard mode E). A shortcut to this copy of
 //! the app in the user's own SendTo folder: Explorer starts the app with the selected
 //! files, the running copy gets them (single instance) and opens the wheel on them.
@@ -13,10 +13,10 @@ use windows::core::{Interface, HSTRING};
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 
-/// %APPDATA%\Microsoft\Windows\SendTo\Convert Wheel.lnk
-fn shortcut() -> Option<PathBuf> {
+/// %APPDATA%\Microsoft\Windows\SendTo\Pirouette.lnk, or under another name.
+fn shortcut(name: &str) -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA").map(PathBuf::from)?;
-    Some(appdata.join("Microsoft\\Windows\\SendTo").join(format!("{}.lnk", crate::APP_NAME)))
+    Some(appdata.join("Microsoft\\Windows\\SendTo").join(format!("{name}.lnk")))
 }
 
 /// Makes the Send To entry match the saved setting, one change at a time: two quick
@@ -30,7 +30,14 @@ pub fn follow(app: &AppHandle) {
 /// Puts the Send To shortcut in place, pointing at this copy of the app (again on each
 /// start, so it follows an update to another folder), or takes it away.
 fn set(on: bool) {
-    let Some(link) = shortcut() else {
+    // The entry had the old name up to 0.3.x: Send To would list both.
+    if let Some(old) = shortcut(crate::OLD_NAME).filter(|l| l.exists()) {
+        match std::fs::remove_file(&old) {
+            Ok(()) => crate::log::line("Send To entry renamed"),
+            Err(e) => crate::log::line(&format!("couldn't remove the old Send To entry: {e}")),
+        }
+    }
+    let Some(link) = shortcut(crate::APP_NAME) else {
         return;
     };
     if !on {

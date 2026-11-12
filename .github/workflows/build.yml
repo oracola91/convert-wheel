@@ -83,6 +83,48 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
           retention-days: 14
 
+      # Up to 0.3.x the app was "Convert Wheel" on Windows, in another folder. This
+      # build must take that copy's place: installed as an update (/UPDATE, what the
+      # app's own updater does) and by hand, the old copy goes, Open at Login and the
+      # Start menu entry come back under the new name, the settings stay.
+      - name: Check the move from the old name (Convert Wheel 0.2.1 to this build)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release download v0.2.1 -R $env:GITHUB_REPOSITORY -p 'Convert.Wheel_0.2.1_x64-setup.exe' -D old
+          $new = (Get-ChildItem src-tauri\target\release\bundle\nsis\*-setup.exe | Select-Object -First 1).FullName
+          $old = (Resolve-Path old\Convert.Wheel_0.2.1_x64-setup.exe).Path
+          $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $uninst = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+          $oldDir = Join-Path $env:LOCALAPPDATA 'Convert Wheel'
+          $newDir = Join-Path $env:LOCALAPPDATA 'Pirouette'
+          $keep = Join-Path $env:APPDATA 'local.convertwheel\keep.txt'
+          function Check($ok, $what) { if (-not $ok) { throw "FAILED: $what" } else { "ok: $what" } }
+          foreach ($mode in @('/S /UPDATE', '/S')) {
+            "== new installer with $mode"
+            Start-Process $old -ArgumentList '/S' -Wait
+            Check (Test-Path "$oldDir\convert-wheel.exe") 'old copy installed'
+            New-ItemProperty -Path $run -Name 'Convert Wheel' -Value "`"$oldDir\convert-wheel.exe`"" -Force | Out-Null
+            New-Item -ItemType Directory -Force (Split-Path $keep) | Out-Null
+            Set-Content $keep 'settings'
+            Start-Process $new -ArgumentList $mode -Wait
+            Check (Test-Path "$newDir\convert-wheel.exe") 'new copy in the Pirouette folder'
+            Check (-not (Test-Path $oldDir)) 'old folder gone'
+            Check (-not (Test-Path "$uninst\Convert Wheel")) 'old uninstall entry gone'
+            Check (Test-Path "$uninst\Pirouette") 'new uninstall entry'
+            Check (Test-Path "$menu\Pirouette.lnk") 'Start menu entry under the new name'
+            Check (-not (Test-Path "$menu\Convert Wheel.lnk")) 'old Start menu entry gone'
+            Check ((Get-ItemProperty $run).'Pirouette' -eq "`"$newDir\convert-wheel.exe`"") 'Open at Login under the new name'
+            Check ($null -eq (Get-ItemProperty $run).'Convert Wheel') 'old Open at Login value gone'
+            Check (Test-Path $keep) 'settings folder kept'
+            Start-Process "$newDir\uninstall.exe" -ArgumentList '/S', "_?=$newDir" -Wait
+            Remove-Item -Recurse -Force $newDir -ErrorAction SilentlyContinue
+            Check ($null -eq (Get-ItemProperty $run).'Pirouette') 'uninstall takes Open at Login away'
+          }
+
   linux:
     if: github.event_name == 'push' || inputs.platform != 'windows'
     # The oldest supported Ubuntu, so the AppImage also runs on older systems.
@@ -135,6 +177,26 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
           retention-days: 14
+
+      # Up to 0.3.x the package was convert-wheel; this one (pirouette) must replace it
+      # when dpkg installs it, as the app's own updater does.
+      - name: Check the move from the old name (Convert Wheel 0.2.1 to this build)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release download v0.2.1 -R "$GITHUB_REPOSITORY" -p 'Convert.Wheel_0.2.1_amd64.deb' -D old
+          sudo apt-get install -y --no-install-recommends ./old/Convert.Wheel_0.2.1_amd64.deb
+          dpkg-query -W convert-wheel
+          sudo dpkg -i src-tauri/target/release/bundle/deb/*.deb
+          [ "$(dpkg-query -W -f='${Status}' pirouette)" = "install ok installed" ]
+          if dpkg-query -W -f='${Status}' convert-wheel 2>/dev/null | grep -q 'ok installed'; then
+            echo "FAILED: convert-wheel is still installed"; exit 1
+          fi
+          [ -x /usr/bin/convert-wheel ]
+          [ -f /usr/share/applications/Pirouette.desktop ]
+          [ ! -e "/usr/share/applications/Convert Wheel.desktop" ]
+          echo "ok: pirouette replaced convert-wheel"
 
   # Reports known vulnerabilities in the Rust dependencies; doesn't block a build.
   audit:
@@ -218,10 +280,10 @@ jobs:
                   return None
               return {"url": base + name, "signature": open(sig).read().strip()}
           files = {
-              "windows-x86_64-nsis": f"Convert.Wheel_{version}_x64-setup.exe",
-              "windows-x86_64-msi": f"Convert.Wheel_{version}_x64_en-US.msi",
-              "linux-x86_64-appimage": f"Convert.Wheel_{version}_amd64.AppImage",
-              "linux-x86_64-deb": f"Convert.Wheel_{version}_amd64.deb",
+              "windows-x86_64-nsis": f"Pirouette_{version}_x64-setup.exe",
+              "windows-x86_64-msi": f"Pirouette_{version}_x64_en-US.msi",
+              "linux-x86_64-appimage": f"Pirouette_{version}_amd64.AppImage",
+              "linux-x86_64-deb": f"Pirouette_{version}_amd64.deb",
           }
           platforms = {key: e for key, name in files.items() if (e := entry(name))}
           # Fallbacks for copies the updater can't tell the install type of.
@@ -233,7 +295,7 @@ jobs:
               sys.exit(f"no signed update file for: {', '.join(missing)}")
           manifest = {
               "version": version,
-              "notes": f"Pirouette {version} (Convert Wheel on Windows and Linux). See https://github.com/{repo}/releases/tag/{tag}",
+              "notes": f"Pirouette {version}. See https://github.com/{repo}/releases/tag/{tag}",
               "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "platforms": platforms,
           }
@@ -251,14 +313,14 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           cat > notes.md <<EOF
-          Pirouette $version, called Convert Wheel before 0.3.0 and still on Windows and Linux. Install steps for each system are in [INSTALL.md](https://github.com/$REPO/blob/$GITHUB_REF_NAME/INSTALL.md). Copies from 0.1.1 on update themselves: they find this release through \`latest.json\`.
+          Pirouette $version, called Convert Wheel before (on Windows and Linux up to 0.3.x; copies under that name take the new name when they update). Install steps for each system are in [INSTALL.md](https://github.com/$REPO/blob/$GITHUB_REF_NAME/INSTALL.md). Copies from 0.1.1 on update themselves: they find this release through \`latest.json\`.
 
           | System | File |
           |---|---|
-          | Windows, one user, no admin | \`Convert.Wheel_${version}_x64-setup.exe\` |
-          | Windows, all users | \`Convert.Wheel_${version}_x64_en-US.msi\` |
-          | Ubuntu, Debian | \`Convert.Wheel_${version}_amd64.deb\` |
-          | Other Linux | \`Convert.Wheel_${version}_amd64.AppImage\` |
+          | Windows, one user, no admin | \`Pirouette_${version}_x64-setup.exe\` |
+          | Windows, all users | \`Pirouette_${version}_x64_en-US.msi\` |
+          | Ubuntu, Debian | \`Pirouette_${version}_amd64.deb\` |
+          | Other Linux | \`Pirouette_${version}_amd64.AppImage\` |
           | macOS (Apple silicon) | \`Pirouette_${version}_aarch64.dmg\` |
 
           The installers are not code-signed yet. Updates are signed with the project's update key, with the version recorded in the signature, and the app refuses an update that doesn't match. SHA256SUMS.txt lists the files' checksums.

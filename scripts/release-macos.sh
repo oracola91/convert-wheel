@@ -38,8 +38,8 @@ npx --no-install tauri build --bundles app -- --locked
 
 bundle="src-tauri/target/release/bundle/macos"
 out="src-tauri/target/release/bundle/dmg"
-# macOS ships as Pirouette from 0.3.0 (tauri.conf.json productName); Windows and Linux
-# keep the Convert Wheel name for now. The signing certificate and update key keep
+# macOS ships as Pirouette from 0.3.0 (tauri.conf.json productName), Windows and Linux
+# after 0.3.x (they were Convert Wheel). The signing certificate and update key keep
 # their old names: macOS keys its permissions to the certificate.
 dmg="$out/Pirouette_${version}_aarch64.dmg"
 upd="$out/Pirouette_${version}_aarch64.app.tar.gz"

@@ -1,5 +1,4 @@
 {
-  "productName": "Convert Wheel",
   "app": {
     "windows": [
       {
@@ -24,6 +23,14 @@
     "targets": [
       "nsis",
       "msi"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
+      },
+      "wix": {
+        "upgradeCode": "15234095-7d06-514a-98b3-6696306b8c7a"
+      }
+    }
   }
 }
