@@ -25,19 +25,21 @@ This is our own build, written from scratch. The idea comes from what the paid T
 
 | Files | Can become | Done by |
 |---|---|---|
-| Images: JPG, PNG, HEIC, WebP, TIFF, BMP, GIF, AVIF | JPG, PNG, HEIC, WebP, TIFF, GIF, AVIF, BMP, ICO, PDF, SVG | ImageMagick; SVG traced by [vtracer](https://github.com/visioncortex/vtracer), in the app |
+| Images: JPG, PNG, HEIC, WebP, TIFF, BMP, GIF, AVIF, SVG | JPG, PNG, HEIC, WebP, TIFF, GIF, AVIF, BMP, ICO, PDF, SVG | ImageMagick; SVG traced by [vtracer](https://github.com/visioncortex/vtracer), in the app |
 | Camera RAW: DNG, CR2, CR3, NEF, NRW, ARW, ORF, RW2, RAF, PEF, SRW (read only) | JPG, PNG, HEIC, WebP, TIFF, AVIF, PDF | macOS's own RAW decoder (`sips`, as Preview); on Windows and Linux an ImageMagick built with LibRaw |
 | Audio: MP3, WAV, M4A, AAC, FLAC, AIFF, OGG, Opus, WMA | MP3, M4A, WAV, FLAC, AIFF, OGG, Opus, WMA | ffmpeg |
 | Video: MP4, MOV, M4V, MKV, WebM, AVI, WMV | MP4, MOV, WebM, MKV, AVI, WMV, GIF, MP3 (sound only) | ffmpeg |
 | Documents: DOCX, DOC, ODT, RTF, Pages, Markdown, HTML, TXT, EPUB | PDF, DOCX, ODT, HTML, Markdown, TXT, EPUB | LibreOffice for PDF and office formats, pandoc for the rest |
-| Spreadsheets: XLSX, XLS, ODS, CSV, Numbers | PDF, XLSX, ODS, CSV (first sheet) | LibreOffice |
-| Presentations: PPTX, PPT, ODP, Keynote | PDF, PPTX, ODP | LibreOffice |
-| PDF | JPG, PNG (a picture of each page), TXT, DOCX (the text only) | MuPDF (`mutool`); pandoc for DOCX |
-| Subtitles: SRT, VTT | SRT, VTT | ffmpeg |
+| Spreadsheets: XLSX, XLS, ODS, CSV, TSV, Numbers | PDF, XLSX, ODS, CSV, TSV (first sheet) | LibreOffice |
+| Presentations: PPTX, PPT, ODP, Keynote | PDF, PPTX, ODP, JPG, PNG (a picture of each slide) | LibreOffice; MuPDF for the pictures |
+| PDF | JPG, PNG (a picture of each page), SVG (each page as vector shapes), TXT, DOCX, Markdown, EPUB (the text only), PPTX (a slide with a picture of each page) | MuPDF (`mutool`); pandoc for DOCX, Markdown, EPUB and PPTX |
+| Subtitles: SRT, VTT | SRT, VTT, TXT (only the words) | ffmpeg; the app itself for TXT |
 
 A camera RAW photo is first developed into a 16-bit TIFF in the app's work folder, then converted from that like any picture. On a Mac that uses macOS's own RAW engine, so it needs nothing installed and reads the RAW files Preview reads. On Windows and Linux ImageMagick does it, but only when it was built with LibRaw: `magick -version` then lists `raw` under Delegates. Without LibRaw ImageMagick would hand the file to an outside program from its delegates list, which the app doesn't let it do; it says the RAW file can't be read instead. The file's start is checked against its RAW type first (TIFF inside for most, Olympus, Panasonic and Fujifilm their own, Canon's CR3 an ISO media file).
 
-An SVG is the picture traced into flat-coloured shapes, which scale to any size: best for logos, drawings, icons and screenshots; a photo becomes a poster-like picture. ImageMagick reads the picture and makes it at most 2000 pixels on its longer side (photos 1200, which trace in a few seconds), then vtracer (MIT or Apache-2.0, pure Rust, built into the app) traces it in a process of its own, so a slow one is stopped like any other tool. JPEG, HEIC and AVIF are taken as photos (coarser layers, small specks dropped); other pictures keep their flat colours. The picture quality in Settings > Quality picks how fine: Smaller Files drops more specks and merges more colours, Best Quality keeps more of both. Transparency is kept. An SVG can't be read back in: the wheel takes only plain pictures.
+An SVG going in is drawn by the app itself with [resvg](https://github.com/linebender/resvg), in a process of its own, never by an outside SVG reader: at its own size, but at least 1024 and at most 8192 pixels on the longest side, with the system's fonts for its text. Pictures inside it are drawn only when they are part of the file (data: URLs); a link to any other file or to the web is left out. Then it converts like any picture.
+
+An SVG going out is the picture traced into flat-coloured shapes, which scale to any size: best for logos, drawings, icons and screenshots; a photo becomes a poster-like picture. ImageMagick reads the picture and makes it at most 2000 pixels on its longer side (photos 1200, which trace in a few seconds), then vtracer (MIT or Apache-2.0, pure Rust, built into the app) traces it in a process of its own, so a slow one is stopped like any other tool. JPEG, HEIC and AVIF are taken as photos (coarser layers, small specks dropped); other pictures keep their flat colours. The picture quality in Settings > Quality picks how fine: Smaller Files drops more specks and merges more colours, Best Quality keeps more of both. Transparency is kept. An SVG can't be read back in: the wheel takes only plain pictures.
 
 An icon (ICO) holds the picture at 256, 128, 64, 48, 32 and 16 pixels, fitted into a square with see-through edges rather than stretched. MKV is a fast copy of the streams when they fit, H.264 otherwise; AVI is MPEG-4 Part 2 (what Xvid makes) with MP3, and WMV is Windows Media 8 with WMA, for older players, at most 1920 pixels on the long side. Pages, Numbers and Keynote files go through LibreOffice, which reads them; a file saved as a package folder (older versions) is refused: save it as a single file. Subtitles should be UTF-8.
 

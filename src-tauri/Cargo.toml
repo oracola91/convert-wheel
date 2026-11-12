@@ -31,6 +31,9 @@ tauri-plugin-dialog = "=2.8.3"
 # come with it. Pinned: a 1.0 pre-release, chosen over 0.6 which drags in clap 2 and an
 # old image crate.
 vtracer = "=1.0.0-alpha.4"
+# Draws SVG pictures for conversion (convert.rs, svg_to_png): pure Rust, in the app, so
+# no outside SVG reader runs. External files an SVG points to are never read. Pinned.
+resvg = "=0.49.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The folder picker as its own window (transfer.rs); the version the dialog plugin uses.
