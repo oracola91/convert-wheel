@@ -2822,25 +2822,89 @@ pub struct Converter {
     /// Homebrew's arguments after `brew install`.
     pub brew: &'static str,
     pub winget: &'static str,
+    /// Linux packages: Debian and Ubuntu, Fedora, Arch, openSUSE (names checked on
+    /// Repology, 2026-11-12).
     pub apt: &'static str,
+    pub dnf: &'static str,
+    pub pacman: &'static str,
+    pub zypper: &'static str,
 }
 
 pub const CONVERTERS: &[Converter] = &[
-    Converter { tool: "ffmpeg", name: "ffmpeg", brew: "ffmpeg", winget: "Gyan.FFmpeg", apt: "ffmpeg" },
-    Converter { tool: "magick", name: "ImageMagick", brew: "imagemagick", winget: "ImageMagick.ImageMagick", apt: "imagemagick" },
-    Converter { tool: "pandoc", name: "pandoc", brew: "pandoc", winget: "JohnMacFarlane.Pandoc", apt: "pandoc" },
+    // Fedora's and openSUSE's own ffmpeg have no H.264 encoder (that comes from RPM
+    // Fusion or Packman): MP4, MOV and MKV out need it, the other formats don't.
+    Converter {
+        tool: "ffmpeg",
+        name: "ffmpeg",
+        brew: "ffmpeg",
+        winget: "Gyan.FFmpeg",
+        apt: "ffmpeg",
+        dnf: "ffmpeg-free",
+        pacman: "ffmpeg",
+        zypper: "ffmpeg",
+    },
+    Converter {
+        tool: "magick",
+        name: "ImageMagick",
+        brew: "imagemagick",
+        winget: "ImageMagick.ImageMagick",
+        apt: "imagemagick",
+        dnf: "ImageMagick",
+        pacman: "imagemagick",
+        zypper: "ImageMagick",
+    },
+    Converter {
+        tool: "pandoc",
+        name: "pandoc",
+        brew: "pandoc",
+        winget: "JohnMacFarlane.Pandoc",
+        apt: "pandoc",
+        dnf: "pandoc",
+        pacman: "pandoc-cli",
+        zypper: "pandoc-cli",
+    },
     Converter {
         tool: "soffice",
         name: "LibreOffice",
         brew: "--cask libreoffice",
         winget: "TheDocumentFoundation.LibreOffice",
         apt: "libreoffice",
+        dnf: "libreoffice",
+        pacman: "libreoffice-fresh",
+        zypper: "libreoffice",
     },
-    Converter { tool: "mutool", name: "MuPDF", brew: "mupdf-tools", winget: "ArtifexSoftware.mutool", apt: "mupdf-tools" },
+    Converter {
+        tool: "mutool",
+        name: "MuPDF",
+        brew: "mupdf-tools",
+        winget: "ArtifexSoftware.mutool",
+        apt: "mupdf-tools",
+        dnf: "mupdf",
+        pacman: "mupdf-tools",
+        zypper: "mupdf",
+    },
     // Archives. macOS and Windows have it built in; only Linux ever misses it.
-    Converter { tool: "bsdtar", name: "bsdtar", brew: "libarchive", winget: "", apt: "libarchive-tools" },
+    Converter {
+        tool: "bsdtar",
+        name: "bsdtar",
+        brew: "libarchive",
+        winget: "",
+        apt: "libarchive-tools",
+        dnf: "bsdtar",
+        pacman: "libarchive",
+        zypper: "bsdtar",
+    },
     // Info's date and place for pictures and videos (council 2026-11-10).
-    Converter { tool: "exiftool", name: "ExifTool", brew: "exiftool", winget: "OliverBetz.ExifTool", apt: "libimage-exiftool-perl" },
+    Converter {
+        tool: "exiftool",
+        name: "ExifTool",
+        brew: "exiftool",
+        winget: "OliverBetz.ExifTool",
+        apt: "libimage-exiftool-perl",
+        dnf: "perl-Image-ExifTool",
+        pacman: "perl-image-exiftool",
+        zypper: "perl-Image-ExifTool",
+    },
 ];
 
 fn converter(tool: &str) -> Option<&'static Converter> {
@@ -2874,8 +2938,10 @@ fn install_hint(name: &str) -> String {
     } else if cfg!(windows) {
         format!("winget install {}", c.map_or(name, |c| c.winget))
     } else {
-        let package = c.map_or(name, |c| c.apt);
-        format!("sudo apt install {package}, or your distribution's package manager")
+        match (c, crate::converters::Linux::here()) {
+            (Some(c), Some(pm)) => pm.hint(c),
+            _ => format!("sudo apt install {}, or your distribution's package manager", c.map_or(name, |c| c.apt)),
+        }
     }
 }
 
