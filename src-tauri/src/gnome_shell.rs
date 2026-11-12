@@ -121,6 +121,12 @@ impl Keys {
     }
 }
 
+/// An arrow key from one of the extension's "arrow" lines: 0 left, 1 right, 2 up,
+/// 3 down, as `trigger::arrow` takes them.
+pub fn arrow(line: &str) -> Option<usize> {
+    line.strip_prefix("arrow ")?.parse().ok().filter(|k: &usize| *k < 4)
+}
+
 /// What one poll of a drag asks for.
 #[derive(Debug, PartialEq)]
 pub enum Step {
@@ -192,6 +198,15 @@ mod tests {
         assert_eq!(with_uuid("['convert-wheel@oracola91.github.io']"), None);
         // Something gsettings never prints: left alone.
         assert_eq!(with_uuid("nonsense"), None);
+    }
+
+    #[test]
+    fn arrows_come_as_one_digit() {
+        assert_eq!(arrow("arrow 0"), Some(0));
+        assert_eq!(arrow("arrow 3"), Some(3));
+        assert_eq!(arrow("arrow 4"), None);
+        assert_eq!(arrow("arrow -1"), None);
+        assert_eq!(arrow("keys 100"), None);
     }
 
     #[test]
