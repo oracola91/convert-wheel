@@ -192,6 +192,12 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
             return Err(format!("it is already as small as {name} makes it"));
         }
     }
+    // Stop Converting clicked while the tool was finishing: the result isn't saved.
+    // Without this, a click in the last moment (the menu still shows 99%) let the
+    // file through.
+    if stop_asked() {
+        return Err(STOPPED.to_string());
+    }
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
         None => src.parent().ok_or("the file has no folder")?.to_path_buf(),
@@ -1539,6 +1545,10 @@ fn collage_columns(n: usize) -> usize {
 fn place_combined(out: &Path, first: &Path, target: &str, ext: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
     let stem = first.file_stem().and_then(|s| s.to_str()).ok_or("the file name is not valid text")?;
     let stem = format!("{stem} ({})", tool_suffix(target));
+    // As in convert(): a Stop in the last moment keeps the result out.
+    if stop_asked() {
+        return Err(STOPPED.to_string());
+    }
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
         None => first.parent().ok_or("the file has no folder")?.to_path_buf(),
