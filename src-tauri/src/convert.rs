@@ -1418,7 +1418,10 @@ fn smaller_gently(mutool: &Mutool, work: &Path, out_name: &str) -> Result<(), St
 
 /// Password's MuPDF script: the PDF saved again, encrypted with AES-256, with the
 /// password from password.txt beside it (checked: no comma, see Password::new).
-const PDF_LOCK: &str = r#"var password = read("password.txt");
+/// Older MuPDF (Ubuntu 22.04's 1.19) has no Document.openDocument and can't save a
+/// PDF encrypted: the script says so, and the app turns that into plain words.
+const PDF_LOCK: &str = r#"if (!Document.openDocument) throw new Error("PIROUETTE-OLD-MUPDF");
+var password = read("password.txt");
 var doc = Document.openDocument(scriptArgs[0]);
 doc.save(scriptArgs[1], "encrypt=aes-256,user-password=" + password + ",owner-password=" + password);
 "#;
@@ -1480,10 +1483,14 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
             fs::write(work.path().join("lock.js"), PDF_LOCK).map_err(|e| format!("work file: {e}"))?;
             let secret = work.path().join("password.txt");
             fs::write(&secret, password.0.as_bytes()).map_err(|e| format!("work file: {e}"))?;
-            let locked = mutool.run_args(work.path(), &["run", "lock.js"], &[out_name]);
+            let locked = mutool.run_failure(work.path(), &["run", "lock.js"], &[out_name]);
             let _ = fs::remove_file(&secret);
-            locked?;
-            Ok(Output::File)
+            match locked {
+                Err(f) if f.output.contains("PIROUETTE-OLD-MUPDF") || f.output.contains("Unused pdf arguments") => {
+                    Err("this MuPDF can't add a password to a PDF: a newer one is needed".into())
+                }
+                other => other.map(|()| Output::File).map_err(|f| f.message),
+            }
         }
         "tool:smaller" => {
             let mut args = vec!["clean"];
@@ -4015,15 +4022,21 @@ mod tests {
         // password is in no file the app leaves behind.
         let password = Password::new("s3cret pass=".into()).unwrap();
         let secret = Control::with_edit(Quality::default(), Some(Edit::Password(password)));
-        let locked = under(&secret, || convert(&three, "tool:lock", None, work.path())).unwrap();
-        assert_eq!(locked, work.path().join("report (locked).pdf"));
-        // (A PDF's numbers, such as its page count, are never encrypted; its content is.)
-        let refused = Command::new(tool("mutool").unwrap()).arg("info").arg(&locked).output().unwrap();
-        let said = String::from_utf8_lossy(&refused.stderr).to_lowercase();
-        assert!(!refused.status.success() && said.contains("password"), "it opens only with the password: {said}");
-        let opened = Command::new(tool("mutool").unwrap()).args(["info", "-p", "s3cret pass="]).arg(&locked).output().unwrap();
-        assert!(String::from_utf8_lossy(&opened.stdout).contains("Pages: 3"), "{}", String::from_utf8_lossy(&opened.stdout));
-        assert!(!fs::read(&locked).unwrap().windows(6).any(|w| w == b"s3cret"));
+        match under(&secret, || convert(&three, "tool:lock", None, work.path())) {
+            // Ubuntu 22.04's MuPDF 1.19 can't; Homebrew's can.
+            Err(e) if e.contains("a newer one is needed") && !cfg!(target_os = "macos") => eprintln!("old MuPDF: Password not tested"),
+            locked => {
+                let locked = locked.unwrap();
+                assert_eq!(locked, work.path().join("report (locked).pdf"));
+                // (A PDF's numbers, such as its page count, are never encrypted; its content is.)
+                let refused = Command::new(tool("mutool").unwrap()).arg("info").arg(&locked).output().unwrap();
+                let said = String::from_utf8_lossy(&refused.stderr).to_lowercase();
+                assert!(!refused.status.success() && said.contains("password"), "it opens only with the password: {said}");
+                let opened = Command::new(tool("mutool").unwrap()).args(["info", "-p", "s3cret pass="]).arg(&locked).output().unwrap();
+                assert!(String::from_utf8_lossy(&opened.stdout).contains("Pages: 3"), "{}", String::from_utf8_lossy(&opened.stdout));
+                assert!(!fs::read(&locked).unwrap().windows(6).any(|w| w == b"s3cret"));
+            }
+        }
         assert_eq!(convert(&three, "tool:lock", None, work.path()).unwrap_err(), "Password opens its window from the wheel");
 
         // Reorder: a picture of each page for its window, then the pages in the order
