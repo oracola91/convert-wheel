@@ -10,6 +10,8 @@ const TABS = ['general', 'wheel', 'quality', 'about'];
 let view = null;
 let tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'general';
 let updating = false;
+// Install Missing Converters… is running (the button says so and waits).
+let installing = false;
 
 // A small element builder: h('div', { class: 'row' }, child, 'text', ...).
 function h(tag, attrs = {}, ...children) {
@@ -106,7 +108,8 @@ function general(v) {
         type: 'button',
         class: 'action',
         id: 'update-converters',
-        disabled: updating,
+        // One install or update at a time: the other button waits too.
+        disabled: updating || installing || v.busy,
         onclick: () => {
           updating = true;
           draw();
@@ -123,7 +126,25 @@ function general(v) {
     const installRow = v.missing.length > 0
       ? row(
         `Not installed: ${names(v.missing)}`,
-        h('button', { type: 'button', class: 'action', id: 'install-all', onclick: () => invoke('settings_action', { action: 'install-all' }).catch((e) => showProblem(String(e))) }, 'Install Missing Converters…'),
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'action',
+            id: 'install-all',
+            disabled: installing || updating || v.busy,
+            onclick: () => {
+              installing = true;
+              draw();
+              invoke('settings_action', { action: 'install-all' }).catch((e) => {
+                installing = false;
+                showProblem(String(e));
+                draw();
+              });
+            },
+          },
+          installing ? 'Installing…' : 'Install Missing Converters…',
+        ),
         'All of them in one go (LibreOffice is a large download). A notification says when they are in.',
       )
       : row('All converters are installed', h('span', { class: 'note' }, ''));
@@ -269,7 +290,15 @@ async function refresh() {
 
 listen('converters-updating', (event) => {
   updating = Boolean(event.payload);
-  if (tab === 'general') draw();
+  // Done: look again, so the lists say what is there now.
+  if (!updating) refresh();
+  else if (tab === 'general') draw();
+});
+listen('converters-installing', (event) => {
+  installing = Boolean(event.payload);
+  // Done: "Not installed: …" goes, or keeps what failed, without switching tabs.
+  if (!installing) refresh();
+  else if (tab === 'general') draw();
 });
 // Open at Login can change in the system's own settings: look again on coming back.
 window.addEventListener('focus', refresh);

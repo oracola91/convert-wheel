@@ -90,6 +90,11 @@ fn names(list: &[&Converter]) -> String {
     }
 }
 
+/// An install or update is running (Settings keeps its buttons waiting meanwhile).
+pub fn busy() -> bool {
+    INSTALLING.load(Ordering::SeqCst)
+}
+
 /// The converters this system's package manager provides that the app can't find.
 pub fn not_installed() -> Vec<&'static Converter> {
     convert::CONVERTERS.iter().filter(|c| updatable(c) && !convert::installed(c)).collect()
@@ -117,6 +122,8 @@ pub fn install(app: &AppHandle) {
     if INSTALLING.swap(true, Ordering::SeqCst) {
         return;
     }
+    // Settings shows "Installing…" until it ends, then looks again at what is missing.
+    crate::settings_window::converters_installing(app, true);
     let app = app.clone();
     thread::spawn(move || {
         let wanted = app.state::<Missing>().list().clone();
@@ -140,6 +147,7 @@ pub fn install(app: &AppHandle) {
         }
         app.state::<Missing>().list().retain(|m| !done.iter().any(|d| d.tool == m.tool));
         INSTALLING.store(false, Ordering::SeqCst);
+        crate::settings_window::converters_installing(&app, false);
         show(&app);
         if pm.is_none() {
             if !wanted.is_empty() {
