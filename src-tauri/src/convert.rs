@@ -114,6 +114,8 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
                 ("tool:resize", Some(Edit::Resize(side))) => format!("{side} px"),
                 // Snapshot names the moment: "clip (frame at 1m05s).jpg".
                 ("tool:snapshot", Some(Edit::Snapshot(ms))) => format!("frame at {}", moment_text(ms)),
+                // Compress to % names the share: "photo (50%).jpg".
+                ("tool:percent", Some(Edit::Percent(p))) => format!("{p}%"),
                 _ => tool_suffix(t).to_string(),
             };
             (format!("{base} ({suffix})"), tool_out_ext(t, &ext))
@@ -165,6 +167,14 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
             file(size_limit().and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
         }
         (Some("tool:target"), Kind::Pdf) => file(size_limit().and_then(|limit| pdf_to_size(&input, &out, work.path(), limit))),
+        // Compress to %: To a Size, with the share of this file's own size as the size.
+        (Some("tool:percent"), Kind::Image) => file(percent_limit(meta.len()).and_then(|limit| image_to_size(&input, &out, limit))),
+        (Some("tool:percent"), Kind::Audio | Kind::Video) => {
+            file(percent_limit(meta.len()).and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
+        }
+        (Some("tool:percent"), Kind::Pdf) => {
+            file(percent_limit(meta.len()).and_then(|limit| pdf_to_size(&input, &out, work.path(), limit)))
+        }
         (Some("tool:parts"), Kind::Audio | Kind::Video) => media_parts(&input, &ext, work.path()),
         // The date taken and the place, written by ExifTool into the copy.
         (Some("tool:info"), Kind::Image | Kind::Video) => match control().and_then(|c| c.edit.clone()) {
@@ -472,6 +482,7 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:flip" => "flipped",
         "tool:mute" => "no sound",
         "tool:snapshot" => "frame",
+        "tool:percent" => "compressed",
         "tool:lock" => "locked",
         "tool:parts" => "parts",
         "tool:join" => "joined",
@@ -509,6 +520,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:flip" => "flipped",
         "tool:mute" => "muted",
         "tool:snapshot" => "turned into a picture",
+        "tool:percent" => "compressed to a share of their size",
         "tool:lock" => "locked with a password",
         "tool:parts" => "split into parts",
         "tool:join" => "joined",
@@ -1894,6 +1906,19 @@ fn note(text: String) {
 }
 
 /// The size Compress to a Size aims under, from the editor.
+/// Compress to %: the size `bytes` comes down to at the share chosen in its window.
+fn percent_limit(bytes: u64) -> Result<u64, String> {
+    match control().and_then(|c| c.edit.clone()) {
+        Some(Edit::Percent(p)) if (PERCENT_MIN..=PERCENT_MAX).contains(&p) => Ok((bytes * u64::from(p) / 100).max(1_000)),
+        Some(Edit::Percent(_)) => Err(format!("pick a share from {PERCENT_MIN}% to {PERCENT_MAX}%")),
+        _ => Err("Compress to % opens its window from the wheel".into()),
+    }
+}
+
+/// Compress to %'s limits.
+pub const PERCENT_MIN: u8 = 5;
+pub const PERCENT_MAX: u8 = 95;
+
 fn size_limit() -> Result<u64, String> {
     match control().and_then(|c| c.edit.clone()) {
         Some(Edit::Size(bytes)) => Ok(bytes),
@@ -2420,6 +2445,8 @@ pub enum Edit {
     Resize(u32),
     /// Snapshot: the moment, in milliseconds from the start.
     Snapshot(u64),
+    /// Compress to %: each file to at most this share of its own size.
+    Percent(u8),
     /// Password: the one to open the PDF with.
     Password(Password),
 }

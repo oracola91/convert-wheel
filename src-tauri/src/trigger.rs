@@ -597,6 +597,12 @@ pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -
             hide_wheel(app, false, None);
             false
         }
+        // Compress to %: one window for all the files dropped.
+        Some("tool:percent") if paths.len() > 1 => {
+            hide_wheel(app, true, None);
+            crate::editor::open_percent(app, paths);
+            true
+        }
         // Crop first opens its window; the job is queued from there.
         Some(tool) if !paths.is_empty() && formats::opens_editor(tool) => {
             hide_wheel(app, true, None);

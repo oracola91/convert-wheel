@@ -38,6 +38,9 @@ impl Editing {
 pub struct Session {
     #[serde(skip)]
     path: PathBuf,
+    /// Compress to %: the other files dropped with the first. Empty for the others.
+    #[serde(skip)]
+    more: Vec<PathBuf>,
     name: String,
     #[serde(flatten)]
     view: View,
@@ -79,6 +82,8 @@ enum View {
     Lock { max: usize },
     /// Snapshot: how long the video plays; frames come one at a time (editor_frame).
     Snapshot { length_ms: u64 },
+    /// Compress to %: how many files, their size together, and the shares taken.
+    Percent { count: usize, bytes: u64, min: u8, max: u8 },
 }
 
 impl View {
@@ -96,6 +101,7 @@ impl View {
             View::Resize { .. } => "resize.html",
             View::Lock { .. } => "lock.html",
             View::Snapshot { .. } => "snapshot.html",
+            View::Percent { .. } => "percent.html",
         }
     }
 
@@ -107,6 +113,7 @@ impl View {
             View::Resize { .. } => ((480.0, 340.0), (420.0, 320.0)),
             View::Lock { .. } => ((440.0, 300.0), (400.0, 280.0)),
             View::Snapshot { .. } => ((720.0, 560.0), (520.0, 440.0)),
+            View::Percent { .. } => ((480.0, 320.0), (420.0, 300.0)),
             View::Parts { .. } => ((480.0, 360.0), (420.0, 330.0)),
             View::Info { .. } => ((480.0, 560.0), (420.0, 360.0)),
             // Room for all of Mark Up's tools on one row.
@@ -131,6 +138,7 @@ impl View {
             View::Resize { .. } => format!("Resize: {name}"),
             View::Lock { .. } => format!("Password: {name}"),
             View::Snapshot { .. } => format!("Snapshot: {name}"),
+            View::Percent { .. } => format!("Compress to %: {name}"),
         }
     }
 }
@@ -192,7 +200,7 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
             Ok(view) => {
                 let name = file_name(&path);
                 let (page, title, size) = (view.page(), view.title(&name), view.window());
-                *app.state::<Editing>().lock() = Some(Session { path, name, view });
+                *app.state::<Editing>().lock() = Some(Session { path, more: Vec::new(), name, view });
                 let handle = app.clone();
                 let _ = app.run_on_main_thread(move || show_window(&handle, page, &title, size));
             }
@@ -202,6 +210,42 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
             }
         }
     });
+}
+
+/// Compress to %: one window for every file dropped (two or more).
+pub fn open_percent(app: &AppHandle, paths: Vec<String>) {
+    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    let bytes = paths.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+    let [first, rest @ ..] = paths.as_slice() else {
+        return;
+    };
+    let view = View::Percent { count: paths.len(), bytes, min: convert::PERCENT_MIN, max: convert::PERCENT_MAX };
+    let name = format!("{} files", paths.len());
+    let (page, title, size) = (view.page(), view.title(&name), view.window());
+    *app.state::<Editing>().lock() = Some(Session { path: first.clone(), more: rest.to_vec(), name, view });
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || show_window(&handle, page, &title, size));
+}
+
+/// Compress to %: a share within the limits, for all the files at once.
+#[tauri::command]
+pub fn editor_percent(app: AppHandle, editing: State<Editing>, percent: u8) -> Result<(), String> {
+    let mut session = editing.lock();
+    let Some(current) = session.as_ref() else {
+        return Err("nothing to do: drag the files onto the wheel again".into());
+    };
+    let View::Percent { min, max, .. } = current.view else {
+        return Err("this window doesn't compress to a share".into());
+    };
+    if !(min..=max).contains(&percent) {
+        return Err(format!("pick a share from {min}% to {max}%"));
+    }
+    let paths = std::iter::once(&current.path).chain(&current.more).map(|p| p.to_string_lossy().into_owned()).collect();
+    *session = None;
+    drop(session);
+    close_window(&app);
+    crate::enqueue_edits(&app, paths, "tool:percent", Edit::Percent(percent));
+    Ok(())
 }
 
 /// Shows the editor window on `page`, or moves the open one there for the new file.
