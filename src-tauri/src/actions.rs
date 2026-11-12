@@ -2,8 +2,9 @@
 //! files themselves. None of them changes a file: Copy Path puts the paths on the
 //! clipboard, Show in Folder opens the file manager on them, Copy To and Move To put
 //! them in a folder of the user's choosing (transfer.rs), Terminal opens one in their
-//! folder, and AirDrop (macOS) or Share (Windows: the share sheet; Linux: a new email
-//! with the files attached) offers to send them. Making and unpacking archives take
+//! folder, and AirDrop (macOS) or Share offers to send them (macOS: a menu of the
+//! services macOS has for the files; Windows: the share sheet; Linux: email,
+//! Bluetooth or a phone through KDE Connect, whichever this computer has). Making and unpacking archives take
 //! a while, so they go through the conversion queue (archive.rs).
 
 use std::path::{Path, PathBuf};
@@ -49,7 +50,6 @@ pub fn run(app: &AppHandle, action: &str, paths: Vec<String>) {
         "act:float" => crate::float_card::open(app, files),
         #[cfg(not(target_os = "macos"))]
         "act:float" => crate::float_web::open(app, files),
-        #[cfg(not(target_os = "macos"))]
         "act:share" => share(app, files),
         other => log::line(&format!("unknown action {other}")),
     }
@@ -283,6 +283,108 @@ fn airdrop(app: &AppHandle, files: Vec<PathBuf>) {
     });
 }
 
+/// macOS: Share. A menu at the pointer with what macOS offers for these files (Mail,
+/// Messages, AirDrop, Notes and the apps that add their own), the list Finder's Share
+/// shows.
+#[cfg(target_os = "macos")]
+fn share(app: &AppHandle, files: Vec<PathBuf>) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || mac_share::show(&handle, &files));
+}
+
+#[cfg(target_os = "macos")]
+mod mac_share {
+    use std::cell::Cell;
+    use std::path::PathBuf;
+
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, NSObject};
+    use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{NSApplication, NSEvent, NSMenu, NSMenuItem, NSSharingService};
+    use objc2_foundation::{NSArray, NSString, NSURL};
+    use tauri::AppHandle;
+
+    use crate::{log, notify};
+
+    thread_local! {
+        /// The service picked in the menu, by its place in the list.
+        static PICKED: Cell<Option<isize>> = const { Cell::new(None) };
+    }
+
+    define_class!(
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "ConvertWheelShareMenuTarget"]
+        struct Target;
+
+        impl Target {
+            #[unsafe(method(pick:))]
+            fn pick(&self, item: &NSMenuItem) {
+                PICKED.with(|p| p.set(Some(item.tag())));
+            }
+        }
+    );
+
+    impl Target {
+        fn new(mtm: MainThreadMarker) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(());
+            // SAFETY: NSObject's plain init.
+            unsafe { msg_send![super(this), init] }
+        }
+    }
+
+    /// Main thread. The menu runs until a pick or a click elsewhere.
+    pub fn show(app: &AppHandle, files: &[PathBuf]) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let urls: Vec<Retained<AnyObject>> = files
+            .iter()
+            .filter_map(|f| f.to_str())
+            .map(|f| Retained::into_super(Retained::into_super(NSURL::fileURLWithPath(&NSString::from_str(f)))))
+            .collect();
+        if urls.is_empty() {
+            return;
+        }
+        let items: Retained<NSArray> = NSArray::from_retained_slice(&urls);
+        // The menu-building form of the list; NSSharingServicePicker only shows its
+        // own popover from a mouse-down, and the wheel's drop is a mouse-up.
+        // SAFETY: an array of NSURLs.
+        #[allow(deprecated)]
+        let services = unsafe { NSSharingService::sharingServicesForItems(&items) };
+        if services.count() == 0 {
+            notify(app, "Nothing to share with", "macOS offers no way to share these files.");
+            return;
+        }
+        let target = Target::new(mtm);
+        let target_object: &AnyObject = &target;
+        let menu = NSMenu::new(mtm);
+        for (i, service) in services.iter().enumerate() {
+            // SAFETY: `pick:` is Target's method, taking the menu item.
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &service.menuItemTitle(), Some(sel!(pick:)), &NSString::new())
+            };
+            // SAFETY: `target` outlives the menu, which runs to the end below.
+            unsafe { item.setTarget(Some(target_object)) };
+            item.setTag(i as isize);
+            item.setImage(Some(&service.image()));
+            menu.addItem(&item);
+        }
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        PICKED.with(|p| p.set(None));
+        menu.popUpMenuPositioningItem_atLocation_inView(None, NSEvent::mouseLocation(), None);
+        let Some(i) = PICKED.with(Cell::take) else {
+            return;
+        };
+        if let Some(service) = usize::try_from(i).ok().and_then(|i| services.iter().nth(i)) {
+            log::line(&format!("share with {}", service.menuItemTitle()));
+            // SAFETY: the same NSURLs the service was listed for.
+            unsafe { service.performWithItems(&items) };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +393,26 @@ mod tests {
     fn paths_go_one_per_line() {
         let files = [PathBuf::from("/tmp/a b.txt"), PathBuf::from("/tmp/c;d.pdf")];
         assert_eq!(paths_text(&files), "/tmp/a b.txt\n/tmp/c;d.pdf");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kde_connect_lines_give_phones() {
+        assert_eq!(phone_line("a1b2_c3 Pixel 8 Pro"), Some(("a1b2_c3".into(), "Pixel 8 Pro".into())));
+        assert_eq!(phone_line("no-name"), None);
+        assert_eq!(phone_line("bad;id Phone"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn each_phone_gets_every_file() {
+        let files = [PathBuf::from("/tmp/a.jpg"), PathBuf::from("/tmp/b.pdf")];
+        let phones = vec![("id1".to_string(), "Pixel".to_string())];
+        let found = share_targets(&files, phones);
+        if let Some(phone) = found.iter().find(|t| t.label == "Phone: Pixel") {
+            let args: Vec<_> = phone.args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            assert_eq!(args, ["--device", "id1", "--share", "/tmp/a.jpg", "--share", "/tmp/b.pdf"]);
+        }
     }
 
     #[test]
@@ -366,28 +488,127 @@ fn share_sheet(hwnd: windows::Win32::Foundation::HWND, files: &[PathBuf]) -> win
     unsafe { interop.ShowShareUIForWindow(hwnd) }
 }
 
-/// Linux has no share sheet of its own: a new email in the user's mail app with the
-/// files attached (xdg-email, part of xdg-utils).
+/// Linux has no share sheet of its own. What this computer has: a new email with the
+/// files attached (xdg-email), Bluetooth (GNOME's or Blueman's send window), and each
+/// phone KDE Connect (or GSConnect) can reach. One of them starts at once; with more,
+/// a small window asks which.
 #[cfg(target_os = "linux")]
 fn share(app: &AppHandle, files: Vec<PathBuf>) {
-    let mut cmd = Command::new("xdg-email");
-    for f in &files {
-        cmd.arg("--attach").arg(f);
+    let app = app.clone();
+    thread::spawn(move || {
+        let found = share_targets(&files, kdeconnect_phones());
+        match found.as_slice() {
+            [] => {
+                log::line("share: no email, Bluetooth or KDE Connect found");
+                notify(&app, "Nothing to share with", "Install xdg-utils for email, or KDE Connect for a phone.");
+            }
+            [one] => start_share(&app, one),
+            _ => {
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || choose_share(&handle, found));
+            }
+        }
+    });
+}
+
+/// One way to share: what the chooser shows, and the program that does it.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq)]
+struct ShareTarget {
+    label: String,
+    program: PathBuf,
+    args: Vec<std::ffi::OsString>,
+}
+
+/// The ways this computer can share `files`, with `phones` (id, name) from KDE Connect.
+#[cfg(target_os = "linux")]
+fn share_targets(files: &[PathBuf], phones: Vec<(String, String)>) -> Vec<ShareTarget> {
+    let mut found = Vec::new();
+    if let Some(program) = find_in_path("xdg-email") {
+        let args = files.iter().flat_map(|f| ["--attach".into(), f.clone().into_os_string()]).collect();
+        found.push(ShareTarget { label: "Email".into(), program, args });
     }
-    let started = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    if let Some(program) = ["bluetooth-sendto", "blueman-sendto"].into_iter().find_map(find_in_path) {
+        let args = files.iter().map(|f| f.clone().into_os_string()).collect();
+        found.push(ShareTarget { label: "Bluetooth".into(), program, args });
+    }
+    if let Some(program) = find_in_path("kdeconnect-cli") {
+        for (id, name) in phones {
+            let mut args: Vec<std::ffi::OsString> = vec!["--device".into(), id.into()];
+            for f in files {
+                args.push("--share".into());
+                args.push(f.clone().into_os_string());
+            }
+            found.push(ShareTarget { label: format!("Phone: {name}"), program: program.clone(), args });
+        }
+    }
+    found
+}
+
+/// The phones KDE Connect can reach now, as (id, name). Empty without KDE Connect.
+#[cfg(target_os = "linux")]
+fn kdeconnect_phones() -> Vec<(String, String)> {
+    let Some(cli) = find_in_path("kdeconnect-cli") else {
+        return Vec::new();
+    };
+    let out = Command::new(cli).args(["--list-available", "--id-name-only"]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+    out.map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(phone_line).collect()).unwrap_or_default()
+}
+
+/// "id name" from `kdeconnect-cli --id-name-only`.
+#[cfg(target_os = "linux")]
+fn phone_line(line: &str) -> Option<(String, String)> {
+    let (id, name) = line.trim().split_once(' ')?;
+    let ok = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    ok.then(|| (id.to_string(), name.trim().to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn start_share(app: &AppHandle, target: &ShareTarget) {
+    log::line(&format!("share with {}", target.label));
+    let started = Command::new(&target.program).args(&target.args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
     match started {
         Ok(mut child) => {
-            let handle = app.clone();
+            let (handle, label) = (app.clone(), target.label.clone());
             thread::spawn(move || {
                 if !child.wait().map(|s| s.success()).unwrap_or(false) {
-                    log::line("xdg-email couldn't open a new email");
-                    notify(&handle, "Couldn't start an email", "Set a mail app as the default in Settings > Default Apps.");
+                    log::line(&format!("share with {label} didn't work"));
+                    notify(&handle, &format!("Couldn't share: {label}"), "For email, set a mail app as the default in Settings > Default Apps.");
                 }
             });
         }
         Err(e) => {
-            log::line(&format!("xdg-email: {e}"));
-            notify(app, "Couldn't start an email", "xdg-email is missing: install xdg-utils.");
+            log::line(&format!("share with {}: {e}", target.label));
+            notify(app, &format!("Couldn't share: {}", target.label), &e.to_string());
         }
     }
+}
+
+/// Asks which way to share, in a small window of the system's own look. Main thread.
+#[cfg(target_os = "linux")]
+fn choose_share(app: &AppHandle, found: Vec<ShareTarget>) {
+    use gtk::prelude::*;
+    let dialog = gtk::MessageDialog::new(
+        None::<&gtk::Window>,
+        gtk::DialogFlags::empty(),
+        gtk::MessageType::Question,
+        gtk::ButtonsType::None,
+        "Share with",
+    );
+    dialog.set_title(crate::APP_NAME);
+    dialog.set_keep_above(true);
+    for (i, target) in found.iter().enumerate() {
+        dialog.add_button(&target.label, gtk::ResponseType::Other(i as u16));
+    }
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    let app = app.clone();
+    dialog.connect_response(move |d, response| {
+        if let gtk::ResponseType::Other(i) = response {
+            if let Some(target) = found.get(usize::from(i)) {
+                start_share(&app, target);
+            }
+        }
+        d.close();
+    });
+    dialog.present();
 }
