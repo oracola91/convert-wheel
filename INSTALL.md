@@ -1,4 +1,6 @@
-# Installing Convert Wheel
+# Installing Pirouette
+
+Called Convert Wheel before 0.3.0. The Windows and Linux files below still carry that name.
 
 Every version is on the repo's [Releases page](https://github.com/oracola91/convert-wheel/releases).
 
@@ -6,7 +8,7 @@ Every version is on the repo's [Releases page](https://github.com/oracola91/conv
 
 | System | File |
 |---|---|
-| macOS, Apple silicon | `Convert.Wheel_<version>_aarch64.dmg` |
+| macOS, Apple silicon | `Pirouette_<version>_aarch64.dmg` (`Convert.Wheel_…` up to 0.2.1) |
 | Windows, one user, no admin rights | `Convert.Wheel_<version>_x64-setup.exe` |
 | Windows, all users, management tools | `Convert.Wheel_<version>_x64_en-US.msi` |
 | Ubuntu, Debian | `Convert.Wheel_<version>_amd64.deb` |
@@ -25,23 +27,25 @@ brew install ffmpeg imagemagick pandoc mupdf-tools
 brew install --cask libreoffice
 ```
 
-Or install only the ones you need, when you need them: when a drop needs a missing one, the menu offers **Install …** and runs the same `brew install` for you.
+Or install only the ones you need, when you need them: when a drop needs a missing one, the menu offers **Install …** and runs the same `brew install` for you. ExifTool (`brew install exiftool`) is only needed to change a picture's or video's date and place in Info; the menu offers it the same way.
 
-**2. The app:** open the `.dmg` and drag Convert Wheel onto Applications.
+**2. The app:** open the `.dmg` and drag Pirouette onto Applications. If an older Convert Wheel is there, delete it: it is the same app under its old name.
 
-**3. First launch:** macOS blocks apps that aren't signed by an Apple developer. Open Convert Wheel once, then go to System Settings > Privacy & Security and click "Open Anyway" next to Convert Wheel. Or, in Terminal:
+**3. First launch:** macOS blocks apps that aren't signed by an Apple developer. Open Pirouette once, then go to System Settings > Privacy & Security and click "Open Anyway" next to Pirouette. Or, in Terminal:
 
 ```sh
-xattr -dr com.apple.quarantine "/Applications/Convert Wheel.app"
+xattr -dr com.apple.quarantine "/Applications/Pirouette.app"
 ```
 
-**4. Use it:** a ring icon appears in the menu bar (top right); there is no Dock icon. Hold Shift while dragging a file in Finder and the wheel opens; hold Option+Shift for the Tools wheel (pictures: compress, half size, remove metadata, rotate, read a QR code, crop, compress to a size, one PDF; PDFs: merge, split, smaller; video: compress, remove metadata, trim, first frame, join; audio: compress, remove metadata, trim, join, loudness, mono); start a drag and then hold Control+Shift for the Actions wheel (copy path, show in folder, terminal, AirDrop, make a ZIP / TAR.GZ / TAR, unpack). The keys can change the wheel during the drag, without letting go of the file. Allow notifications when macOS asks. Open at Login is in the ring icon's menu.
+**4. Use it:** a ring-and-dot icon appears in the menu bar (top right); there is no Dock icon. Hold Shift while dragging a file in Finder and the wheel opens; hold Option+Shift for the Tools wheel (pictures: compress, half size, remove metadata, rotate, read a QR code, crop, compress to a size, one PDF; PDFs: merge, split, smaller; video: compress, remove metadata, trim, first frame, join; audio: compress, remove metadata, trim, join, loudness, mono); start a drag and then hold Control+Shift for the Actions wheel (copy path, show in folder, terminal, AirDrop, make a ZIP / TAR.GZ / TAR, unpack). The keys can change the wheel during the drag, without letting go of the file. Allow notifications when macOS asks. Open at Login is in the ring icon's menu.
+
+**Without a drag:** select files in Finder, right-click > Services > **Open in Pirouette Wheel**: the wheel opens with the keyboard (arrows pick, Enter applies, Esc closes). A key for it can be set in System Settings > Keyboard > Keyboard Shortcuts > Services. Everything else is in the menu's **Settings…**.
 
 **From the source instead:** `./scripts/install-macos.sh` builds the app on this Mac, installs it in Applications and starts it. A local build needs no Gatekeeper step.
 
-**Update:** the app updates itself (menu > Install Update). By hand: install the new `.dmg` the same way, or run the script again.
+**Update:** the app updates itself (menu > Install Update). By hand: install the new `.dmg` the same way, or run the script again. A copy that updated itself from 0.2.x keeps its old folder name, `Convert Wheel.app`, but shows Pirouette inside; the script replaces it with `Pirouette.app`.
 
-**Uninstall:** turn off Open at Login in the menu, quit, and delete Convert Wheel from Applications. Its settings, working files and log are in `~/Library/Application Support/local.convertwheel`, `~/Library/Caches/local.convertwheel` and `~/Library/Logs/local.convertwheel`; delete them too for a clean removal.
+**Uninstall:** turn off Open at login in Settings, quit, and delete Pirouette (or Convert Wheel) from Applications. Its settings, working files and log are in `~/Library/Application Support/local.convertwheel`, `~/Library/Caches/local.convertwheel` and `~/Library/Logs/local.convertwheel`; delete them too for a clean removal.
 
 ## Windows
 
@@ -67,6 +71,8 @@ Or install only the ones you need, when you need them: when a drop needs a missi
 **3. First launch:** SmartScreen warns about an unknown publisher. Click "More info", then "Run anyway".
 
 **4. Use it:** the app's icon sits in the taskbar's notification area (it may be under the ^ arrow). Hold Shift while dragging a file in File Explorer or on the desktop and the wheel opens. It says "Drop here" until the file reaches it, then shows the formats.
+
+**Without a drag:** select files in File Explorer, right-click > **Send to > Convert Wheel** (on Windows 11 under "Show more options"): the wheel opens with the keyboard (arrows pick, Enter applies, Esc closes). The Send To entry is made at start; Settings > General switches it off.
 
 **Update:** the app updates itself (menu > Install Update), and Open at Login stays as it was. By hand: run the new installer over the old one. The `.exe` then removes the old version first ("Uninstall before installing" is ticked); your settings stay, unless you tick "Delete the application data", but Open at Login is switched off, so turn it on again in the menu.
 
@@ -122,6 +128,8 @@ sudo apt install ./pandoc-3.12.1-1-amd64.deb
   ```
 
 **3. Use it:** how the wheel opens depends on the desktop session. `echo $XDG_SESSION_TYPE` says which one is running.
+
+**Without a drag (any session):** in Files, right-click a file > **Open With** > Convert Wheel: the wheel opens with the keyboard (arrows pick, Enter applies, Esc closes).
 
 - **x11:** hold Shift while dragging a file in the file manager (Files, Nemo, Caja, Thunar, Dolphin, PCManFM) or on the desktop.
 - **wayland** (the default on current Ubuntu and Fedora): Wayland doesn't let apps watch the mouse, so the wheel opens from a keyboard shortcut. In Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts, add one with the command `convert-wheel --show` (for the AppImage: its full path, then ` --show`) and a key such as Super+Shift+C. Press it, then drag a file onto the wheel. Esc or a click in the middle closes it; it also closes by itself after 20 seconds.

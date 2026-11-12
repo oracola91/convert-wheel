@@ -55,7 +55,7 @@ pub fn start_trigger(app: AppHandle) {
         // On Wayland the socket is the only way in; without it nothing opens the wheel.
         crate::notify(
             &app,
-            "Convert Wheel can't open its wheel here",
+            &format!("{} can't open its wheel here", crate::APP_NAME),
             "This desktop session has no XDG_RUNTIME_DIR, which the keyboard shortcut needs. Details are in the log.",
         );
     } else if crate::gnome_shell::is_gnome() {
@@ -80,6 +80,7 @@ fn start_x11(app: AppHandle) {
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
+        let mut arrows = trigger::Arrows::default();
         loop {
             thread::sleep(POLL);
             let pointer = match conn.query_pointer(root).map(|c| c.reply()) {
@@ -95,8 +96,10 @@ fn start_x11(app: AppHandle) {
                 if shown {
                     trigger::released(&app);
                 }
+                crate::shelf_web::drag_ended(&app);
                 (was_down, from_files, shown, held) = (false, false, false, 0);
                 keys = KeyFollower::default();
+                arrows = trigger::Arrows::default();
                 continue;
             }
             let (px, py) = (i32::from(pointer.root_x), i32::from(pointer.root_y));
@@ -108,13 +111,18 @@ fn start_x11(app: AppHandle) {
             let moved = (px - start.0).abs() > DRAG_THRESHOLD || (py - start.1).abs() > DRAG_THRESHOLD;
             held = if pointer.mask.contains(KeyButMask::SHIFT) { held.saturating_add(1) } else { 0 };
             if from_files && !shown && held >= trigger::KEYS_SETTLE && moved {
-                // MOD1 is Alt.
-                let which = Which::from_keys(pointer.mask.contains(KeyButMask::MOD1), pointer.mask.contains(KeyButMask::CONTROL));
-                trigger::show_wheel(&app, Vec::new(), which);
-                shown = true;
+                // MOD1 is Alt. Keys switched off in the menu open no wheel.
+                if let Some(which) = Which::from_keys(pointer.mask.contains(KeyButMask::MOD1), pointer.mask.contains(KeyButMask::CONTROL)) {
+                    trigger::show_wheel(&app, Vec::new(), which);
+                    shown = true;
+                }
             } else if shown {
                 let held = |key| pointer.mask.contains(key);
                 trigger::follow_keys(&app, &mut keys, held(KeyButMask::SHIFT), held(KeyButMask::MOD1), held(KeyButMask::CONTROL));
+                trigger::follow_arrows(&app, &mut arrows, x11_arrows(&conn));
+            } else if from_files && held == 0 && moved && py <= crate::shelf_web::EDGE {
+                // Files dragged to the top of the screen without Shift: the shelf.
+                crate::shelf_web::drag_near_top(&app);
             }
         }
     });
@@ -203,8 +211,8 @@ fn start_listener(app: AppHandle) -> bool {
             let Some(line) = read_line(&mut reader) else {
                 continue;
             };
-            if line == "show" {
-                trigger::show_pinned(&app);
+            if let Some(which) = shown_wheel(&line) {
+                trigger::show_pinned(&app, which);
             } else if let Some(from) = line.strip_prefix("drag ") {
                 // In an X11 session the X11 poll sees the drag already.
                 if is_wayland() {
@@ -254,12 +262,39 @@ fn follow_drag(app: &AppHandle, from: &str, reader: &mut impl BufRead) {
     }
 }
 
-/// `convert-wheel --show`: asks the running app to open the wheel.
-pub fn send_show() -> Result<(), String> {
+/// Left, right, up and down from the X keymap: the evdev keycodes every current X
+/// server uses (113, 114, 111, 116).
+fn x11_arrows(conn: &impl x11rb::connection::Connection) -> [bool; 4] {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let Ok(Ok(map)) = conn.query_keymap().map(|c| c.reply()) else {
+        return [false; 4];
+    };
+    [113u8, 114, 111, 116].map(|code| map.keys[usize::from(code / 8)] & (1 << (code % 8)) != 0)
+}
+
+/// "show", "show tools" or "show actions" from the socket: which wheel to open.
+fn shown_wheel(line: &str) -> Option<crate::wheel::Which> {
+    use crate::wheel::Which;
+    match line {
+        "show" | "show formats" => Some(Which::Formats),
+        "show tools" => Some(Which::Tools),
+        "show actions" => Some(Which::Actions),
+        _ => None,
+    }
+}
+
+/// `convert-wheel --show [tools|actions]`: asks the running app to open the wheel.
+pub fn send_show(wheel: Option<&str>) -> Result<(), String> {
+    let line = match wheel {
+        None | Some("formats") => "show\n",
+        Some("tools") => "show tools\n",
+        Some("actions") => "show actions\n",
+        Some(other) => return Err(format!("no wheel called {other}: formats, tools or actions")),
+    };
     let path = socket_path().ok_or("XDG_RUNTIME_DIR is not set")?;
     UnixStream::connect(path)
-        .and_then(|mut s| s.write_all(b"show\n"))
-        .map_err(|_| "Convert Wheel isn't running".into())
+        .and_then(|mut s| s.write_all(line.as_bytes()))
+        .map_err(|_| format!("{} isn't running", crate::APP_NAME))
 }
 
 /// Shows the wheel. From Shift+drag on X11 it sits at the cursor, inside the screen's

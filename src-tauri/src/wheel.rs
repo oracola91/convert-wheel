@@ -1,9 +1,11 @@
 //! Wheel geometry and state, shared by the trigger and the drop target.
 
 use std::f64::consts::TAU;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock};
 
 use serde::{Deserialize, Serialize};
+
+use crate::settings::{Combo, Keys};
 
 /// Window size in points. src/wheel.js draws the rings with the same numbers.
 pub const SIZE: f64 = 340.0;
@@ -28,14 +30,26 @@ pub enum Which {
 }
 
 impl Which {
-    /// The keys held with Shift: Option (Alt) or Control. Control wins when both are.
-    pub fn from_keys(option: bool, control: bool) -> Self {
-        match (option, control) {
-            (_, true) => Which::Actions,
-            (true, false) => Which::Tools,
-            (false, false) => Which::Formats,
-        }
+    pub const ALL: [Which; 3] = [Which::Formats, Which::Tools, Which::Actions];
+
+    /// The wheel the keys held with Shift open (Option or Alt, Control), as the menu's
+    /// Keys has them; None when those keys are switched off.
+    pub fn from_keys(option: bool, control: bool) -> Option<Self> {
+        keys().wheel(Combo::from_keys(option, control))
     }
+}
+
+/// The keys for each wheel, from the settings: set at the start and from the menu.
+static KEYS: RwLock<Keys> = RwLock::new(Keys::STANDARD);
+
+pub fn set_keys(keys: Keys) {
+    if let Ok(mut now) = KEYS.write() {
+        *now = keys;
+    }
+}
+
+pub fn keys() -> Keys {
+    KEYS.read().map(|k| *k).unwrap_or_default()
 }
 
 /// Follows the keys while a wheel is open, so one drag can move between the wheels:
@@ -52,11 +66,14 @@ pub struct KeyFollower {
 impl KeyFollower {
     /// One poll of the keys while wheel `current` is open: the wheel to switch to,
     /// once, when the keys have asked for another for long enough.
-    pub fn poll(&mut self, current: Which, settle: u8, shift: bool, option: bool, control: bool) -> Option<Which> {
+    pub fn poll(&mut self, keys: &Keys, current: Which, settle: u8, shift: bool, option: bool, control: bool) -> Option<Which> {
+        // Keys switched off in the menu ask for nothing, like no keys at all.
         let asked = if option || control {
-            Some(Which::from_keys(option, control))
+            keys.wheel(Combo::from_keys(option, control))
+        } else if shift {
+            keys.wheel(Combo::Shift)
         } else {
-            shift.then_some(Which::Formats)
+            None
         };
         match asked {
             Some(which) if which != current => {
@@ -73,14 +90,41 @@ impl KeyFollower {
     }
 }
 
+/// The segment that shows a full wheel's next set of items when the cursor rests on it.
+pub const MORE: &str = "more";
+
+/// How many sets of `len` items a wheel of at most `max` segments shows.
+pub fn pages(len: usize, max: usize) -> usize {
+    if len <= max { 1 } else { len.div_ceil(max - 1) }
+}
+
+/// The segments for set `page` of `all`: every item when they fit, otherwise an even
+/// share of them with More last (sets differ by one item at most). `page` wraps.
+pub fn page_of(all: &[&'static str], page: usize, max: usize) -> Vec<&'static str> {
+    let pages = pages(all.len(), max);
+    if pages == 1 {
+        return all.to_vec();
+    }
+    let per = all.len().div_ceil(pages);
+    let mut items: Vec<_> = all.iter().copied().skip((page % pages) * per).take(per).collect();
+    items.push(MORE);
+    items
+}
+
 #[derive(Default)]
 pub struct WheelState {
-    /// Formats, or tools ("tool:half"), on the wheel right now, in drawing order.
+    /// Formats, or tools ("tool:half"), on the wheel right now, in drawing order. A
+    /// full wheel shows one set of `all` at a time, with More last.
     pub formats: Mutex<Vec<&'static str>>,
+    /// Everything the open wheel offers, and the set of it on show.
+    pub all: Mutex<Vec<&'static str>>,
+    pub page: Mutex<usize>,
     /// The wheel that is open, or was last.
     pub which: Mutex<Which>,
     /// The dragged files, once known: a switch to another wheel needs them again.
     pub paths: Mutex<Vec<String>>,
+    /// The segment the arrow keys picked, if any: a drop on the hub goes there.
+    pub picked: Mutex<Option<usize>>,
     phase: Mutex<Phase>,
 }
 
@@ -294,7 +338,7 @@ mod tests {
     /// and returns what each poll asked to switch to.
     fn follow(current: Which, keys: &[(bool, bool, bool)]) -> Vec<Option<Which>> {
         let mut f = KeyFollower::default();
-        keys.iter().map(|&(s, o, c)| f.poll(current, 2, s, o, c)).collect()
+        keys.iter().map(|&(s, o, c)| f.poll(&Keys::STANDARD, current, 2, s, o, c)).collect()
     }
 
     #[test]
@@ -311,6 +355,35 @@ mod tests {
     }
 
     #[test]
+    fn a_full_wheel_shows_its_items_a_set_at_a_time() {
+        let all: Vec<&'static str> = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"].to_vec();
+        // Ten fit: no More.
+        assert_eq!(page_of(&all[..10], 0, 10), &all[..10]);
+        assert_eq!(pages(10, 10), 1);
+        // Eleven: two even sets of six and five, each with More, and back to the first.
+        assert_eq!(pages(11, 10), 2);
+        assert_eq!(page_of(&all, 0, 10), ["a", "b", "c", "d", "e", "f", MORE]);
+        assert_eq!(page_of(&all, 1, 10), ["g", "h", "i", "j", "k", MORE]);
+        assert_eq!(page_of(&all, 2, 10), page_of(&all, 0, 10));
+        // Nineteen: three sets, none with more than ten segments.
+        let many: Vec<&'static str> = (0..19).map(|i| ["x"; 19][i]).collect();
+        assert_eq!(pages(19, 10), 3);
+        assert!((0..3).all(|p| page_of(&many, p, 10).len() <= 10));
+        assert_eq!((0..3).map(|p| page_of(&many, p, 10).len() - 1).sum::<usize>(), 19);
+    }
+
+    #[test]
+    fn keys_switched_off_ask_for_nothing() {
+        // Tools off, Actions on Shift+Option: Option asks for the actions, Control for nothing.
+        let keys = Keys { formats: Some(Combo::Shift), tools: None, actions: Some(Combo::ShiftOption) };
+        let mut f = KeyFollower::default();
+        let polls: Vec<_> = [(true, true, false), (true, true, false)].iter().map(|&(s, o, c)| f.poll(&keys, Which::Formats, 2, s, o, c)).collect();
+        assert_eq!(polls, [None, Some(Which::Actions)]);
+        let polls: Vec<_> = [(true, false, true), (true, false, true)].iter().map(|&(s, o, c)| f.poll(&keys, Which::Formats, 2, s, o, c)).collect();
+        assert_eq!(polls, [None, None]);
+    }
+
+    #[test]
     fn letting_go_of_the_keys_keeps_the_wheel() {
         let none = (false, false, false);
         assert_eq!(follow(Which::Tools, &[none, none, none]), [None, None, None]);
@@ -321,7 +394,7 @@ mod tests {
     #[test]
     fn a_switch_happens_once() {
         let mut f = KeyFollower::default();
-        let option_shift = |f: &mut KeyFollower, current| f.poll(current, 2, true, true, false);
+        let option_shift = |f: &mut KeyFollower, current| f.poll(&Keys::STANDARD, current, 2, true, true, false);
         assert_eq!(option_shift(&mut f, Which::Formats), None);
         assert_eq!(option_shift(&mut f, Which::Formats), Some(Which::Tools));
         // The wheel is the tools now: holding on asks for nothing more.

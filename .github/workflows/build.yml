@@ -233,7 +233,7 @@ jobs:
               sys.exit(f"no signed update file for: {', '.join(missing)}")
           manifest = {
               "version": version,
-              "notes": f"Convert Wheel {version}. See https://github.com/{repo}/releases/tag/{tag}",
+              "notes": f"Pirouette {version} (Convert Wheel on Windows and Linux). See https://github.com/{repo}/releases/tag/{tag}",
               "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "platforms": platforms,
           }
@@ -251,7 +251,7 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           cat > notes.md <<EOF
-          Convert Wheel $version. Install steps for each system are in [INSTALL.md](https://github.com/$REPO/blob/$GITHUB_REF_NAME/INSTALL.md). Copies from 0.1.1 on update themselves: they find this release through \`latest.json\`.
+          Pirouette $version, called Convert Wheel before 0.3.0 and still on Windows and Linux. Install steps for each system are in [INSTALL.md](https://github.com/$REPO/blob/$GITHUB_REF_NAME/INSTALL.md). Copies from 0.1.1 on update themselves: they find this release through \`latest.json\`.
 
           | System | File |
           |---|---|
@@ -259,8 +259,8 @@ jobs:
           | Windows, all users | \`Convert.Wheel_${version}_x64_en-US.msi\` |
           | Ubuntu, Debian | \`Convert.Wheel_${version}_amd64.deb\` |
           | Other Linux | \`Convert.Wheel_${version}_amd64.AppImage\` |
-          | macOS (Apple silicon) | \`Convert.Wheel_${version}_aarch64.dmg\` |
+          | macOS (Apple silicon) | \`Pirouette_${version}_aarch64.dmg\` |
 
           The installers are not code-signed yet. Updates are signed with the project's update key, with the version recorded in the signature, and the app refuses an update that doesn't match. SHA256SUMS.txt lists the files' checksums.
           EOF
-          gh release create "$GITHUB_REF_NAME" release/* --repo "$REPO" --draft --title "Convert Wheel $version" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" release/* --repo "$REPO" --draft --title "Pirouette $version" --notes-file notes.md

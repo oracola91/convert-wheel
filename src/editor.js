@@ -222,6 +222,7 @@ for (const button of document.querySelectorAll('[data-ratio]')) {
     }
     if (session && shape !== null) crop = fullBox();
     if (session) place();
+    box.focus();
   });
 }
 
@@ -230,6 +231,7 @@ function turn(by) {
   turns = (turns + by + 4) % 4;
   crop = fullBox();
   layout();
+  box.focus();
 }
 
 document.getElementById('left').addEventListener('click', () => turn(-1));
@@ -284,7 +286,8 @@ document.addEventListener('keydown', (event) => {
   } else if (event.key === 'Enter' && !(document.activeElement instanceof HTMLButtonElement)) {
     event.preventDefault();
     cropIt();
-  } else if (session && document.activeElement === box) {
+  } else if (session) {
+    // The arrows move the box wherever the focus is, except in the size fields (above).
     const step = event.shiftKey ? 10 : 1;
     const by = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[event.key];
     if (by) {

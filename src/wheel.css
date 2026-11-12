@@ -139,6 +139,16 @@ svg.closing {
   display: inline;
 }
 
+/* Windows and Linux with Wheel Glass on: the page's own disc, see-through at the
+   chosen transparency. No blur: these systems blur nothing behind a round window. */
+.see .disc {
+  fill-opacity: var(--disc-a, 1);
+}
+
+.see .shadow {
+  opacity: var(--disc-a, 1);
+}
+
 .seg {
   transform-box: fill-box;
   transform-origin: center;
@@ -270,9 +280,9 @@ svg.closing {
   dominant-baseline: central;
 }
 
-/* No file icon above the label where there is no system glass (Windows), so it
-   moves up to the middle, with its pill. */
-.solid .hub-tag {
+/* No file icon above the label where there is no system glass (Windows, Linux) until
+   the file's picture arrives, so until then it sits in the middle, with its pill. */
+.solid:not(.pictured) .hub-tag {
   transform: translateY(-28px);
 }
 
@@ -301,4 +311,26 @@ svg.closing {
 /* Increased contrast: the chosen segment in the darker shade white text reads on. */
 @media (prefers-contrast: more) {
   .seg.active .body { fill: var(--accent); }
+}
+
+/* Windows and Linux: the file's picture above the hub's label (wheel.js). */
+.hub-picture {
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+}
+
+.hub-picture.shown {
+  opacity: 1;
+}
+
+/* Read by screen readers, not drawn. */
+.unseen {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }

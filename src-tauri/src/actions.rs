@@ -1,8 +1,10 @@
 //! The Actions wheel (Control+Shift while dragging): what can be done with the dragged
 //! files themselves. None of them changes a file: Copy Path puts the paths on the
-//! clipboard, Show in Folder opens the file manager on them, Terminal opens one in
-//! their folder, and AirDrop (macOS) offers to send them. Making and unpacking
-//! archives take a while, so they go through the conversion queue (archive.rs).
+//! clipboard, Show in Folder opens the file manager on them, Copy To and Move To put
+//! them in a folder of the user's choosing (transfer.rs), Terminal opens one in their
+//! folder, and AirDrop (macOS) or Share (Windows: the share sheet; Linux: a new email
+//! with the files attached) offers to send them. Making and unpacking archives take
+//! a while, so they go through the conversion queue (archive.rs).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -27,6 +29,8 @@ pub fn run(app: &AppHandle, action: &str, paths: Vec<String>) {
     match action {
         "act:path" => copy_paths(app, &files),
         "act:show" => reveal::show(app, files),
+        "act:copyto" => crate::transfer::start(app, false, files),
+        "act:moveto" => crate::transfer::start(app, true, files),
         "act:terminal" => {
             let app = app.clone();
             thread::spawn(move || {
@@ -41,6 +45,12 @@ pub fn run(app: &AppHandle, action: &str, paths: Vec<String>) {
         }
         #[cfg(target_os = "macos")]
         "act:airdrop" => airdrop(app, files),
+        #[cfg(target_os = "macos")]
+        "act:float" => crate::float_card::open(app, files),
+        #[cfg(not(target_os = "macos"))]
+        "act:float" => crate::float_web::open(app, files),
+        #[cfg(not(target_os = "macos"))]
+        "act:share" => share(app, files),
         other => log::line(&format!("unknown action {other}")),
     }
 }
@@ -290,5 +300,94 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         assert_eq!(folder_of(&file), dir.path());
         assert_eq!(folder_of(dir.path()), dir.path());
+    }
+}
+
+/// Windows: the system's share sheet (Nearby Share, Mail, apps), for the wheel's window.
+#[cfg(windows)]
+fn share(app: &AppHandle, files: Vec<PathBuf>) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("wheel") else {
+        return;
+    };
+    let handle = app.clone();
+    // The window handle is not Send: it is read on the main thread.
+    let _ = app.run_on_main_thread(move || {
+        let shown = window.hwnd().map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()));
+        if let Err(e) = shown.and_then(|hwnd| share_sheet(hwnd, &files)) {
+            log::line(&format!("couldn't open the share sheet: {e}"));
+            notify(&handle, "Couldn't open Share", &e.message());
+        }
+    });
+}
+
+#[cfg(windows)]
+fn share_sheet(hwnd: windows::Win32::Foundation::HWND, files: &[PathBuf]) -> windows::core::Result<()> {
+    use windows::core::{factory, AgileReference, Interface, HSTRING};
+    use windows::ApplicationModel::DataTransfer::{DataRequestedEventArgs, DataTransferManager};
+    use windows_collections::IIterable;
+    use windows::Foundation::TypedEventHandler;
+    use windows::Storage::{IStorageItem, StorageFile};
+    use windows::Win32::UI::Shell::IDataTransferManagerInterop;
+
+    let mut items: Vec<Option<IStorageItem>> = Vec::new();
+    for f in files {
+        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(f.as_os_str()))?.join()?;
+        items.push(Some(file.cast()?));
+    }
+    let title = match files {
+        [one] => one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        many => format!("{} files", many.len()),
+    };
+    // The share sheet asks for the files on a thread of its own: the list goes there
+    // through an agile reference, as COM objects may not cross threads by themselves.
+    let list: IIterable<IStorageItem> = items.into();
+    let list = AgileReference::new(&list)?;
+    let interop = factory::<DataTransferManager, IDataTransferManagerInterop>()?;
+    let manager: DataTransferManager = unsafe { interop.GetForWindow(hwnd)? };
+    // One share at a time: the handler answers only the request this share makes.
+    let token = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = token.clone();
+    let handler = TypedEventHandler::new(move |sender: windows::core::Ref<DataTransferManager>, args: windows::core::Ref<DataRequestedEventArgs>| {
+        if let Some(args) = args.as_ref() {
+            let data = args.Request()?.Data()?;
+            data.Properties()?.SetTitle(&HSTRING::from(title.as_str()))?;
+            data.SetStorageItemsReadOnly(&list.resolve()?)?;
+        }
+        if let (Some(sender), Some(t)) = (sender.as_ref(), slot.lock().map(|g| *g).unwrap_or(None)) {
+            let _ = sender.RemoveDataRequested(t);
+        }
+        Ok(())
+    });
+    let t = manager.DataRequested(&handler)?;
+    if let Ok(mut g) = token.lock() {
+        *g = Some(t);
+    }
+    unsafe { interop.ShowShareUIForWindow(hwnd) }
+}
+
+/// Linux has no share sheet of its own: a new email in the user's mail app with the
+/// files attached (xdg-email, part of xdg-utils).
+#[cfg(target_os = "linux")]
+fn share(app: &AppHandle, files: Vec<PathBuf>) {
+    let mut cmd = Command::new("xdg-email");
+    for f in &files {
+        cmd.arg("--attach").arg(f);
+    }
+    let started = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    match started {
+        Ok(mut child) => {
+            let handle = app.clone();
+            thread::spawn(move || {
+                if !child.wait().map(|s| s.success()).unwrap_or(false) {
+                    log::line("xdg-email couldn't open a new email");
+                    notify(&handle, "Couldn't start an email", "Set a mail app as the default in Settings > Default Apps.");
+                }
+            });
+        }
+        Err(e) => {
+            log::line(&format!("xdg-email: {e}"));
+            notify(app, "Couldn't start an email", "xdg-email is missing: install xdg-utils.");
+        }
     }
 }

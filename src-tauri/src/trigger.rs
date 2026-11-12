@@ -33,6 +33,8 @@ const PENDING_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long a wheel opened from the shortcut waits for a file.
 #[cfg(target_os = "linux")]
 const PINNED_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long the keyboard wheel waits for a choice before it closes by itself.
+const KEYBOARD_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Serialize)]
 struct WheelShow {
@@ -68,11 +70,15 @@ struct WheelShow {
 struct Look {
     plain: bool,
     seg: f64,
+    /// Windows and Linux draw the disc themselves: with Wheel Glass on, it is this
+    /// opaque (see-through, no blur); None for macOS's glass or a solid disc.
+    see: Option<f64>,
 }
 
 fn look(app: &AppHandle) -> Look {
     let settings = app.state::<crate::settings::Store>().get();
-    Look { plain: settings.no_liquid_glass, seg: settings.transparency.paint() }
+    let see = (!cfg!(target_os = "macos") && !settings.no_liquid_glass).then(|| settings.transparency.disc());
+    Look { plain: settings.no_liquid_glass, seg: settings.transparency.paint(), see }
 }
 
 /// The total size of `paths`, or None with a folder among them.
@@ -81,6 +87,27 @@ fn total_bytes(paths: &[String]) -> Option<u64> {
         let meta = std::fs::metadata(p).ok()?;
         meta.is_file().then(|| sum.saturating_add(meta.len()))
     })
+}
+
+/// macOS: the arrow keys are read only once "Arrow Keys on the Wheel" is on (Keys
+/// menu), as reading the keys of the app in front needs Input Monitoring. Windows and
+/// Linux read them always.
+#[cfg(target_os = "macos")]
+static MAC_ARROWS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switches the arrow keys on or off (macOS): at the start from the settings, and from
+/// the menu.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_mac_arrows(on: bool) {
+    MAC_ARROWS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether Input Monitoring is allowed; if not, macOS asks for it (a dialog the first
+/// time only, after that the switch is in System Settings). Only called when the
+/// arrow keys are switched on, never by the wheel itself.
+#[cfg(target_os = "macos")]
+pub(crate) fn ask_input_monitoring() -> bool {
+    macos::input_monitoring_or_ask()
 }
 
 #[cfg(target_os = "macos")]
@@ -93,6 +120,7 @@ pub fn start(app: AppHandle) {
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
+        let mut arrows = Arrows::default();
         // This drag carries files, so the shelf follows it (until the wheel opens), and
         // whether that was checked yet.
         let mut shelf_drag = false;
@@ -121,6 +149,7 @@ pub fn start(app: AppHandle) {
                     shown = false;
                     held = 0;
                     keys = KeyFollower::default();
+                    arrows = Arrows::default();
                     shelf_drag = false;
                     idle = (idle + 1) % SHELF_REFRESH;
                     if idle == 0 {
@@ -134,21 +163,27 @@ pub fn start(app: AppHandle) {
                 }
                 held = if macos::shift_down() { held.saturating_add(1) } else { 0 };
                 if dragging && !shown && held >= KEYS_SETTLE {
-                    let paths = macos::dragged_files();
-                    // Not a file drag (text, a tab, ...): ignore it until the next drag.
-                    if paths.is_empty() {
-                        dragging = false;
-                        return;
-                    }
-                    show_wheel(&app, paths, Which::from_keys(macos::option_down(), macos::control_down()));
-                    shown = true;
-                    // The wheel has this drag now: the shelf steps aside.
-                    if shelf_drag {
-                        shelf_drag = false;
-                        crate::shelf_window::drag_ended_soon(&app);
+                    // Keys switched off in the menu open no wheel; the drag goes on as usual.
+                    if let Some(which) = Which::from_keys(macos::option_down(), macos::control_down()) {
+                        let paths = macos::dragged_files();
+                        // Not a file drag (text, a tab, ...): ignore it until the next drag.
+                        if paths.is_empty() {
+                            dragging = false;
+                            return;
+                        }
+                        show_wheel(&app, paths, which);
+                        shown = true;
+                        // The wheel has this drag now: the shelf steps aside.
+                        if shelf_drag {
+                            shelf_drag = false;
+                            crate::shelf_window::drag_ended_soon(&app);
+                        }
                     }
                 } else if shown {
                     follow_keys(&app, &mut keys, macos::shift_down(), macos::option_down(), macos::control_down());
+                    if MAC_ARROWS.load(std::sync::atomic::Ordering::Relaxed) {
+                        follow_arrows(&app, &mut arrows, macos::arrows());
+                    }
                 }
                 if shelf_drag && dragging {
                     crate::shelf_window::dragging_soon(&app);
@@ -184,6 +219,12 @@ fn items_for(app: &AppHandle, paths: &[String], which: Which) -> Vec<&'static st
 }
 
 pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>, which: Which) {
+    // A drag while the keyboard wheel was open: the wheel must not take the focus
+    // from the drag's own app.
+    if KEYBOARD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || give_keys_back(&handle, false));
+    }
     let pending = paths.is_empty();
     let generation = open_wheel(app, paths, false, which);
     #[cfg(any(windows, target_os = "linux"))]
@@ -193,10 +234,120 @@ pub(crate) fn show_wheel(app: &AppHandle, paths: Vec<String>, which: Which) {
     let _ = (generation, pending);
 }
 
+/// The keyboard wheel is open (keyboard mode): closing it hands the keyboard back.
+static KEYBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keyboard mode (council 2026-11-10): the system hands over the selected files (the
+/// Services entry on macOS, Send To on Windows, Open With on Linux) and the wheel
+/// opens on them with the keyboard: Left and Right pick, Up and Down turn the set,
+/// Enter applies, Esc closes, Option/Alt and Control switch wheels. It closes by
+/// itself after KEYBOARD_TIMEOUT.
+pub(crate) fn open_for_keys(app: &AppHandle, paths: Vec<String>) {
+    let paths: Vec<String> = paths.into_iter().filter(|p| std::path::Path::new(p).exists()).collect();
+    if paths.is_empty() {
+        return;
+    }
+    crate::log::line(&format!("keyboard wheel on {} file(s)", paths.len()));
+    KEYBOARD.store(true, std::sync::atomic::Ordering::SeqCst);
+    let generation = open_wheel(app, paths, true, Which::Formats);
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        // After the wheel is shown (the same queue): the app comes to the front and
+        // the wheel's page takes the keys.
+        #[cfg(target_os = "macos")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            #[allow(deprecated)]
+            objc2_app_kit::NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        }
+        #[cfg(windows)]
+        crate::log::line(if crate::win32::take_keys(&handle) {
+            "keyboard wheel has the keys"
+        } else {
+            "keyboard wheel couldn't come to the front; the keys stay with the app in front"
+        });
+        #[cfg(not(windows))]
+        if let Some(win) = handle.get_webview_window("wheel") {
+            let _ = win.set_focusable(true);
+            let _ = win.set_focus();
+        }
+    });
+    let handle = app.clone();
+    thread::spawn(move || {
+        thread::sleep(KEYBOARD_TIMEOUT);
+        if hide_wheel(&handle, false, Some(generation)) {
+            crate::log::line("keyboard wheel closed by itself: no choice in a minute");
+        }
+    });
+}
+
+/// Esc, or a click in the middle, on a wheel that has the keyboard.
+pub(crate) fn cancel(app: &AppHandle) {
+    let keyboard = KEYBOARD.load(std::sync::atomic::Ordering::SeqCst);
+    if hide_wheel(app, false, None) && keyboard {
+        crate::log::line("keyboard wheel closed with Esc or a click in the middle");
+    }
+}
+
+/// After the keyboard wheel: the wheel can't take the keys during a drag again, and
+/// on macOS (`deactivate`, when it closed) the app in front before gets them back.
+/// On the main thread.
+fn give_keys_back(app: &AppHandle, deactivate: bool) {
+    #[cfg(windows)]
+    crate::win32::give_keys_back(app);
+    #[cfg(not(windows))]
+    if let Some(win) = app.get_webview_window("wheel") {
+        let _ = win.set_focusable(false);
+    }
+    #[cfg(target_os = "macos")]
+    if deactivate {
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            objc2_app_kit::NSApplication::sharedApplication(mtm).deactivate();
+        }
+    }
+    let _ = deactivate;
+}
+
+/// Enter on the keyboard wheel: the picked item, as a drop on it would be. On More,
+/// the next set.
+pub(crate) fn apply_pick(app: &AppHandle) {
+    let state = app.state::<WheelState>();
+    if !state.is_open() {
+        return;
+    }
+    let Some(i) = *wheel::lock(&state.picked) else {
+        crate::log::line("keyboard wheel: Enter with nothing picked yet");
+        return;
+    };
+    let item = wheel::lock(&state.formats).get(i).copied();
+    crate::log::line(&format!("keyboard wheel: Enter on {}", item.unwrap_or("nothing")));
+    if item == Some(wheel::MORE) {
+        turn_page(app, true);
+        return;
+    }
+    let paths = wheel::lock(&state.paths).clone();
+    drop_on_wheel(app, Hover { segment: Some(i), hub: false }, paths);
+}
+
+/// The files a start of the app was given (Send To, Open With), as full paths, or
+/// None when it was given anything else: every argument after the program must be a
+/// file or folder that exists. A relative one is read from `cwd`, the folder that
+/// start ran in (the running copy's own folder is another).
+pub(crate) fn files_in_args(args: &[String], cwd: &std::path::Path) -> Option<Vec<String>> {
+    let given = args.get(1..).filter(|g| !g.is_empty())?;
+    given
+        .iter()
+        .map(|a| {
+            let path = cwd.join(a);
+            (!a.starts_with('-') && path.exists()).then(|| path.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
 /// Opens the wheel from the keyboard shortcut and closes it again if no file comes.
+/// `convert-wheel --show tools` (or actions) opens that wheel instead of the formats.
 #[cfg(target_os = "linux")]
-pub(crate) fn show_pinned(app: &AppHandle) {
-    let generation = open_wheel(app, Vec::new(), true, Which::Formats);
+pub(crate) fn show_pinned(app: &AppHandle, which: Which) {
+    let generation = open_wheel(app, Vec::new(), true, which);
     close_later(app, generation, PINNED_TIMEOUT, false);
 }
 
@@ -222,24 +373,127 @@ fn fill(app: &AppHandle, paths: &[String], which: Option<Which>) -> (Which, Vec<
     if let Some(which) = which {
         *current = which;
     }
-    let formats = items_for(app, paths, *current);
+    let all = items_for(app, paths, *current);
+    let formats = wheel::page_of(&all, 0, formats::MAX_SEGMENTS);
+    *wheel::lock(&state.all) = all;
+    *wheel::lock(&state.page) = 0;
     *wheel::lock(&state.formats) = formats.clone();
     *wheel::lock(&state.paths) = paths.to_vec();
+    *wheel::lock(&state.picked) = None;
     (*current, formats)
 }
 
 /// One poll of the keys while the wheel is open: switches it when they ask for another.
 pub(crate) fn follow_keys(app: &AppHandle, keys: &mut KeyFollower, shift: bool, option: bool, control: bool) {
     let current = *wheel::lock(&app.state::<WheelState>().which);
-    if let Some(which) = keys.poll(current, KEYS_SETTLE, shift, option, control) {
+    if let Some(which) = keys.poll(&wheel::keys(), current, KEYS_SETTLE, shift, option, control) {
         switch_wheel(app, which);
     }
+}
+
+/// Arrow keys while the wheel is open: Left and Right move a highlight round the
+/// wheel, Up and Down show the next or the previous set of a full wheel (More). A drop
+/// on the hub then goes to the highlighted item; the mouse over a segment still wins.
+/// Each system's loop reads the keys (left, right, up, down) and calls this.
+#[derive(Default)]
+pub(crate) struct Arrows {
+    held: [bool; 4],
+}
+
+pub(crate) fn follow_arrows(app: &AppHandle, arrows: &mut Arrows, now: [bool; 4]) {
+    for (key, (was, is)) in arrows.held.iter().zip(now).enumerate() {
+        if is && !was {
+            arrow(app, key);
+        }
+    }
+    arrows.held = now;
+}
+
+/// One arrow key went down: 0 left, 1 right, 2 up, 3 down.
+pub(crate) fn arrow(app: &AppHandle, key: usize) {
+    let state = app.state::<WheelState>();
+    if !state.is_open() {
+        return;
+    }
+    match key {
+        0 | 1 => {
+            let n = wheel::lock(&state.formats).len();
+            if n == 0 {
+                return;
+            }
+            let next = {
+                let mut picked = wheel::lock(&state.picked);
+                let next = step(*picked, n, key == 1);
+                *picked = Some(next);
+                next
+            };
+            let _ = app.emit("wheel-pick", Some(next));
+        }
+        2 => turn_page(app, true),
+        3 => turn_page(app, false),
+        _ => {}
+    }
+}
+
+/// The next segment round a wheel of `n`, clockwise or back; the first press starts
+/// at the top (clockwise) or the last segment (back).
+fn step(picked: Option<usize>, n: usize, clockwise: bool) -> usize {
+    match picked {
+        None if clockwise => 0,
+        None => n - 1,
+        Some(i) if clockwise => (i + 1) % n,
+        Some(i) => (i + n - 1) % n,
+    }
+}
+
+/// Whether a drop here would do something: on a segment, or on the hub once the arrow
+/// keys picked one. The drop targets (macOS, Windows) take the file only then, so
+/// anywhere else the system slides it back.
+#[cfg(any(target_os = "macos", windows))]
+pub(crate) fn accepts_drop(app: &AppHandle, hover: Hover) -> bool {
+    with_pick(app, hover).segment.is_some()
+}
+
+/// macOS: the drag ended over the wheel without a drop, for example Esc: the wheel
+/// closes now, not only once the mouse button goes up. After a drop it closed already,
+/// so this does nothing then.
+#[cfg(target_os = "macos")]
+pub(crate) fn drag_ended_on_wheel(app: &AppHandle) {
+    let generation = app.state::<WheelState>().generation();
+    hide_wheel(app, false, Some(generation));
+}
+
+/// A drop on the hub goes to the segment the arrow keys picked.
+fn with_pick(app: &AppHandle, hover: Hover) -> Hover {
+    if hover.segment.is_none() && hover.hub {
+        if let Some(i) = *wheel::lock(&app.state::<WheelState>().picked) {
+            return Hover { segment: Some(i), hub: false };
+        }
+    }
+    hover
 }
 
 /// The wheel is open on this one file.
 pub(crate) fn showing(app: &AppHandle, path: &str) -> bool {
     let state = app.state::<WheelState>();
     state.is_open() && matches!(wheel::lock(&state.paths).as_slice(), [p] if p == path)
+}
+
+/// The shortcut's wheel has the keyboard (Linux): Alt and Control choose the wheel as
+/// Option and Control do during a Shift+drag, by the keys set in the menu's Keys.
+pub(crate) fn pinned_keys(app: &AppHandle, alt: bool, control: bool) {
+    use crate::settings::Combo;
+    let keys = app.state::<crate::settings::Store>().get().keys;
+    let combo = if control {
+        Combo::ShiftControl
+    } else if alt {
+        Combo::ShiftOption
+    } else {
+        Combo::Shift
+    };
+    if let Some(which) = [Which::Formats, Which::Tools, Which::Actions].into_iter().find(|w| keys.get(*w) == Some(combo)) {
+        switch_wheel(app, which);
+    }
 }
 
 /// Shows another wheel for the same drag, without closing the window.
@@ -250,6 +504,38 @@ fn switch_wheel(app: &AppHandle, which: Which) {
     }
     let paths = wheel::lock(&state.paths).clone();
     let (which, formats) = fill(app, &paths, Some(which));
+    let pending = paths.is_empty();
+    let bytes = total_bytes(&paths);
+    let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
+    crate::estimates::ask(app);
+}
+
+/// The cursor rested on More: the same wheel shows its next set of items. Under the
+/// `which` lock, like fill, so a switch or the files arriving can't cross it.
+pub(crate) fn next_page(app: &AppHandle) {
+    turn_page(app, true);
+}
+
+/// The next set of a full wheel, or with `forward` false the one before.
+fn turn_page(app: &AppHandle, forward: bool) {
+    let state = app.state::<WheelState>();
+    if !state.is_open() {
+        return;
+    }
+    let (which, formats, paths) = {
+        let current = wheel::lock(&state.which);
+        let all = wheel::lock(&state.all);
+        if wheel::pages(all.len(), formats::MAX_SEGMENTS) == 1 {
+            return;
+        }
+        let mut page = wheel::lock(&state.page);
+        let pages = wheel::pages(all.len(), formats::MAX_SEGMENTS);
+        *page = if forward { (*page + 1) % pages } else { (*page + pages - 1) % pages };
+        *wheel::lock(&state.picked) = None;
+        let formats = wheel::page_of(&all, *page, formats::MAX_SEGMENTS);
+        *wheel::lock(&state.formats) = formats.clone();
+        (*current, formats, wheel::lock(&state.paths).clone())
+    };
     let pending = paths.is_empty();
     let bytes = total_bytes(&paths);
     let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
@@ -268,6 +554,9 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
     let highlight = app.state::<crate::settings::Store>().get().highlight.key();
     let _ = app.emit("wheel-show", WheelShow { paths, formats, pending, glass, pinned, wheel: which, bytes, highlight: Some(highlight), look: Some(look(app)) });
     crate::estimates::ask(app);
+    if let Some(f) = first.as_deref() {
+        crate::hub_picture::send(app, f);
+    }
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -287,6 +576,9 @@ fn open_wheel(app: &AppHandle, paths: Vec<String>, pinned: bool, which: Which) -
 pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
     let (which, formats) = fill(app, &paths, None);
     app.state::<WheelState>().files_known();
+    if let Some(first) = paths.first() {
+        crate::hub_picture::send(app, first);
+    }
     let bytes = total_bytes(&paths);
     let _ = app.emit("wheel-formats", WheelShow { paths, formats, pending: false, glass: false, pinned: false, wheel: which, bytes, highlight: None, look: None });
     crate::estimates::ask(app);
@@ -295,10 +587,16 @@ pub(crate) fn files_entered(app: &AppHandle, paths: Vec<String>) {
 /// A drop on the wheel. Converts (or runs the tool) when it landed on a segment and
 /// says whether it did.
 pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -> bool {
+    let hover = with_pick(app, hover);
     let format = hover
         .segment
         .and_then(|i| wheel::lock(&app.state::<WheelState>().formats).get(i).copied());
     match format {
+        // More only shows the next items: a drop there does nothing, like the middle.
+        Some(wheel::MORE) => {
+            hide_wheel(app, false, None);
+            false
+        }
         // Crop first opens its window; the job is queued from there.
         Some(tool) if !paths.is_empty() && formats::opens_editor(tool) => {
             hide_wheel(app, true, None);
@@ -343,14 +641,20 @@ pub(crate) fn released(app: &AppHandle) {
 
 /// Closes the wheel. `accepted` tells the page a format was chosen, so it can keep
 /// that segment lit while the wheel shrinks away. With `expected`, only that wheel.
-/// Closing twice does nothing.
-pub fn hide_wheel(app: &AppHandle, accepted: bool, expected: Option<u64>) {
+/// Closing twice does nothing. Says whether this call closed it.
+pub fn hide_wheel(app: &AppHandle, accepted: bool, expected: Option<u64>) -> bool {
     let Some(generation) = app.state::<WheelState>().close(expected) else {
-        return;
+        return false;
     };
     let _ = app.emit("wheel-close", accepted);
+    let keyboard = KEYBOARD.swap(false, std::sync::atomic::Ordering::SeqCst);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        // The keyboard wheel took the keys: the wheel can't take them during a drag
+        // again, and on macOS the app in front before it gets them back.
+        if keyboard {
+            give_keys_back(&handle, true);
+        }
         #[cfg(target_os = "macos")]
         crate::wheel_window::close(&handle, generation);
         #[cfg(windows)]
@@ -359,6 +663,7 @@ pub fn hide_wheel(app: &AppHandle, accepted: bool, expected: Option<u64>) {
         crate::linux::close(&handle, generation);
         let _ = (&handle, generation);
     });
+    true
 }
 
 #[cfg(target_os = "macos")]
@@ -396,6 +701,25 @@ mod macos {
         NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Control)
     }
 
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
+        fn CGPreflightListenEventAccess() -> bool;
+        fn CGRequestListenEventAccess() -> bool;
+    }
+
+    /// True when Input Monitoring is allowed; otherwise asks for it and says false.
+    pub fn input_monitoring_or_ask() -> bool {
+        unsafe { CGPreflightListenEventAccess() || CGRequestListenEventAccess() }
+    }
+
+    /// Left, right, up, down. Keys of another app in front are only seen with Input
+    /// Monitoring allowed (System Settings > Privacy & Security); this never asks.
+    pub fn arrows() -> [bool; 4] {
+        const COMBINED_SESSION: i32 = 0;
+        [123, 124, 126, 125].map(|key| unsafe { CGEventSourceKeyState(COMBINED_SESSION, key) })
+    }
+
     pub fn dragged_files() -> Vec<String> {
         file_paths(&drag_pasteboard())
     }
@@ -415,5 +739,36 @@ mod macos {
                 Some(path.to_string())
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod arrow_tests {
+    use super::{files_in_args, step};
+
+    #[test]
+    fn only_existing_files_open_the_keyboard_wheel() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.png");
+        std::fs::write(&file, b"x").unwrap();
+        let file = file.to_string_lossy().into_owned();
+        let args = |rest: &[&str]| std::iter::once("app".to_string()).chain(rest.iter().map(|s| s.to_string())).collect::<Vec<_>>();
+        let elsewhere = std::path::Path::new("/");
+        assert_eq!(files_in_args(&args(&[&file]), elsewhere), Some(vec![file.clone()]));
+        // A name alone is looked for where that start ran.
+        assert_eq!(files_in_args(&args(&["a.png"]), dir.path()), Some(vec![file.clone()]));
+        assert_eq!(files_in_args(&args(&["a.png"]), elsewhere), None);
+        assert_eq!(files_in_args(&args(&[]), elsewhere), None);
+        assert_eq!(files_in_args(&args(&["--update"]), elsewhere), None);
+        assert_eq!(files_in_args(&args(&[&file, "/no/such/file"]), elsewhere), None);
+    }
+
+    #[test]
+    fn arrows_go_round_the_wheel_both_ways() {
+        assert_eq!(step(None, 5, true), 0);
+        assert_eq!(step(None, 5, false), 4);
+        assert_eq!(step(Some(4), 5, true), 0);
+        assert_eq!(step(Some(0), 5, false), 4);
+        assert_eq!(step(Some(2), 5, true), 3);
     }
 }

@@ -24,6 +24,9 @@ use crate::formats::{self, Kind};
 use crate::settings::{Level, Quality};
 
 pub mod estimate;
+pub mod info;
+pub mod markup;
+pub mod svg;
 
 /// How long each tool may run before it is stopped. Generous: a stuck tool should not
 /// block every later conversion, but a long video must still finish.
@@ -45,6 +48,9 @@ const FIT_HD: &str = "scale=w='if(gte(iw,ih),min(1920,iw),-2)':h='if(gte(iw,ih),
 /// The sound a conversion encodes: the first track. Phones add more that ffmpeg can't
 /// decode or other containers can't hold (an iPhone's spatial audio, for one).
 const FIRST_SOUND: &str = "0:a:0?";
+/// The first video track that is a real picture, not a cover or a thumbnail some files
+/// keep as a video track of one frame: Black Out's window and its result use the same.
+const MAIN_PICTURE: &str = "0:V:0";
 
 /// The error of a conversion ended with Stop.
 pub const STOPPED: &str = "stopped";
@@ -100,8 +106,10 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     let (stem, out_ext) = match tool {
         Some(t) => {
             // Compress to a Size names the size: "photo (under 2 MB).jpg".
-            let suffix = match (t, control().and_then(|c| c.edit)) {
+            let suffix = match (t, control().and_then(|c| c.edit.clone())) {
                 ("tool:target", Some(Edit::Size(bytes))) => format!("under {}", size_text(bytes)),
+                // Speed names the speed: "clip (2x speed).mov".
+                ("tool:speed", Some(Edit::Speed(percent))) => format!("{}x speed", speed_text(percent)),
                 _ => tool_suffix(t).to_string(),
             };
             (format!("{base} ({suffix})"), tool_out_ext(t, &ext))
@@ -152,10 +160,18 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         (Some("tool:target"), Kind::Audio | Kind::Video) => {
             file(size_limit().and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
         }
+        (Some("tool:target"), Kind::Pdf) => file(size_limit().and_then(|limit| pdf_to_size(&input, &out, work.path(), limit))),
+        (Some("tool:parts"), Kind::Audio | Kind::Video) => media_parts(&input, &ext, work.path()),
+        // The date taken and the place, written by ExifTool into the copy.
+        (Some("tool:info"), Kind::Image | Kind::Video) => match control().and_then(|c| c.edit.clone()) {
+            Some(Edit::Info(changes)) => file(info::write_exif(&input, &out, kind == Kind::Video, &changes)),
+            _ => Err("Info opens its window from the wheel".to_string()),
+        },
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
         (Some(_), _) => Err("the Tools wheel has no tools for this kind of file yet".to_string()),
+        (None, Kind::Image) if target == "svg" => file(to_svg(&input, &out, work.path())),
         (None, Kind::Image) => file(image(&input, target, &out)),
         (None, Kind::Audio) => file(audio(&input, target, &out)),
         (None, Kind::Video) => file(video(&input, &ext, target, &out)),
@@ -176,14 +192,21 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
             return Err(format!("it is already as small as {name} makes it"));
         }
     }
+    // Stop Converting clicked while the tool was finishing: the result isn't saved.
+    // Without this, a click in the last moment (the menu still shows 99%) let the
+    // file through.
+    if stop_asked() {
+        return Err(STOPPED.to_string());
+    }
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
         None => src.parent().ok_or("the file has no folder")?.to_path_buf(),
     };
     let save = |dir: &Path| match &output {
         Output::File => place(&out, dir, &stem, &out_ext),
-        // A split PDF: "report (pages)/report 01.pdf". A PDF's pages as pictures:
-        // "report (PNG)/report 01.png".
+        // A split PDF: "report (pages)/report 01.pdf". A split video: "clip (parts)/clip
+        // 01.mp4". A PDF's pages as pictures: "report (PNG)/report 01.png".
+        Output::Pages { files, cut } if tool == Some("tool:parts") => place_pages(files, *cut, dir, base, "parts", &out_ext),
         Output::Pages { files, cut } if tool.is_some() => place_pages(files, *cut, dir, base, "pages", &out_ext),
         Output::Pages { files, cut } => place_pages(files, *cut, dir, base, &target.to_uppercase(), target),
     };
@@ -280,6 +303,26 @@ fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     })
 }
 
+/// A picture traced into an SVG: ImageMagick writes its pixels upright and at most
+/// its style's longest side (2000 px, photos 1200), then this program traces them in a process of
+/// its own (svg.rs), under the usual time limit and Stop Converting.
+fn to_svg(src: &Path, out: &Path, work: &Path) -> Result<(), String> {
+    let coder = sniff_image(&read_head(src)?).ok_or("this is not an image format the wheel can read")?;
+    let pixels = work.join("pixels.pam");
+    let style = svg::Style::of_coder(coder);
+    let side = style.max_side().to_string();
+    let mut cmd = Command::new(magick()?);
+    cmd.args(IMAGE_LIMITS);
+    cmd.arg(format!("{coder}:{}[0]", src.display()))
+        .args(["-auto-orient", "-resize", &format!("{side}x{side}>"), "-depth", "8"])
+        .arg(format!("pam:{}", pixels.display()));
+    run(cmd, QUICK)?;
+    let me = std::env::current_exe().map_err(|e| format!("can't find {} itself to trace with: {e}", crate::APP_NAME))?;
+    let mut trace = Command::new(me);
+    trace.arg("--trace").args(svg::trace_args(&pixels, out, style, quality().pictures));
+    run(trace, QUICK)
+}
+
 /// What ImageMagick is told to write a picture as `target` at `level`.
 fn image_options(target: &str, level: Level) -> Vec<&'static str> {
     let mut args = Vec::new();
@@ -324,13 +367,22 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:rotate" => "rotated",
         "tool:merge" => "merged",
         "tool:onepdf" => "one PDF",
+        "tool:collage" => "collage",
         "tool:smaller" => "smaller",
+        "tool:order" => "reordered",
+        "tool:info" => "new info",
         "tool:still" => "first frame",
         "tool:loudness" => "even loudness",
         "tool:mono" => "mono",
         "tool:qr" => "QR code",
         "tool:crop" => "cropped",
+        "tool:adjust" => "adjusted",
+        "tool:markup" => "marked up",
+        "tool:blackout" => "blacked out",
         "tool:trim" => "trimmed",
+        "tool:bleep" => "bleeped",
+        "tool:speed" => "new speed",
+        "tool:parts" => "parts",
         "tool:join" => "joined",
         "tool:target" => "compressed",
         _ => "changed",
@@ -346,14 +398,23 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:rotate" => "rotated",
         "tool:merge" => "merged",
         "tool:onepdf" => "put into one PDF",
+        "tool:collage" => "put into a collage",
         "tool:split" => "split",
         "tool:smaller" => "made smaller",
+        "tool:order" => "reordered",
+        "tool:info" => "given new tags",
         "tool:still" => "turned into a picture",
         "tool:loudness" => "evened out",
         "tool:mono" => "mixed down to mono",
         "tool:qr" => "read for QR codes",
         "tool:crop" => "cropped",
+        "tool:adjust" => "adjusted",
+        "tool:markup" => "marked up",
+        "tool:blackout" => "blacked out",
         "tool:trim" => "trimmed",
+        "tool:bleep" => "bleeped",
+        "tool:speed" => "sped up or slowed down",
+        "tool:parts" => "split into parts",
         "tool:join" => "joined",
         "tool:target" => "compressed to a size",
         _ => "changed",
@@ -380,6 +441,14 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
     let own = formats::canonical(ext);
     let video = formats::kind_of(ext) == Some(Kind::Video);
     match tool_id {
+        // The sound and its other tags as they are, with the tags from Info's window.
+        "tool:info" => {
+            let Some(Edit::Info(changes)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Info opens its window from the wheel".into());
+            };
+            let args = info::sound_args(own, &changes)?;
+            ffmpeg(src, &args.iter().map(String::as_str).collect::<Vec<_>>(), out, QUICK)
+        }
         // The picture and sound as they are, without the file's and the streams'
         // metadata (where and when it was recorded, the device, tags, cover art) or
         // the data tracks phones keep it in. A copy: quick, nothing is encoded again.
@@ -410,20 +479,87 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             ffmpeg(src, &args, out, VIDEO)
         }
         "tool:still" => ffmpeg(src, &["-map", "0:v:0", "-frames:v", "1", "-q:v", "2", "-update", "1"], out, QUICK),
+        // The box chosen in the Crop window, on the picture upright (ffmpeg turns a
+        // phone's video by its tag first) and then turned as chosen there; encoded again
+        // in the file's own format, at the menu's quality.
+        "tool:crop" => {
+            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Crop opens its window from the wheel".into());
+            };
+            let codec = video_codec(own).ok_or_else(|| format!("{} files can't be cropped", own.to_uppercase()))?;
+            let frames = video_crop_filter(&crop, video_fit(own));
+            let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", &frames, "-map_metadata", "0"];
+            args.extend(codec);
+            ffmpeg(src, &args, out, VIDEO)
+        }
+        // The black boxes drawn on a frame in the Black Out window, filled on every frame
+        // (upright, as the window showed it), then encoded again in the file's own
+        // format at the menu's quality. Only the picture and the first sound go in: no
+        // cover picture, subtitles, chapters or other tracks, and no metadata (where it
+        // was recorded, the device), as Mark Up's black boxes do for a picture.
+        "tool:blackout" => {
+            let Some(Edit::Markup(markup)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Black Out opens its window from the wheel".into());
+            };
+            let codec = video_codec(own).ok_or_else(|| format!("{} files can't be blacked out", own.to_uppercase()))?;
+            let (width, height) = video_frame_size(src, out)?;
+            let frames = blackout_filter(&markup.video_boxes(width, height)?, video_fit(own));
+            let mut args = vec!["-map", MAIN_PICTURE, "-map", FIRST_SOUND, "-vf", &frames];
+            args.extend(["-map_metadata", "-1", "-map_chapters", "-1"]);
+            args.extend(codec);
+            ffmpeg(src, &args, out, VIDEO)
+        }
         // The part chosen in the editor, cut exactly where asked: read from the start and
         // encoded again (in the file's own format, at the menu's quality), rather than
         // copied, which could only cut at the nearest keyframe.
         "tool:trim" => {
-            let Some(Edit::Trim(trim)) = control().and_then(|c| c.edit) else {
+            let Some(Edit::Trim(trim)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Trim opens its window from the wheel".into());
             };
-            let seconds = |ms: u64| format!("{}.{:03}", ms / 1000, ms % 1000);
-            let (from, to) = (seconds(trim.start_ms), seconds(trim.end_ms));
-            let mut args = vec!["-ss", from.as_str(), "-to", to.as_str(), "-map_metadata", "0"];
+            cut(src, ext, trim.start_ms, trim.end_ms, out)
+        }
+        // The part chosen in the Bleep window becomes a tone; the rest of the sound, and
+        // a video's picture, stay as they are (the picture is copied, not encoded again).
+        "tool:bleep" => {
+            let Some(Edit::Trim(part)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Bleep opens its window from the wheel".into());
+            };
+            if video && sample_rate(src, out).is_none() {
+                return Err("this video has no sound to bleep".into());
+            }
+            let sound = bleep_filter(part.start_ms, part.end_ms);
+            let mut args = vec!["-filter_complex", &sound, "-map_metadata", "0"];
             if video {
-                args.extend(video_encode(own).ok_or_else(|| format!("{} files can't be trimmed", own.to_uppercase()))?);
+                let codec = video_sound_codec(own).ok_or_else(|| format!("{} files can't be bleeped", own.to_uppercase()))?;
+                args.extend(["-map", "0:v:0", "-map", "[bleeped]", "-c:v", "copy"]);
+                args.extend(codec);
+                args.extend(faststart(own));
             } else {
-                args.extend(["-map", "0:a:0"]);
+                args.extend(["-map", "[bleeped]"]);
+                args.extend(audio_args(own));
+            }
+            ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
+        }
+        // Faster or slower, at the speed chosen in its window, the sound at its own
+        // pitch; encoded again in the file's own format, at the menu's quality.
+        "tool:speed" => {
+            let Some(Edit::Speed(percent)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Speed opens its window from the wheel".into());
+            };
+            let tempo = atempo(percent);
+            let mut args = vec!["-map_metadata", "0"];
+            let frames;
+            if video {
+                let codec = video_codec(own).ok_or_else(|| format!("{} files can't change speed", own.to_uppercase()))?;
+                let pts = format!("setpts=PTS*100/{percent}");
+                frames = match video_fit(own) {
+                    Some(fit) => format!("{pts},{fit}"),
+                    None => pts,
+                };
+                args.extend(["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", &frames, "-af", &tempo]);
+                args.extend(codec);
+            } else {
+                args.extend(["-map", "0:a:0", "-af", &tempo]);
                 args.extend(audio_args(own));
             }
             ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
@@ -443,6 +579,58 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+/// The part of a sound or video from `start_ms` to `end_ms`, cut exactly where asked:
+/// read from the start and encoded again (in the file's own format, at the menu's
+/// quality), rather than copied, which could only cut at the nearest keyframe.
+fn cut(src: &Path, ext: &str, start_ms: u64, end_ms: u64, out: &Path) -> Result<(), String> {
+    let own = formats::canonical(ext);
+    let video = formats::kind_of(ext) == Some(Kind::Video);
+    let seconds = |ms: u64| format!("{}.{:03}", ms / 1000, ms % 1000);
+    let (from, to) = (seconds(start_ms), seconds(end_ms));
+    let mut args = vec!["-ss", from.as_str(), "-to", to.as_str(), "-map_metadata", "0"];
+    if video {
+        args.extend(video_encode(own).ok_or_else(|| format!("{} files can't be cut", own.to_uppercase()))?);
+    } else {
+        args.extend(["-map", "0:a:0"]);
+        args.extend(audio_args(own));
+    }
+    ffmpeg(src, &args, out, if video { VIDEO } else { AUDIO })
+}
+
+/// Most parts Split makes of a sound or video.
+const MAX_PARTS: u64 = 50;
+
+/// How many parts of `every_ms` a file `length_ms` long makes: None for fewer than two,
+/// more than MAX_PARTS, or parts under a second. What is left at the end becomes a
+/// part of its own from a second up, and otherwise goes onto the last one.
+pub fn parts_count(length_ms: u64, every_ms: u64) -> Option<u64> {
+    if every_ms < 1000 {
+        return None;
+    }
+    let count = length_ms / every_ms + u64::from(length_ms % every_ms >= 1000);
+    (2..=MAX_PARTS).contains(&count).then_some(count)
+}
+
+/// Split for sound and video: parts of the length chosen in its window, in order, each
+/// cut exactly like Trim. They come back like a split PDF's pages.
+fn media_parts(src: &Path, ext: &str, work: &Path) -> Result<Output, String> {
+    let Some(Edit::Parts(every_ms)) = control().and_then(|c| c.edit.clone()) else {
+        return Err("Split opens its window from the wheel".into());
+    };
+    let length = media_length(src, &work.join("probe")).ok_or("can't tell how long it plays")?;
+    let length_ms = u64::try_from(length.as_millis()).unwrap_or(u64::MAX);
+    let count = parts_count(length_ms, every_ms).ok_or("that makes fewer than two parts, or too many")?;
+    let own = formats::canonical(ext);
+    let mut files = Vec::new();
+    for i in 0..count {
+        let end = if i + 1 == count { length_ms } else { (i + 1) * every_ms };
+        let part = work.join(format!("part-{i}.{own}"));
+        cut(src, ext, i * every_ms, end, &part)?;
+        files.push(part);
+    }
+    Ok(Output::Pages { files, cut: false })
 }
 
 /// Compress for sound: its own format at a lower bit rate than even the menu's
@@ -497,13 +685,31 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
         "tool:clean" => cmd.args(["+profile", "!icc,*", "+set", "comment"]),
         "tool:rotate" => cmd.args(["-rotate", "90"]),
         "tool:crop" => {
-            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit) else {
+            let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Crop opens its window from the wheel".into());
             };
             if crop.turns > 0 {
                 cmd.args(["-rotate", &(90 * u32::from(crop.turns)).to_string()]);
             }
             cmd.args(["-crop", &format!("{}x{}+{}+{}", crop.width, crop.height, crop.x, crop.y), "+repage"])
+        }
+        "tool:adjust" => {
+            let Some(Edit::Adjust(adjust)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Adjust opens its window from the wheel".into());
+            };
+            cmd.args(adjust_args(&adjust))
+        }
+        "tool:markup" => {
+            let Some(Edit::Markup(marks)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Mark Up opens its window from the wheel".into());
+            };
+            cmd.args(markup::draw_args(&marks, markup::font().as_deref())?);
+            // Blacked out means gone: the EXIF's small preview would still show it.
+            if marks.redacts() {
+                cmd.args(["+profile", "!icc,*", "+set", "comment"])
+            } else {
+                &mut cmd
+            }
         }
         other => return Err(format!("unknown tool {other}")),
     };
@@ -657,13 +863,132 @@ fn copy_streams(src: &Path, extra: &[&str], out: &Path) -> bool {
 /// height; phone and screen recordings often aren't, so round down by a pixel there.
 fn video_encode(target: &str) -> Option<Vec<&'static str>> {
     let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND];
-    match target {
-        "mp4" | "mov" | "m4v" | "mkv" => args.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]),
-        "avi" | "wmv" => args.extend(["-vf", FIT_HD]),
-        _ => {}
+    if let Some(fit) = video_fit(target) {
+        args.extend(["-vf", fit]);
     }
     args.extend(video_codec(target)?);
     Some(args)
+}
+
+/// How the picture is fitted for `target`'s encoder: H.264 wants even sides, and the
+/// older AVI and WMV encoders no more than HD.
+fn video_fit(target: &str) -> Option<&'static str> {
+    match target {
+        "mp4" | "mov" | "m4v" | "mkv" => Some("scale=trunc(iw/2)*2:trunc(ih/2)*2"),
+        "avi" | "wmv" => Some(FIT_HD),
+        _ => None,
+    }
+}
+
+/// ffmpeg's filters for Bleep: the first sound silenced from `start_ms` to `end_ms`,
+/// and a 1 kHz tone there instead. amix halves what it mixes, so the sum is doubled
+/// again: its switch to leave the level alone is newer than some ffmpeg in use.
+fn bleep_filter(start_ms: u64, end_ms: u64) -> String {
+    let seconds = |ms: u64| format!("{}.{:03}", ms / 1000, ms % 1000);
+    // Quoted: inside a filter, a comma would end it.
+    let during = format!("'between(t,{},{})'", seconds(start_ms), seconds(end_ms));
+    let outside = format!("'not(between(t,{},{}))'", seconds(start_ms), seconds(end_ms));
+    format!(
+        "[0:a:0]volume=0:enable={during}[quiet];\
+         sine=frequency=1000:sample_rate=48000,volume=2,volume=0:enable={outside}[tone];\
+         [quiet][tone]amix=inputs=2:duration=first,volume=2[bleeped]"
+    )
+}
+
+/// ffmpeg's filters for a Crop on a video: the quarter turns (clockwise, as ImageMagick
+/// turns a picture), the box, then the fit `target`'s encoder needs.
+fn video_crop_filter(crop: &Crop, fit: Option<&str>) -> String {
+    let turn = match crop.turns {
+        1 => Some("transpose=clock"),
+        2 => Some("hflip,vflip"),
+        3 => Some("transpose=cclock"),
+        _ => None,
+    };
+    let mut steps: Vec<String> = turn.map(String::from).into_iter().collect();
+    steps.push(format!("crop={}:{}:{}:{}", crop.width, crop.height, crop.x, crop.y));
+    steps.extend(fit.map(String::from));
+    steps.join(",")
+}
+
+/// The Crop window's picture of a video: a typical frame (ffmpeg's thumbnail filter
+/// picks one of the first hundred, so rarely a black first one), upright and at full
+/// size, then made into the preview the way a picture's is.
+pub fn video_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let frame = work.path().join("frame.jpg");
+    ffmpeg(src, &["-map", "0:v:0", "-vf", "thumbnail", "-frames:v", "1", "-q:v", "2", "-update", "1"], &frame, QUICK)?;
+    preview(&frame)
+}
+
+/// Black Out's window: a typical frame of the video's main picture (MAIN_PICTURE),
+/// upright, with its size, made into the preview the way a picture's is.
+pub fn blackout_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let frame = work.path().join("frame.jpg");
+    ffmpeg(src, &["-map", MAIN_PICTURE, "-vf", "thumbnail", "-frames:v", "1", "-q:v", "2", "-update", "1"], &frame, QUICK)?;
+    preview(&frame)
+}
+
+/// The size of the main picture's frames as Black Out fills them (upright), from its
+/// first frame, so the boxes are checked against the video itself and not only against
+/// what the window was told. `out` names the work folder to use.
+fn video_frame_size(src: &Path, out: &Path) -> Result<(u32, u32), String> {
+    let frame = out.with_file_name("size.png");
+    ffmpeg(src, &["-map", MAIN_PICTURE, "-frames:v", "1", "-update", "1"], &frame, QUICK)?;
+    let mut head = [0u8; 24];
+    let read = fs::File::open(&frame).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head));
+    let _ = fs::remove_file(&frame);
+    read.ok().and_then(|()| png_size(&head)).ok_or_else(|| "can't tell the video's size".to_string())
+}
+
+/// Width and height from a PNG's first bytes (its IHDR chunk comes first).
+fn png_size(head: &[u8]) -> Option<(u32, u32)> {
+    let number = |at: usize| Some(u32::from_be_bytes(head.get(at..at + 4)?.try_into().ok()?));
+    (head.starts_with(b"\x89PNG\r\n\x1a\n") && head.get(12..16) == Some(b"IHDR")).then_some(())?;
+    Some((number(16)?, number(20)?)).filter(|&(w, h)| w > 0 && h > 0)
+}
+
+/// ffmpeg's filters for Black Out: each box filled black (boxes from
+/// markup::Markup::video_boxes, never 0 wide or tall), then the fit the encoder needs.
+fn blackout_filter(boxes: &[[u32; 4]], fit: Option<&str>) -> String {
+    let mut steps: Vec<String> =
+        boxes.iter().map(|[x, y, w, h]| format!("drawbox=x={x}:y={y}:w={w}:h={h}:color=black:t=fill")).collect();
+    steps.extend(fit.map(String::from));
+    steps.join(",")
+}
+
+/// ffmpeg's tempo filter for a speed in percent, in steps of 0.5 to 2, which every
+/// ffmpeg takes: 4x is twice 2x.
+fn atempo(percent: u16) -> String {
+    let mut left = f64::from(percent) / 100.0;
+    let mut steps = Vec::new();
+    while left > 2.0 {
+        steps.push("atempo=2".to_string());
+        left /= 2.0;
+    }
+    while left < 0.5 {
+        steps.push("atempo=0.5".to_string());
+        left /= 0.5;
+    }
+    steps.push(format!("atempo={left}"));
+    steps.join(",")
+}
+
+/// How long a sound or video plays, in milliseconds, for the Speed window.
+pub fn length_ms(src: &Path) -> Result<u64, String> {
+    tool("ffprobe")?;
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let length = media_length(src, &work.path().join("probe")).ok_or("can't tell how long it plays")?;
+    Ok(u64::try_from(length.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// The encoders of `video_encode`, without the streams and the picture's fit: for
@@ -672,23 +997,37 @@ fn video_codec(target: &str) -> Option<Vec<&'static str>> {
     let level = quality().video;
     // MPEG-4 Part 2 and Windows Media 8 take a fixed quantiser: lower is better.
     let quantiser = level.pick("5", "3", "2");
-    Some(match target {
+    let mut args = match target {
         "mp4" | "mov" | "m4v" | "mkv" => {
-            let mut args = vec!["-c:v", "libx264", "-preset", "medium", "-crf", level.pick("26", "20", "17")];
-            args.extend(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
-            if target != "mkv" {
-                args.extend(["-movflags", "+faststart"]);
-            }
-            args
+            vec!["-c:v", "libx264", "-preset", "medium", "-crf", level.pick("26", "20", "17"), "-pix_fmt", "yuv420p"]
         }
         "webm" => vec![
             "-c:v", "libvpx-vp9", "-crf", level.pick("38", "32", "26"), "-b:v", "0", "-deadline", "good", "-cpu-used", "4",
-            "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k",
+            "-row-mt", "1",
         ],
-        "avi" => vec!["-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser, "-c:a", "libmp3lame", "-q:a", "4"],
-        "wmv" => vec!["-c:v", "wmv2", "-q:v", quantiser, "-c:a", "wmav2", "-b:a", "192k"],
+        "avi" => vec!["-c:v", "mpeg4", "-vtag", "xvid", "-q:v", quantiser],
+        "wmv" => vec!["-c:v", "wmv2", "-q:v", quantiser],
+        _ => return None,
+    };
+    args.extend(video_sound_codec(target)?);
+    args.extend(faststart(target));
+    Some(args)
+}
+
+/// The sound encoder of a video in `target`: for Bleep, which copies the picture as it is.
+fn video_sound_codec(target: &str) -> Option<&'static [&'static str]> {
+    Some(match target {
+        "mp4" | "mov" | "m4v" | "mkv" => &["-c:a", "aac", "-b:a", "192k"],
+        "webm" => &["-c:a", "libopus", "-b:a", "128k"],
+        "avi" => &["-c:a", "libmp3lame", "-q:a", "4"],
+        "wmv" => &["-c:a", "wmav2", "-b:a", "192k"],
         _ => return None,
     })
+}
+
+/// MP4, MOV and M4V start playing before they are fully loaded with their index in front.
+fn faststart(target: &str) -> &'static [&'static str] {
+    if matches!(target, "mp4" | "mov" | "m4v") { &["-movflags", "+faststart"] } else { &[] }
 }
 
 fn video(src: &Path, ext: &str, target: &str, out: &Path) -> Result<(), String> {
@@ -889,6 +1228,29 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
 /// Most pages Split makes files of; the folder says so when the PDF had more.
 const MAX_SPLIT: usize = 100;
 
+/// Most pages Reorder's window shows: a picture of each has to go to it.
+const MAX_ORDER: usize = 100;
+
+/// Reorder, from its window: every page of the PDF once, by its number from 1, in an
+/// order that isn't the old one.
+pub fn check_order(order: &[u32], count: usize) -> Result<(), String> {
+    if order.len() != count {
+        return Err(format!("the new order has {} pages and the PDF has {count}: drag it onto Reorder again", order.len()));
+    }
+    let mut seen = vec![false; count];
+    let every_page_once = order.iter().all(|&n| {
+        let i = (n as usize).wrapping_sub(1);
+        i < count && !std::mem::replace(&mut seen[i], true)
+    });
+    if !every_page_once {
+        return Err("the new order must have every page of the PDF once".into());
+    }
+    if order.iter().zip(1..).all(|(&n, i)| n == i) {
+        return Err("nothing is changed yet: move a page first".into());
+    }
+    Ok(())
+}
+
 /// Smaller: pictures above 225 dpi are scaled down to 150 dpi, and photos are saved
 /// again as JPEG at quality 60, each only where that makes it smaller. Fonts and
 /// streams are compressed, unused and duplicate objects go.
@@ -902,6 +1264,27 @@ const SMALLER: &[&str] = &[
 /// Older MuPDF (Ubuntu's own packages) has none of the picture options: there Smaller
 /// only tidies the file, which seldom makes it much smaller.
 const SMALLER_OLD_MUPDF: &[&str] = &["-ggg", "-z"];
+
+/// After MuPDF crashed on Smaller's full pass: the same without the deepest tidying,
+/// then only compressing the streams. Which step overflows MuPDF's stack is not known
+/// (it didn't happen on our PDFs), so each is tried in turn.
+const SMALLER_GENTLER: &[&[&str]] = &[&["-g", "-z", "-i"], &["-z"]];
+
+fn smaller_gently(mutool: &Mutool, work: &Path, out_name: &str) -> Result<(), String> {
+    for options in SMALLER_GENTLER {
+        let mut args = vec!["clean"];
+        args.extend(*options);
+        match mutool.run_failure(work, &args, &[out_name]) {
+            Ok(()) => {
+                crate::log::line(&format!("Smaller: MuPDF crashed on the full pass; done with {}", options.join(" ")));
+                return Ok(());
+            }
+            Err(f) if f.crashed => continue,
+            Err(f) => return Err(f.message),
+        }
+    }
+    Err("MuPDF crashes on this PDF, so it can't be made smaller here. The PDF itself is unchanged.".into())
+}
 
 /// Runs a Tools wheel tool on a PDF (Merge, which takes several, is `combine`).
 fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Output, String> {
@@ -929,6 +1312,27 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
             }
             Ok(Output::Pages { files, cut: count > MAX_SPLIT })
         }
+        "tool:order" => {
+            let Some(Edit::Order(order)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Reorder opens its window from the wheel".into());
+            };
+            // Again here: the PDF may have changed since its window opened.
+            check_order(&order, count)?;
+            // Given pages, clean keeps just those, in that order; the bookmarks follow
+            // their pages, and the title and author stay.
+            let pages = order.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+            mutool.run_args(work.path(), &["clean", "-g"], &[out_name, &pages])?;
+            Ok(Output::File)
+        }
+        "tool:info" => {
+            let Some(Edit::Info(changes)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Info opens its window from the wheel".into());
+            };
+            fs::write(work.path().join("info.js"), info::PDF_WRITE).map_err(|e| format!("work file: {e}"))?;
+            let after = info::pdf_args(out_name, &changes)?;
+            mutool.run_args(work.path(), &["run", "info.js"], &after.iter().map(String::as_str).collect::<Vec<_>>())?;
+            Ok(Output::File)
+        }
         "tool:smaller" => {
             let mut args = vec!["clean"];
             args.extend(SMALLER);
@@ -938,12 +1342,51 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
                     args.extend(SMALLER_OLD_MUPDF);
                     mutool.run_args(work.path(), &args, &[out_name])?;
                 }
+                // MuPDF crashed on this PDF (a Windows tester's stack overflow on some
+                // PDFs): gentler passes, each a fresh try into the same new file.
+                Err(f) if f.crashed => smaller_gently(&mutool, work.path(), out_name)?,
                 other => other.map_err(|f| f.message)?,
             }
             Ok(Output::File)
         }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+/// Compress to a Size for PDFs: Smaller's tidying with every picture saved again, at
+/// most this many dpi and at this JPEG quality, a step at a time until the PDF fits.
+const PDF_STEPS: &[(u32, u32)] = &[(150, 70), (150, 50), (120, 45), (96, 40), (72, 35), (60, 30), (50, 25)];
+
+fn pdf_to_size(src: &Path, out: &Path, work: &Path, limit: u64) -> Result<(), String> {
+    let mutool = Mutool { path: tool("mutool")?, src, deadline: Instant::now() + PDF_TOTAL };
+    let out_name = out.file_name().and_then(|n| n.to_str()).ok_or("work folder name")?;
+    let mut smallest = u64::MAX;
+    for &(dpi, quality) in PDF_STEPS {
+        let mut args: Vec<String> =
+            ["clean", "-gggg", "-z", "-f", "-i", "-Z", "--recompress-images-when", "always"].map(String::from).to_vec();
+        for colour in ["color", "gray"] {
+            for kind in ["lossy", "lossless"] {
+                args.extend([format!("--{colour}-{kind}-image-subsample-dpi"), format!("{dpi},{dpi}")]);
+                args.extend([format!("--{colour}-{kind}-image-recompress-method"), format!("jpeg:{quality}")]);
+            }
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        match mutool.run_failure(work, &args, &[out_name]) {
+            Err(f) if f.output.contains("usage:") => {
+                return Err("this MuPDF can't save a PDF's pictures again: a newer one is needed for PDFs".into());
+            }
+            other => other.map_err(password_message)?,
+        }
+        let size = fs::metadata(out).map_err(|e| format!("work file: {e}"))?.len();
+        if size <= limit {
+            if (dpi, quality) != PDF_STEPS[0] {
+                note(format!("pictures at {dpi} dpi"));
+            }
+            return Ok(());
+        }
+        smallest = smallest.min(size);
+    }
+    Err(format!("this PDF can't be made {} or smaller: the least was {}", size_text(limit), size_text(smallest)))
 }
 
 /// Most pictures One PDF takes.
@@ -955,6 +1398,7 @@ fn combine_words(tool_id: &str) -> Option<(&'static str, &'static str)> {
     match tool_id {
         "tool:merge" => Some(("Merge needs two PDFs or more", "only PDFs can be merged")),
         "tool:onepdf" => Some(("One PDF needs two pictures or more", "only pictures can go into one PDF")),
+        "tool:collage" => Some(("Collage needs two pictures or more", "only pictures can go into a collage")),
         "tool:join" => Some(("Join needs two files or more", "only sound files, or only video files, can be joined")),
         _ => None,
     }
@@ -972,6 +1416,9 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
     };
     if target == "tool:join" {
         return join_media(srcs, only, save_in, fallback);
+    }
+    if target == "tool:collage" {
+        return collage(srcs, only, save_in, fallback);
     }
     let pictures = target == "tool:onepdf";
     if pictures && srcs.len() > MAX_PICTURES {
@@ -1030,11 +1477,78 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
     place_combined(&out, first, target, "pdf", save_in, fallback)
 }
 
+/// Most pictures a collage takes: six rows of six.
+const MAX_COLLAGE: usize = 36;
+/// The square each picture of a collage is fitted into, and the white around it.
+const COLLAGE_TILE: &str = "800x800";
+const COLLAGE_GAP: &str = "12";
+
+/// Collage: the dropped pictures in a grid on white, in the order dropped, each fitted
+/// into a square of its own. The result is a JPEG next to the first picture, named
+/// after it: "IMG_1234 (collage).jpg".
+fn collage(srcs: &[PathBuf], only: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
+    if srcs.len() > MAX_COLLAGE {
+        return Err(format!("Collage takes up to {MAX_COLLAGE} pictures"));
+    }
+    let work = tempfile::Builder::new()
+        .prefix("convert-wheel-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let magick = magick()?;
+    let mut tiles = Vec::new();
+    for (i, src) in srcs.iter().enumerate() {
+        let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let fail = |e: String| format!("{name}: {}", redact(&e, src, work.path()));
+        let ext = formats::extension(src).unwrap_or_default();
+        if !formats::tool_takes("tool:collage", &ext) {
+            return Err(fail(only.into()));
+        }
+        let meta = fs::metadata(src).map_err(|e| fail(format!("can't read the file: {e}")))?;
+        if !meta.is_file() {
+            return Err(fail("this is not a regular file".into()));
+        }
+        let staged = work.path().join(format!("input-{i}.{ext}"));
+        fs::copy(src, &staged).map_err(|e| fail(format!("can't read the file: {e}")))?;
+        let coder = sniff_image(&read_head(&staged)?).ok_or_else(|| fail("this is not an image format the wheel can read".into()))?;
+        let tile = work.path().join(format!("tile-{i}.png"));
+        let mut cmd = Command::new(&magick);
+        cmd.args(IMAGE_LIMITS);
+        cmd.arg(format!("{coder}:{}[0]", staged.display())).arg("-auto-orient");
+        cmd.args(["-resize", COLLAGE_TILE, "-background", "white", "-alpha", "remove", "-alpha", "off"]);
+        cmd.args(["-gravity", "center", "-extent", COLLAGE_TILE, "-bordercolor", "white", "-border", COLLAGE_GAP]);
+        cmd.arg(format!("png:{}", tile.display()));
+        run(cmd, QUICK).map_err(fail)?;
+        tiles.push(tile);
+    }
+    // One row at a time, side by side, then the rows one under the other; a short
+    // last row sits in the middle.
+    let out = work.path().join("result.jpg");
+    let mut cmd = Command::new(&magick);
+    cmd.args(IMAGE_LIMITS);
+    for row in tiles.chunks(collage_columns(tiles.len())) {
+        cmd.arg("(").args(row).args(["+append", ")"]);
+    }
+    cmd.args(["-background", "white", "-gravity", "center", "-append", "-quality", "90"]);
+    cmd.arg(format!("jpeg:{}", out.display()));
+    run(cmd, QUICK).map_err(|e| redact(&e, &srcs[0], work.path()))?;
+    place_combined(&out, &srcs[0], "tool:collage", "jpg", save_in, fallback)
+}
+
+/// How many pictures go side by side in a collage of `n`: the side of the smallest
+/// square grid that holds them all, so 2 make one row and 5 make rows of 3 and 2.
+fn collage_columns(n: usize) -> usize {
+    (1..=n).find(|columns| columns * columns >= n).unwrap_or(1)
+}
+
 /// Puts the one result of a drop next to its first file, named after it ("report
 /// (merged).pdf"), or in Downloads when that folder can't be written to.
 fn place_combined(out: &Path, first: &Path, target: &str, ext: &str, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
     let stem = first.file_stem().and_then(|s| s.to_str()).ok_or("the file name is not valid text")?;
     let stem = format!("{stem} ({})", tool_suffix(target));
+    // As in convert(): a Stop in the last moment keeps the result out.
+    if stop_asked() {
+        return Err(STOPPED.to_string());
+    }
     let dir = match save_in {
         Some(dir) => dir.to_path_buf(),
         None => first.parent().ok_or("the file has no folder")?.to_path_buf(),
@@ -1055,7 +1569,7 @@ fn note(text: String) {
 
 /// The size Compress to a Size aims under, from the editor.
 fn size_limit() -> Result<u64, String> {
-    match control().and_then(|c| c.edit) {
+    match control().and_then(|c| c.edit.clone()) {
         Some(Edit::Size(bytes)) => Ok(bytes),
         _ => Err("Compress to a Size opens its window from the wheel".into()),
     }
@@ -1559,12 +2073,75 @@ pub struct Control {
 }
 
 /// What a tool that opens the editor was given there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edit {
     Crop(Crop),
     Trim(Trim),
     /// Compress to a Size: at most this many bytes.
     Size(u64),
+    /// Speed: the new speed in percent of the old one, one of SPEEDS.
+    Speed(u16),
+    /// Split for sound and video: parts this many milliseconds long.
+    Parts(u64),
+    Adjust(Adjust),
+    /// Mark Up: what was drawn and blacked out.
+    Markup(markup::Markup),
+    /// Reorder: the PDF's page numbers, from 1, in their new order.
+    Order(Vec<u32>),
+    /// Info: the tags changed in its window, by name, with their new values.
+    Info(Vec<(String, String)>),
+}
+
+/// Adjust, from its window: brightness, contrast and saturation in percent, where 100
+/// leaves it as it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Adjust {
+    pub brightness: u16,
+    pub contrast: u16,
+    pub saturation: u16,
+}
+
+impl Adjust {
+    /// Within the window's sliders, and something changed.
+    pub fn check(&self) -> Result<(), String> {
+        let within = self.brightness <= 200 && self.contrast <= 200 && self.saturation <= 200;
+        if !within {
+            return Err("the adjustment is outside what the window offers".into());
+        }
+        if (self.brightness, self.contrast, self.saturation) == (100, 100, 100) {
+            return Err("nothing is changed yet: move a slider first".into());
+        }
+        Ok(())
+    }
+}
+
+/// ImageMagick's steps for Adjust: the same as the window's preview, the browser's
+/// brightness(), contrast() and saturate() in that order, each kept within black and
+/// white as the browser keeps it. Alpha is left alone.
+fn adjust_args(adjust: &Adjust) -> Vec<String> {
+    let [b, c, s] = [adjust.brightness, adjust.contrast, adjust.saturation].map(|v| f64::from(v) / 100.0);
+    // The browser's saturate() matrix, which keeps the brightness of each colour.
+    let matrix = [
+        0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s,
+        0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s,
+        0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s,
+    ];
+    let matrix = matrix.iter().map(|v| format!("{v:.4}")).collect::<Vec<_>>().join(" ");
+    [
+        "-channel", "RGB", "-evaluate", "multiply", &format!("{b:.4}"), "-clamp",
+        "-function", "polynomial", &format!("{c:.4},{:.4}", 0.5 - 0.5 * c), "-clamp", "+channel",
+        "-color-matrix", &format!("3x3: {matrix}"), "-clamp",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+/// The speeds the Speed window offers, in percent: 200 plays twice as fast.
+pub const SPEEDS: &[u16] = &[25, 50, 75, 125, 150, 200, 400];
+
+/// A speed as people say it: "0.5", "2".
+pub fn speed_text(percent: u16) -> String {
+    (f64::from(percent) / 100.0).to_string()
 }
 
 /// "2 MB", "1.5 MB", "500 KB", the way Finder counts (1000 bytes to a kilobyte).
@@ -1704,11 +2281,14 @@ pub(crate) fn stop_asked() -> bool {
 struct Failure {
     message: String,
     output: String,
+    /// The tool crashed (a stack overflow or bad memory access on Windows, a signal
+    /// on macOS and Linux) rather than saying no.
+    crashed: bool,
 }
 
 impl From<String> for Failure {
     fn from(message: String) -> Self {
-        Failure { message, output: String::new() }
+        Failure { message, output: String::new(), crashed: false }
     }
 }
 
@@ -1838,7 +2418,21 @@ fn wait(child: &mut Child, name: &str, limit: Duration, errors: &mut fs::File) -
         Some(line) => format!("{name} failed: {line}"),
         None => format!("{name} failed ({status})"),
     };
-    Err(Failure { message, output: text })
+    Err(Failure { message, output: text, crashed: crashed(&status) })
+}
+
+/// Whether a tool ended by crashing: Windows' stack overflow (0xC00000FD) or bad
+/// memory access (0xC0000005), or a signal on macOS and Linux (the app's own stop
+/// never gets here).
+fn crashed(status: &std::process::ExitStatus) -> bool {
+    #[cfg(windows)]
+    return matches!(status.code().map(|c| c as u32), Some(0xC000_00FD | 0xC000_0005));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        // Crashes only: not a kill from outside (out of memory, a quit).
+        matches!(status.signal(), Some(libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGABRT))
+    }
 }
 
 /// "2 min", or "45 s" for less than a minute.
@@ -2168,6 +2762,27 @@ pub fn preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     Ok((width, height, bytes))
 }
 
+/// For Reorder's window: a PNG of every page of a PDF, at most 240 pixels either way.
+/// A PDF of one page, or of more than Reorder shows, is turned away here.
+pub fn page_pictures(src: &Path) -> Result<Vec<Vec<u8>>, String> {
+    let work = tempfile::tempdir().map_err(|e| format!("work folder: {e}"))?;
+    let mutool = Mutool { path: tool("mutool")?, src, deadline: Instant::now() + QUICK };
+    match mutool.page_count(work.path())? {
+        0 => Err("this PDF has no pages".into()),
+        1 => Err("this PDF has only one page".into()),
+        count if count > MAX_ORDER => Err(format!("this PDF has {count} pages: Reorder takes PDFs of up to {MAX_ORDER} pages")),
+        count => {
+            let dir = work.path().join("pages");
+            fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
+            // Inside the pages folder, so the "%d" is the only "%" mutool sees.
+            mutool.run(&dir, &["draw", "-q", "-r", "72", "-w", "240", "-h", "240", "-o", "%d.png"], &format!("1-{count}"))?;
+            (1..=count)
+                .map(|n| fs::read(dir.join(format!("{n}.png"))).map_err(|_| format!("MuPDF didn't draw page {n} of this PDF")))
+                .collect()
+        }
+    }
+}
+
 fn magick() -> Result<PathBuf, String> {
     tool("magick").or_else(|e| if cfg!(target_os = "linux") { tool("convert").map_err(|_| e) } else { Err(e) })
 }
@@ -2224,6 +2839,8 @@ pub const CONVERTERS: &[Converter] = &[
     Converter { tool: "mutool", name: "MuPDF", brew: "mupdf-tools", winget: "ArtifexSoftware.mutool", apt: "mupdf-tools" },
     // Archives. macOS and Windows have it built in; only Linux ever misses it.
     Converter { tool: "bsdtar", name: "bsdtar", brew: "libarchive", winget: "", apt: "libarchive-tools" },
+    // Info's date and place for pictures and videos (council 2026-11-10).
+    Converter { tool: "exiftool", name: "ExifTool", brew: "exiftool", winget: "OliverBetz.ExifTool", apt: "libimage-exiftool-perl" },
 ];
 
 fn converter(tool: &str) -> Option<&'static Converter> {
@@ -2461,6 +3078,34 @@ mod tests {
         assert_eq!(heic_plugins_missing(lib.path()), ["libheif-plugin-x265"]);
         fs::write(plugins.join("libheif-x265.so"), "").unwrap();
         assert!(heic_plugins_missing(lib.path()).is_empty());
+    }
+
+    #[test]
+    fn speeds_become_tempo_steps_every_ffmpeg_takes() {
+        assert_eq!(atempo(200), "atempo=2");
+        assert_eq!(atempo(400), "atempo=2,atempo=2");
+        assert_eq!(atempo(25), "atempo=0.5,atempo=0.5");
+        assert_eq!(atempo(75), "atempo=0.75");
+        let said: Vec<String> = SPEEDS.iter().map(|&p| speed_text(p)).collect();
+        assert_eq!(said, ["0.25", "0.5", "0.75", "1.25", "1.5", "2", "4"]);
+    }
+
+    #[test]
+    fn parts_are_a_second_or_more_and_a_short_end_goes_onto_the_last() {
+        assert_eq!(parts_count(10_000, 3_334), Some(3));
+        // Half a second left over: onto the last part, not a part of its own.
+        assert_eq!(parts_count(10_500, 5_000), Some(2));
+        assert_eq!(parts_count(11_000, 5_000), Some(3));
+        assert_eq!(parts_count(5_000, 5_000), None);
+        assert_eq!(parts_count(10_000, 999), None);
+        assert_eq!(parts_count(50_000, 1_000), Some(MAX_PARTS));
+        assert_eq!(parts_count(60_000, 1_000), None);
+    }
+
+    #[test]
+    fn a_collage_is_as_square_as_it_can_be() {
+        let columns: Vec<usize> = [1, 2, 3, 4, 5, 9, 10, MAX_COLLAGE].into_iter().map(collage_columns).collect();
+        assert_eq!(columns, [1, 2, 2, 2, 3, 3, 4, 6]);
     }
 
     #[test]
@@ -2764,6 +3409,13 @@ mod tests {
     }
 
     /// Width x height, as ImageMagick reads it.
+    /// The colour of the pixel at `x`, `y`, "128,128,128".
+    fn rgb(path: &Path, x: u32, y: u32) -> String {
+        let at = format!("%[fx:int(255*p{{{x},{y}}}.r+0.5)],%[fx:int(255*p{{{x},{y}}}.g+0.5)],%[fx:int(255*p{{{x},{y}}}.b+0.5)]");
+        let out = Command::new(magick().unwrap()).arg(path).args(["-format", &at, "info:"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     fn picture_size(path: &Path) -> String {
         let out = Command::new(magick().unwrap()).arg(path).args(["-format", "%wx%h", "info:"]).output().unwrap();
         String::from_utf8_lossy(&out.stdout).trim().to_string()
@@ -2922,6 +3574,68 @@ mod tests {
         assert_eq!(picture_size(&out), "150x120");
         // Without the editor there is no box to cut.
         assert_eq!(convert(&wide, "tool:crop", None, work.path()).unwrap_err(), "Crop opens its window from the wheel");
+
+        // Adjust: a mid grey half again as bright, and an orange with no colour left
+        // (each channel weighed as the browser's saturate() weighs it).
+        let colours = work.path().join("colours.png");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "2x1", "xc:rgb(128,128,128)", "xc:rgb(230,120,30)", "+append"]).arg(&colours);
+        assert!(make.status().unwrap().success());
+        let brighter = Adjust { brightness: 150, contrast: 100, saturation: 100 };
+        let control = Control::with_edit(Quality::default(), Some(Edit::Adjust(brighter)));
+        let out = under(&control, || convert(&colours, "tool:adjust", None, work.path())).unwrap();
+        assert_eq!(out, work.path().join("colours (adjusted).png"));
+        assert_eq!(rgb(&out, 0, 0), "192,192,192");
+        let grey = Adjust { brightness: 100, contrast: 100, saturation: 0 };
+        let control = Control::with_edit(Quality::default(), Some(Edit::Adjust(grey)));
+        let out = under(&control, || convert(&colours, "tool:adjust", None, work.path())).unwrap();
+        // ImageMagick 6 (Ubuntu) rounds the matrix one level lower than 7.
+        let level = rgb(&out, 2, 0);
+        assert!(["137,137,137", "136,136,136"].contains(&level.as_str()), "{level}");
+        assert!(Adjust { brightness: 100, contrast: 100, saturation: 100 }.check().is_err());
+        assert!(Adjust { brightness: 201, contrast: 100, saturation: 100 }.check().is_err());
+        assert!(Adjust { brightness: 100, contrast: 201, saturation: 100 }.check().is_err());
+        assert!(Adjust { brightness: 0, contrast: 200, saturation: 100 }.check().is_ok());
+        assert!(brighter.check().is_ok() && grey.check().is_ok());
+
+        // Mark Up: a pen line, words that look like a file name and a percent, a
+        // highlighter, a line, an oval, a numbered step and a blacked-out corner, on a
+        // picture with a comment that must not outlive it.
+        let note = work.path().join("note.png");
+        let mut make = Command::new(&magick);
+        make.args(["-size", "200x100", "xc:white", "-set", "comment", "secret"]).arg(&note);
+        assert!(make.status().unwrap().success());
+        let marks = markup::Markup {
+            shapes: vec![
+                markup::Shape::Pen { colour: "red".into(), width: 6, points: vec![[10, 90], [190, 90]] },
+                markup::Shape::Text { colour: "blue".into(), size: 24, at: [10, 10], text: "@/etc/hosts 50%".into() },
+                markup::Shape::Highlight { colour: "yellow".into(), width: 10, points: vec![[10, 60], [60, 60]] },
+                markup::Shape::Line { colour: "green".into(), width: 4, from: [70, 50], to: [110, 50] },
+                markup::Shape::Circle { colour: "blue".into(), width: 3, from: [120, 45], to: [150, 75] },
+                markup::Shape::Number { colour: "red".into(), size: 16, at: [175, 70], n: 7 },
+                markup::Shape::Redact { from: [150, 0], to: [199, 40] },
+            ],
+        };
+        assert!(marks.check(200, 100).is_ok());
+        let control = Control::with_edit(Quality::default(), Some(Edit::Markup(marks)));
+        let out = under(&control, || convert(&note, "tool:markup", None, work.path())).unwrap();
+        assert_eq!(out, work.path().join("note (marked up).png"));
+        assert_eq!(rgb(&out, 175, 20), "0,0,0");
+        assert_eq!(rgb(&out, 100, 90), "229,50,45");
+        assert_eq!(rgb(&out, 90, 50), "33,161,72");
+        assert_eq!(rgb(&out, 120, 60), "29,111,229");
+        assert_eq!(rgb(&out, 165, 70), "229,50,45");
+        // The highlighter lets the white show through: yellow, but not solid yellow.
+        let marker: Vec<u32> = rgb(&out, 35, 60).split(',').map(|v| v.parse().unwrap()).collect();
+        assert!(marker[0] > 240 && (120..200).contains(&marker[2]), "{marker:?}");
+        let digit = Command::new(&magick).arg(&out).args(["-crop", "10x12+170+64", "-format", "%[fx:mean.g]", "info:"]).output().unwrap();
+        let green: f64 = String::from_utf8_lossy(&digit.stdout).trim().parse().unwrap();
+        assert!(green > 0.3, "no number drawn in the step: {green}");
+        let words = Command::new(&magick).arg(&out).args(["-crop", "120x30+10+10", "-format", "%[fx:mean]", "info:"]).output().unwrap();
+        let mean: f64 = String::from_utf8_lossy(&words.stdout).trim().parse().unwrap();
+        assert!(mean < 0.97, "no words drawn: {mean}");
+        let comment = Command::new(&magick).arg(&out).args(["-format", "%c", "info:"]).output().unwrap();
+        assert!(!String::from_utf8_lossy(&comment.stdout).contains("secret"));
     }
 
     #[test]
@@ -2979,6 +3693,16 @@ mod tests {
     }
 
     #[test]
+    fn reorder_takes_every_page_once_in_a_new_order() {
+        assert_eq!(check_order(&[2, 1, 3], 3), Ok(()));
+        assert!(check_order(&[1, 2, 3], 3).unwrap_err().contains("nothing is changed"));
+        assert!(check_order(&[2, 1], 3).unwrap_err().contains("the PDF has 3"));
+        for wrong in [[2, 2, 1], [0, 1, 2], [4, 1, 2], [u32::MAX, 1, 2]] {
+            assert!(check_order(&wrong, 3).unwrap_err().contains("every page"), "{wrong:?}");
+        }
+    }
+
+    #[test]
     fn pdf_tools_split_merge_and_shrink() {
         if tool("mutool").is_err() {
             let required = std::env::var_os("REQUIRE_MUTOOL").is_some_and(|v| !v.is_empty());
@@ -3004,6 +3728,52 @@ mod tests {
         let one = work.path().join("one.pdf");
         fs::write(&one, tiny_pdf(&["Only"])).unwrap();
         assert_eq!(convert(&one, "tool:split", None, work.path()).unwrap_err(), "this PDF has only one page");
+
+        // Reorder: a picture of each page for its window, then the pages in the order
+        // the window sent.
+        let pictures = page_pictures(&three).unwrap();
+        assert_eq!(pictures.len(), 3);
+        assert!(pictures.iter().all(|png| png.starts_with(b"\x89PNG")));
+        assert_eq!(page_pictures(&one).unwrap_err(), "this PDF has only one page");
+        let control = Control::with_edit(Quality::default(), Some(Edit::Order(vec![3, 1, 2])));
+        let reordered = under(&control, || convert(&three, "tool:order", None, work.path())).unwrap();
+        assert_eq!(reordered, work.path().join("report (reordered).pdf"));
+        let text = convert(&reordered, "txt", None, work.path()).unwrap();
+        assert_eq!(fs::read_to_string(text).unwrap(), "Three\n\nOne\n\nTwo\n");
+        // The PDF changed after its window opened: the order no longer fits it.
+        let control = Control::with_edit(Quality::default(), Some(Edit::Order(vec![2, 1, 3])));
+        let err = under(&control, || convert(&two, "tool:order", None, work.path())).unwrap_err();
+        assert!(err.contains("the PDF has 2"), "{err}");
+        assert_eq!(convert(&three, "tool:order", None, work.path()).unwrap_err(), "Reorder opens its window from the wheel");
+
+        // To a size: a PDF of two photos, its pictures saved again until it fits; text
+        // alone can't get that small.
+        if let Ok(magick) = magick() {
+            let photos: Vec<PathBuf> = (1..=2)
+                .map(|n| {
+                    let photo = work.path().join(format!("photo {n}.jpg"));
+                    let mut make = Command::new(&magick);
+                    make.args(["-size", "1200x1600", "plasma:", "-quality", "95"]).arg(&photo);
+                    assert!(make.status().unwrap().success());
+                    photo
+                })
+                .collect();
+            let album = combine(&photos, "tool:onepdf", None, work.path()).unwrap();
+            let limit = fs::metadata(&album).unwrap().len() / 3;
+            let control = Control::with_edit(Quality::default(), Some(Edit::Size(limit)));
+            match under(&control, || convert(&album, "tool:target", None, work.path())) {
+                // Ubuntu 22.04's MuPDF has no picture options.
+                Err(e) if e.contains("a newer one is needed") => eprintln!("old MuPDF: PDFs to a size not tested"),
+                small => {
+                    let small = small.unwrap();
+                    assert!(fs::metadata(&small).unwrap().len() <= limit);
+                    assert_eq!(pages(&small), 2);
+                    let control = Control::with_edit(Quality::default(), Some(Edit::Size(1_000)));
+                    let err = under(&control, || convert(&album, "tool:target", None, work.path())).unwrap_err();
+                    assert!(err.contains("can't be made 1 KB or smaller"), "{err}");
+                }
+            }
+        }
 
         let merged = combine(&[three.clone(), two.clone()], "tool:merge", None, work.path()).unwrap();
         assert_eq!(merged, work.path().join("report (merged).pdf"));
@@ -3032,6 +3802,18 @@ mod tests {
             assert_eq!(pages(&one), 2);
             let err = combine(&[pictures[0].clone(), three.clone()], "tool:onepdf", None, work.path()).unwrap_err();
             assert_eq!(err, "report.pdf: only pictures can go into one PDF");
+
+            // A collage: each picture in an 800 pixel square with 12 around it, side by
+            // side; a third goes in the middle of a second row.
+            let collage = combine(&pictures, "tool:collage", None, work.path()).unwrap();
+            assert_eq!(collage, work.path().join("wide (collage).jpg"));
+            assert_eq!(picture_size(&collage), "1648x824");
+            pictures.push(pictures[0].clone());
+            let three_up = combine(&pictures, "tool:collage", None, work.path()).unwrap();
+            assert_eq!(three_up, work.path().join("wide (collage) 2.jpg"));
+            assert_eq!(picture_size(&three_up), "1648x1648");
+            let err = combine(&[pictures[0].clone(), three.clone()], "tool:collage", None, work.path()).unwrap_err();
+            assert_eq!(err, "report.pdf: only pictures can go into a collage");
         }
 
         // A tiny text-only PDF has nothing to shrink, or very little.
@@ -3039,6 +3821,41 @@ mod tests {
             Ok(smaller) => assert_eq!(pages(&smaller), 3),
             Err(e) => assert_eq!(e, "it is already as small as Smaller makes it"),
         }
+    }
+
+    /// The loudest moment of a file's sound between two times, in dB, from ffmpeg.
+    fn loudest(path: &Path, from: &str, to: &str) -> f64 {
+        let out = Command::new(tool("ffmpeg").unwrap())
+            .args(["-hide_banner", "-ss", from, "-to", to, "-i"])
+            .arg(path)
+            .args(["-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stderr);
+        let line = text.lines().find(|l| l.contains("max_volume:")).expect("volumedetect says nothing");
+        line.split("max_volume:").nth(1).unwrap().trim().trim_end_matches(" dB").parse().unwrap()
+    }
+
+    /// A video's picture size, "320x240", from ffprobe.
+    /// One frame of a video at `at` seconds, as RGB bytes.
+    fn frame_rgb(video: &Path, at: &str) -> Vec<u8> {
+        let out = Command::new(tool("ffmpeg").unwrap())
+            .args(["-v", "error", "-ss", at, "-i"])
+            .arg(video)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        out.stdout
+    }
+
+    fn video_size(path: &Path) -> String {
+        let out = Command::new(tool("ffprobe").unwrap())
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x"])
+            .arg(path)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     /// What ffprobe says about a file's first audio stream and its tags.
@@ -3115,6 +3932,145 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_crash_is_told_from_a_refusal() {
+        let status = |script: &str| Command::new("/bin/sh").args(["-c", script]).status().unwrap();
+        assert!(crashed(&status("kill -SEGV $$")));
+        assert!(!crashed(&status("kill -TERM $$")));
+        assert!(!crashed(&status("exit 1")));
+    }
+
+    /// Needs ExifTool (and ImageMagick, ffmpeg): the date and place go into a copy,
+    /// read back by the app's own Info (ImageMagick, ffprobe), not only by ExifTool.
+    #[test]
+    fn info_writes_date_and_place_with_exiftool() {
+        if tool("exiftool").is_err() {
+            eprintln!("ExifTool isn't installed: writing the date and place not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let fact = |i: &info::Info, label: &str| i.facts.iter().find(|(l, _)| l == label).map(|(_, v)| v.clone());
+        let changed = |file: &Path, changes: Vec<(&str, &str)>| {
+            let changes = changes.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let control = Control::with_edit(Quality::default(), Some(Edit::Info(changes)));
+            under(&control, || convert(file, "tool:info", None, work.path()))
+        };
+        if let Ok(magick) = magick() {
+            let photo = work.path().join("photo.jpg");
+            let mut make = Command::new(&magick);
+            make.args(["-size", "40x30", "xc:orange"]).arg(&photo);
+            assert!(make.status().unwrap().success());
+            let out = changed(&photo, vec![("taken", "2024-05-01 12:34:56"), ("location", "48.85, -2.29")]).unwrap();
+            assert_eq!(out, work.path().join("photo (new info).jpg"));
+            let after = info::read(&out).unwrap();
+            assert_eq!(fact(&after, "Taken").as_deref(), Some("2024-05-01 12:34:56"));
+            assert_eq!(fact(&after, "Location").as_deref(), Some("48.85000, -2.29000"));
+            // The original is as it was.
+            assert_eq!(fact(&info::read(&photo).unwrap(), "Location").as_deref(), Some("none in the file"));
+            // And the place goes again, the date stays.
+            let gone = changed(&out, vec![("location", "")]).unwrap();
+            let again = info::read(&gone).unwrap();
+            assert_eq!(fact(&again, "Location").as_deref(), Some("none in the file"));
+            assert_eq!(fact(&again, "Taken").as_deref(), Some("2024-05-01 12:34:56"));
+        }
+        if tool("ffmpeg").is_ok() && tool("ffprobe").is_ok() {
+            let clip = work.path().join("clip.mp4");
+            let mut make = Command::new(tool("ffmpeg").unwrap());
+            make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=5:duration=1", "-c:v", "libx264"]).arg(&clip);
+            assert!(make.status().unwrap().success());
+            let out = changed(&clip, vec![("taken", "2024-05-01 12:34:56"), ("location", "51.50343, -0.128")]).unwrap();
+            let after = info::read(&out).unwrap();
+            assert_eq!(fact(&after, "Location").as_deref(), Some("51.50343, -0.12800"));
+            assert!(fact(&after, "Recorded").is_some_and(|r| r.starts_with("2024-05-01")), "{:?}", fact(&after, "Recorded"));
+            let gone = changed(&out, vec![("location", "")]).unwrap();
+            assert_eq!(fact(&info::read(&gone).unwrap(), "Location").as_deref(), Some("none in the file"));
+        }
+    }
+
+    /// Needs ffmpeg, MuPDF and ImageMagick: a part whose tool isn't installed isn't
+    /// checked, unless REQUIRE_MUTOOL asks for MuPDF.
+    #[test]
+    fn info_reads_and_changes_tags() {
+        let work = tempfile::tempdir().unwrap();
+        let field = |i: &info::Info, key: &str| i.fields.iter().find(|f| f.key == key).map(|f| f.value.clone());
+        let fact = |i: &info::Info, label: &str| i.facts.iter().find(|(l, _)| l == label).map(|(_, v)| v.clone());
+        if tool("ffmpeg").is_ok() && tool("ffprobe").is_ok() {
+            let song = work.path().join("song.mp3");
+            let mut make = Command::new(tool("ffmpeg").unwrap());
+            make.args(["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1"])
+                .args(["-metadata", "title=Old", "-metadata", "artist=Someone"])
+                .arg(&song);
+            assert!(make.status().unwrap().success());
+            assert_eq!(field(&info::read(&song).unwrap(), "title").as_deref(), Some("Old"));
+            let changes = vec![("title".to_string(), "Café — тест".to_string()), ("album".to_string(), "First".to_string())];
+            let control = Control::with_edit(Quality::default(), Some(Edit::Info(changes)));
+            let out = under(&control, || convert(&song, "tool:info", None, work.path())).unwrap();
+            assert_eq!(out, work.path().join("song (new info).mp3"));
+            let after = info::read(&out).unwrap();
+            assert_eq!(field(&after, "title").as_deref(), Some("Café — тест"));
+            assert_eq!(field(&after, "artist").as_deref(), Some("Someone"));
+            assert_eq!(field(&after, "album").as_deref(), Some("First"));
+
+            // A video's details are only read, where it was recorded too.
+            let clip = work.path().join("clip.mp4");
+            let mut make = Command::new(tool("ffmpeg").unwrap());
+            make.args(["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=5:duration=1", "-c:v", "libx264"])
+                .args(["-metadata", "location=+48.85+002.29/", "-metadata", "title=Holiday"])
+                .arg(&clip);
+            assert!(make.status().unwrap().success());
+            let video = info::read(&clip).unwrap();
+            let keys: Vec<&str> = video.fields.iter().map(|f| f.key).collect();
+            assert_eq!(keys, ["taken", "location"]);
+            assert_eq!(field(&video, "location").as_deref(), Some("48.85000, 2.29000"));
+            assert_eq!(fact(&video, "Title").as_deref(), Some("Holiday"));
+            assert_eq!(fact(&video, "Location").as_deref(), Some("48.85000, 2.29000"));
+        }
+        if let Ok(magick) = magick() {
+            let png = work.path().join("plain.png");
+            let mut make = Command::new(&magick);
+            make.args(["-size", "30x20", "xc:white"]).arg(&png);
+            assert!(make.status().unwrap().success());
+            let picture = info::read(&png).unwrap();
+            assert_eq!(fact(&picture, "Size").as_deref(), Some("30 × 20 pixels"));
+            assert_eq!(fact(&picture, "Location").as_deref(), Some("none in the file"));
+            let keys: Vec<&str> = picture.fields.iter().map(|f| f.key).collect();
+            assert_eq!(keys, ["taken", "location"]);
+            assert_eq!(field(&picture, "location").as_deref(), Some(""));
+            assert!(convert(&png, "tool:info", None, work.path()).is_err());
+            // A BMP can't carry the date or place: its details are only read.
+            let bmp = work.path().join("plain.bmp");
+            let mut make = Command::new(&magick);
+            make.args(["-size", "30x20", "xc:white"]).arg(&bmp);
+            assert!(make.status().unwrap().success());
+            assert!(info::read(&bmp).unwrap().fields.is_empty());
+        }
+        if tool("mutool").is_ok() {
+            let pdf = work.path().join("report.pdf");
+            fs::write(&pdf, tiny_pdf(&["One", "Two"])).unwrap();
+            let before = info::read(&pdf).unwrap();
+            assert_eq!(fact(&before, "Pages").as_deref(), Some("2"));
+            // Ubuntu 22.04's MuPDF 1.19 can't change a PDF's details; Homebrew's can.
+            assert!(!before.fields.is_empty() || !cfg!(target_os = "macos"), "Homebrew's MuPDF should change PDF tags");
+            if before.fields.is_empty() {
+                eprintln!("this MuPDF only reads a PDF's details: changing them not tested");
+                return;
+            }
+            assert_eq!(field(&before, "Title").as_deref(), Some(""));
+            let changes = vec![("Title".to_string(), "Café — тест".to_string()), ("Author".to_string(), "Me".to_string())];
+            let control = Control::with_edit(Quality::default(), Some(Edit::Info(changes)));
+            let out = under(&control, || convert(&pdf, "tool:info", None, work.path())).unwrap();
+            assert_eq!(out, work.path().join("report (new info).pdf"));
+            let after = info::read(&out).unwrap();
+            assert_eq!(field(&after, "Title").as_deref(), Some("Café — тест"));
+            assert_eq!(field(&after, "Author").as_deref(), Some("Me"));
+            assert_eq!(fact(&after, "Pages").as_deref(), Some("2"));
+        } else {
+            let required = std::env::var_os("REQUIRE_MUTOOL").is_some_and(|v| !v.is_empty());
+            assert!(!required, "mutool should be installed here");
+        }
+    }
+
     #[test]
     fn media_tools_on_a_short_clip() {
         if tool("ffmpeg").is_err() || tool("ffprobe").is_err() {
@@ -3154,6 +4110,87 @@ mod tests {
         let length = media_length(&cut, &work.path().join("probe")).unwrap().as_secs_f64();
         assert!((0.9..1.1).contains(&length), "{length}");
         assert_eq!(convert(&clip, "tool:trim", None, work.path()).unwrap_err(), "Trim opens its window from the wheel");
+
+        // Speed: twice as fast plays half as long, and the name says how fast.
+        assert!((1900..=2100).contains(&length_ms(&clip).unwrap()));
+        let fast = Control::with_edit(Quality::default(), Some(Edit::Speed(200)));
+        let quick = under(&fast, || convert(&clip, "tool:speed", None, work.path())).unwrap();
+        assert_eq!(quick, work.path().join("clip (2x speed).mp4"));
+        let length = media_length(&quick, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((0.9..1.15).contains(&length), "{length}");
+        assert_eq!(convert(&clip, "tool:speed", None, work.path()).unwrap_err(), "Speed opens its window from the wheel");
+
+        // Crop: the window's frame is the video's size, upright; the box comes out at
+        // its own size, turned first when asked.
+        let (width, height, jpeg) = video_preview(&clip).unwrap();
+        assert_eq!((width, height), (320, 240));
+        assert!(jpeg.starts_with(&[0xFF, 0xD8]));
+        let boxed = Control::with_edit(Quality::default(), Some(Edit::Crop(Crop { x: 10, y: 20, width: 100, height: 80, turns: 0 })));
+        let cropped = under(&boxed, || convert(&clip, "tool:crop", None, work.path())).unwrap();
+        assert_eq!(cropped, work.path().join("clip (cropped).mp4"));
+        assert_eq!(video_size(&cropped), "100x80");
+        let turned = Crop { x: 0, y: 0, width: 240, height: 100, turns: 1 };
+        assert!(turned.check(320, 240).is_ok());
+        let turned = Control::with_edit(Quality::default(), Some(Edit::Crop(turned)));
+        let tall = under(&turned, || convert(&clip, "tool:crop", None, work.path())).unwrap();
+        assert_eq!(video_size(&tall), "240x100");
+
+        // Bleep: the clip's tone is at about -18 dB and the bleep at -12 dB, so the part
+        // bleeped is louder and the rest is as it was; the picture is copied as it is,
+        // and the length stays.
+        let part = Control::with_edit(Quality::default(), Some(Edit::Trim(Trim { start_ms: 500, end_ms: 1000 })));
+        let bleeped = under(&part, || convert(&clip, "tool:bleep", None, work.path())).unwrap();
+        assert_eq!(bleeped, work.path().join("clip (bleeped).mp4"));
+        let (during, before) = (loudest(&bleeped, "0.6", "0.9"), loudest(&bleeped, "0.1", "0.4"));
+        assert!(during > -14.0 && before < -16.0, "bleep {during} dB, before it {before} dB");
+        let length = media_length(&bleeped, &work.path().join("probe")).unwrap().as_secs_f64();
+        assert!((1.9..2.1).contains(&length), "{length}");
+        assert_eq!(video_size(&bleeped), "320x240");
+        assert_eq!(convert(&clip, "tool:bleep", None, work.path()).unwrap_err(), "Bleep opens its window from the wheel");
+
+        // Black Out: the window's frame is the video's size; the box (grown to even
+        // pixels) is black on every frame, the rest is as it was, and the metadata goes.
+        let (width, height, jpeg) = blackout_preview(&clip).unwrap();
+        assert_eq!((width, height), (320, 240));
+        assert!(jpeg.starts_with(&[0xFF, 0xD8]));
+        let boxed = markup::Markup { shapes: vec![markup::Shape::Redact { from: [139, 119], to: [41, 31] }] };
+        let black = Control::with_edit(Quality::default(), Some(Edit::Markup(boxed)));
+        let blacked = under(&black, || convert(&clip, "tool:blackout", None, work.path())).unwrap();
+        assert_eq!(blacked, work.path().join("clip (blacked out).mp4"));
+        assert_eq!(video_size(&blacked), "320x240");
+        let tags = probe(&blacked);
+        assert!(!tags.contains("Holiday") && !tags.contains("48.85"), "{tags}");
+        for at in ["0.1", "1.5"] {
+            let (before, after) = (frame_rgb(&clip, at), frame_rgb(&blacked, at));
+            let px = |frame: &[u8], x: usize, y: usize| frame[(y * 320 + x) * 3..][..3].to_vec();
+            for (x, y) in [(40, 30), (90, 75), (139, 119)] {
+                assert!(px(&after, x, y).iter().all(|&c| c < 24), "{at} s, {x},{y}: {:?}", px(&after, x, y));
+            }
+            // Outside the box, the picture is as it was, give or take the new encoding.
+            let outside: Vec<(usize, usize)> = (150..320).step_by(7).flat_map(|x| (0..240).step_by(7).map(move |y| (x, y))).collect();
+            let off: u32 = outside
+                .iter()
+                .map(|&(x, y)| px(&before, x, y).iter().zip(px(&after, x, y)).map(|(a, b)| u32::from(a.abs_diff(b))).sum::<u32>())
+                .sum();
+            assert!(off / (outside.len() as u32 * 3) < 12, "{at} s: off by {off}");
+        }
+        assert_eq!(convert(&clip, "tool:blackout", None, work.path()).unwrap_err(), "Black Out opens its window from the wheel");
+        // A box past the frame is refused, even though the window would never send one.
+        let past = markup::Markup { shapes: vec![markup::Shape::Redact { from: [300, 200], to: [400, 230] }] };
+        let past = Control::with_edit(Quality::default(), Some(Edit::Markup(past)));
+        assert!(under(&past, || convert(&clip, "tool:blackout", None, work.path())).is_err());
+
+        // Split: parts of a second each, in a folder named after the clip.
+        let halves = Control::with_edit(Quality::default(), Some(Edit::Parts(1000)));
+        let folder = under(&halves, || convert(&clip, "tool:parts", None, work.path())).unwrap();
+        assert_eq!(folder, work.path().join("clip (parts)"));
+        for n in 1..=2 {
+            let part = folder.join(format!("clip {n}.mp4"));
+            let length = media_length(&part, &work.path().join("probe")).unwrap().as_secs_f64();
+            assert!((0.9..1.15).contains(&length), "part {n}: {length}");
+        }
+        assert!(!folder.join("clip 3.mp4").exists());
+        assert_eq!(convert(&clip, "tool:parts", None, work.path()).unwrap_err(), "Split opens its window from the wheel");
 
         // Join: a second, smaller video without sound goes after the first, fitted into
         // its size, with silence; the result is one 4-second MP4 at 320x240 with sound.

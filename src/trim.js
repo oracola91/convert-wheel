@@ -1,7 +1,8 @@
 // The Trim window: a sound's loudness along its length (and a video's frames above
 // it), a part to keep with a start and an end to drag, the times to type, and the
-// part to play before trimming. The app hands over the length, the loudness, the
-// frames and a small MP3; this page sends back only the two times, in milliseconds.
+// part to play before trimming. For Bleep the same window picks the part to bleep
+// instead. The app hands over the length, the loudness, the frames and a small MP3;
+// this page sends back only the two times, in milliseconds.
 if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
@@ -87,7 +88,7 @@ function place() {
   keep.style.width = `${((end - start) / length) * 100}%`;
   if (document.activeElement !== startIn) startIn.value = fmt(start);
   if (document.activeElement !== endIn) endIn.value = fmt(end);
-  lengthOut.textContent = `Keeps ${fmt(end - start)} of ${fmt(length)}`;
+  lengthOut.textContent = `${session.bleep ? 'Bleeps' : 'Keeps'} ${fmt(end - start)} of ${fmt(length)}`;
   for (const grip of keep.querySelectorAll('.grip')) {
     const at = grip.dataset.end === 'start' ? start : end;
     grip.setAttribute('aria-valuemin', '0');
@@ -149,6 +150,7 @@ timeline.addEventListener('pointerdown', (event) => {
   const grip = event.target.dataset.end;
   if (grip) {
     drag = { which: grip };
+    lastEnd = grip;
   } else if (event.target === keep) {
     drag = { which: 'move', from: at, start, end };
   } else {
@@ -192,8 +194,9 @@ async function trimIt() {
   stop();
   apply.disabled = true;
   try {
-    // The app checks the times, queues the trim and closes this window.
-    await invoke('editor_trim', { trim: { start_ms: start, end_ms: end } });
+    // The app checks the times, queues the job and closes this window.
+    const part = { start_ms: start, end_ms: end };
+    await (session.bleep ? invoke('editor_bleep', { part }) : invoke('editor_trim', { trim: part }));
   } catch (error) {
     say(String(error));
     apply.disabled = false;
@@ -211,6 +214,14 @@ $('cancel').addEventListener('click', cancel);
 
 // Esc cancels, Enter trims and Space plays (outside the time boxes and buttons); on a
 // focused end the arrow keys move it a tenth of a second, a second with Shift.
+// The end the arrow keys move when neither end has the focus (a button may): the one used last.
+let lastEnd = 'start';
+for (const grip of document.querySelectorAll('.grip')) {
+  grip.addEventListener('focus', () => {
+    lastEnd = grip.dataset.end;
+  });
+}
+
 document.addEventListener('keydown', (event) => {
   const typing = document.activeElement instanceof HTMLInputElement;
   const onButton = document.activeElement instanceof HTMLButtonElement;
@@ -223,12 +234,12 @@ document.addEventListener('keydown', (event) => {
   } else if (event.key === ' ' && !typing && !onButton) {
     event.preventDefault();
     toggle();
-  } else if (session && document.activeElement?.classList.contains('grip')) {
+  } else if (session && !typing) {
     const step = event.shiftKey ? 1000 : 100;
     const by = { ArrowLeft: -step, ArrowRight: step }[event.key];
     if (by) {
       event.preventDefault();
-      const which = document.activeElement.dataset.end;
+      const which = document.activeElement?.dataset.end ?? lastEnd;
       setEnd(which, (which === 'start' ? start : end) + by);
     }
   }
@@ -248,15 +259,18 @@ async function load() {
     && Number.isInteger(session.length_ms) && session.length_ms > MIN_MS
     && Array.isArray(session.peaks) && session.peaks.length > 0
     && (session.strip === null || (typeof session.strip === 'string' && session.strip.startsWith('data:image/jpeg;base64,')))
-    && (session.sound === null || (typeof session.sound === 'string' && session.sound.startsWith('data:audio/mpeg;base64,')));
+    && (session.sound === null || (typeof session.sound === 'string' && session.sound.startsWith('data:audio/mpeg;base64,')))
+    && typeof session.bleep === 'boolean';
   if (!valid) {
     session = null;
     apply.disabled = true;
     say('Nothing to trim. Drag the file onto Trim again.');
     return;
   }
-  document.title = `Trim: ${session.name}`;
-  end = session.length_ms;
+  document.title = `${session.bleep ? 'Bleep' : 'Trim'}: ${session.name}`;
+  // Bleep starts on the first second, to be moved onto the part to bleep.
+  end = session.bleep ? Math.min(session.length_ms, 1000) : session.length_ms;
+  if (session.bleep) apply.textContent = 'Bleep';
   if (session.strip) {
     strip.src = session.strip;
     strip.hidden = false;

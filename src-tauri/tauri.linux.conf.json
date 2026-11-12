@@ -1,4 +1,5 @@
 {
+  "productName": "Convert Wheel",
   "app": {
     "windows": [
       {
@@ -20,8 +21,16 @@
     ]
   },
   "bundle": {
-    "targets": ["deb", "appimage"],
+    "targets": [
+      "deb",
+      "appimage"
+    ],
     "category": "Utility",
-    "shortDescription": "Hold Shift while dragging a file to convert it"
+    "shortDescription": "Hold Shift while dragging a file to convert it",
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/convert-wheel.desktop"
+      }
+    }
   }
 }

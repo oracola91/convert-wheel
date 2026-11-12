@@ -18,6 +18,7 @@ const HINTS = {
   picture: 'The highest quality that fits; if even the lowest is too big, the picture gets smaller too.',
   video: 'The bit rate the size allows over the video’s length, in two passes; a low rate also makes the picture smaller.',
   sound: 'The bit rate the size allows over the sound’s length.',
+  PDF: 'Its pictures are saved again, smaller step by step, until it fits; text stays text.',
 };
 
 // { name, bytes, what, least, smaller_below, blurry_below } from the app, once loaded.
@@ -80,11 +81,17 @@ function warn(bytes) {
   warning.classList.toggle('strong', blurry);
 }
 
+// The size button chosen last, for the arrow keys; -1 before any.
+let presetAt = -1;
+
 function addPreset(label, bytes) {
   const button = document.createElement('button');
   button.type = 'button';
   button.textContent = label;
-  button.addEventListener('click', () => show(bytes));
+  button.addEventListener('click', () => {
+    presetAt = [...presets.children].indexOf(button);
+    show(bytes);
+  });
   presets.append(button);
 }
 
@@ -115,6 +122,16 @@ document.addEventListener('keydown', (event) => {
   } else if (event.key === 'Enter' && !(document.activeElement instanceof HTMLButtonElement)) {
     event.preventDefault();
     compress();
+  } else if (session && event.key.startsWith('Arrow') && document.activeElement !== unit) {
+    // Up and Down go through the size buttons, even from the box; Left and Right too
+    // where the box doesn't need them for the cursor.
+    const vertical = event.key === 'ArrowUp' || event.key === 'ArrowDown';
+    if (!vertical && document.activeElement === amount) return;
+    const next = [...presets.children][presetAt + (event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1)];
+    if (next) {
+      event.preventDefault();
+      next.click();
+    }
   }
 });
 

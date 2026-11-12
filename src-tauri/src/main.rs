@@ -8,9 +8,12 @@ mod converters;
 mod drop_view;
 mod editor;
 mod estimates;
-mod formats;
 #[cfg(target_os = "macos")]
-mod glass_slider;
+mod float_card;
+mod float_web;
+mod hub_picture;
+mod shelf_web;
+mod formats;
 // Tested everywhere; used on Linux only.
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -24,9 +27,15 @@ mod mac_notification;
 mod menu;
 mod reveal;
 mod settings;
+mod settings_window;
+#[cfg(target_os = "macos")]
+mod services;
+#[cfg(windows)]
+mod send_to;
 mod shelf;
 #[cfg(target_os = "macos")]
 mod shelf_window;
+mod transfer;
 mod trigger;
 mod update;
 mod wheel;
@@ -111,6 +120,14 @@ impl Words {
                 "make one PDF of",
                 "Stopped making the PDF",
             ),
+            // A collage makes one picture of the whole drop: "{}" is "3 files".
+            "tool:collage" => tool(
+                "Making a collage of {}",
+                "Made a collage",
+                "Made a collage of {} files",
+                "make a collage of",
+                "Stopped making the collage",
+            ),
             "tool:split" => tool(
                 "Splitting {} into pages",
                 "Split into pages",
@@ -119,6 +136,8 @@ impl Words {
                 "Stopped splitting",
             ),
             "tool:smaller" => tool("Shrinking {}", "Made smaller", "Made {} files smaller", "shrink", "Stopped shrinking"),
+            "tool:order" => tool("Reordering {}", "Reordered the pages", "Reordered {} files", "reorder", "Stopped reordering"),
+            "tool:info" => tool("Saving new tags for {}", "Saved new tags", "Saved new tags for {} files", "change the tags of", "Stopped saving the tags"),
             "tool:still" => tool(
                 "Taking the first frame of {}",
                 "Saved the first frame",
@@ -142,7 +161,31 @@ impl Words {
                 "Stopped reading QR codes",
             ),
             "tool:crop" => tool("Cropping {}", "Cropped", "Cropped {} files", "crop", "Stopped cropping"),
+            "tool:adjust" => tool("Adjusting {}", "Adjusted", "Adjusted {} files", "adjust", "Stopped adjusting"),
+            "tool:markup" => tool("Marking up {}", "Marked up", "Marked up {} files", "mark up", "Stopped marking up"),
+            "tool:blackout" => tool(
+                "Blacking out parts of {}",
+                "Blacked out",
+                "Blacked out parts of {} files",
+                "black out",
+                "Stopped blacking out",
+            ),
             "tool:trim" => tool("Trimming {}", "Trimmed", "Trimmed {} files", "trim", "Stopped trimming"),
+            "tool:bleep" => tool("Bleeping {}", "Bleeped", "Bleeped {} files", "bleep", "Stopped bleeping"),
+            "tool:speed" => tool(
+                "Changing the speed of {}",
+                "Changed the speed",
+                "Changed the speed of {} files",
+                "change the speed of",
+                "Stopped changing the speed",
+            ),
+            "tool:parts" => tool(
+                "Splitting {} into parts",
+                "Split into parts",
+                "Split {} files into parts",
+                "split",
+                "Stopped splitting",
+            ),
             "tool:target" => tool(
                 "Compressing {} to a size",
                 "Compressed to a size",
@@ -219,6 +262,13 @@ impl Running {
 
 /// Longer file names are cut in the progress line, so the percent after them still
 /// fits in the menu.
+/// The name people see in the menu, the tooltip and notifications. macOS ships as
+/// Pirouette from 0.3.0. Windows and Linux keep Convert Wheel for now, as their
+/// installers do (`productName` in tauri.windows.conf.json and tauri.linux.conf.json):
+/// a renamed installer there would add a second copy next to the old one (Windows) or
+/// clash with the old package over /usr/bin/convert-wheel (Linux).
+pub(crate) const APP_NAME: &str = if cfg!(target_os = "macos") { "Pirouette" } else { "Convert Wheel" };
+
 const NAME_MAX_CHARS: usize = 32;
 
 /// How much of a QR code's text the notification shows; all of it is copied.
@@ -267,7 +317,32 @@ pub(crate) fn stop_converting(app: &AppHandle) {
 /// Esc or a click in the middle of a wheel that was opened from the keyboard shortcut.
 #[tauri::command]
 fn wheel_cancel(app: AppHandle) {
-    trigger::hide_wheel(&app, false, None);
+    trigger::cancel(&app);
+}
+
+/// The wheel's page: the cursor rested on More, so show the next set of items.
+#[tauri::command]
+fn wheel_more(app: AppHandle) {
+    trigger::next_page(&app);
+}
+
+/// The wheel's page, opened from the shortcut (Linux): Alt or Control went down or up.
+#[tauri::command]
+fn wheel_keys(app: AppHandle, alt: bool, control: bool) {
+    trigger::pinned_keys(&app, alt, control);
+}
+
+/// The keyboard wheel's page: Enter applies the picked item.
+#[tauri::command]
+fn wheel_enter(app: AppHandle) {
+    trigger::apply_pick(&app);
+}
+
+/// The wheel's page, opened from the shortcut (Linux): an arrow key, 0 left, 1 right,
+/// 2 up, 3 down.
+#[tauri::command]
+fn wheel_arrow(app: AppHandle, key: usize) {
+    trigger::arrow(&app, key);
 }
 
 /// The page drew a wheel and measured its words: on macOS the glass gets a frosted
@@ -299,7 +374,7 @@ fn send_job(app: &AppHandle, job: Job) {
     if app.state::<Sender<Job>>().send(job).is_err() {
         JOBS.fetch_sub(1, Ordering::SeqCst);
         log::line("conversion worker is gone; drop not converted");
-        notify(app, "Convert Wheel stopped converting", "Quit Convert Wheel and open it again.");
+        notify(app, &format!("{APP_NAME} stopped converting"), &format!("Quit {APP_NAME} and open it again."));
     }
 }
 
@@ -310,7 +385,7 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
         for job in rx {
             // The quality chosen in the menu when the drop starts holds for all of it.
             let quality = app.state::<settings::Store>().get().quality;
-            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality, job.edit));
+            let running = Arc::new(Running::with_quality(&job.format, &job.paths, quality, job.edit.clone()));
             app.state::<NowConverting>().set(Some(Arc::clone(&running)));
             menu::show_progress(&app, &running.line());
             let (finished, done_signal) = mpsc::channel::<()>();
@@ -323,7 +398,7 @@ fn start_worker(app: AppHandle) -> Sender<Job> {
                     convert::under(&running.control, || run_job(app, &job, running))
                 }))
                 .unwrap_or_else(|_| {
-                    let body = "Convert Wheel hit an internal error.".to_string();
+                    let body = format!("{APP_NAME} hit an internal error.");
                     (format!("Couldn't {} the files", running.words.verb), body, Vec::new())
                 });
                 drop(finished);
@@ -358,7 +433,11 @@ fn keep_progress_shown(app: &AppHandle, running: &Running, finished: Receiver<()
 fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Vec<PathBuf>) {
     let words = &running.words;
     // Converting or compressing video is slow; the video tools that copy are quick.
-    let encodes = !formats::is_tool(&job.format) || matches!(job.format.as_str(), "tool:compress" | "tool:trim" | "tool:join" | "tool:target");
+    let encodes = !formats::is_tool(&job.format)
+        || matches!(
+            job.format.as_str(),
+            "tool:compress" | "tool:crop" | "tool:blackout" | "tool:trim" | "tool:speed" | "tool:parts" | "tool:join" | "tool:target"
+        );
     let slow = encodes
         && job.paths.iter().any(|p| {
             formats::extension(Path::new(p)).and_then(|e| formats::kind_of(&e)) == Some(formats::Kind::Video)
@@ -526,7 +605,7 @@ pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
 
 /// `notify` for a finished drop. A click on the notification shows `done`, the files
 /// it produced, in the file manager.
-fn notify_done(app: &AppHandle, title: &str, body: &str, done: Vec<PathBuf>) {
+pub(crate) fn notify_done(app: &AppHandle, title: &str, body: &str, done: Vec<PathBuf>) {
     let id = NOTIFICATION_ID.fetch_add(1, Ordering::SeqCst);
     show_notification(app, id, title, body, &done);
     app.state::<reveal::Results>().finished(id, done);
@@ -588,6 +667,16 @@ fn cli(args: &[String]) -> i32 {
 }
 
 fn main() {
+    // Windows: a copy started by Send To (from File Explorer, so allowed to come to the
+    // front) only hands its files to the running copy and quits. It passes that right
+    // on first, so the running copy's keyboard wheel can come to the front instead of
+    // opening behind Explorer.
+    #[cfg(windows)]
+    if trigger::files_in_args(&std::env::args().collect::<Vec<_>>(), &std::env::current_dir().unwrap_or_default()).is_some() {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY);
+        }
+    }
     // WebKitGTK's DMA-BUF renderer makes the wheel stutter with some Linux graphics;
     // drawing through shared memory is the usual way round it. Set before any thread
     // starts; a value the user set still wins.
@@ -608,6 +697,11 @@ fn main() {
     }));
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The SVG tracing, in a process of its own (convert/svg.rs): started by the app
+    // itself, never by the user.
+    if args.first().map(String::as_str) == Some("--trace") {
+        std::process::exit(convert::svg::trace_main(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("--convert") {
         // A Windows release build has no console of its own; borrow the one it was
         // started from so the results and errors show up there.
@@ -620,7 +714,7 @@ fn main() {
     // For a keyboard shortcut on Linux, where Wayland hides Shift+drag from apps.
     #[cfg(target_os = "linux")]
     if args.first().map(String::as_str) == Some("--show") {
-        if let Err(e) = linux::send_show() {
+        if let Err(e) = linux::send_show(args.get(1).map(String::as_str)) {
             eprintln!("{e}");
             std::process::exit(1);
         }
@@ -631,25 +725,31 @@ fn main() {
         // First, so a second copy hands over to the running one and quits before it
         // opens a second wheel and menu icon. `--update` from a second copy only checks:
         // installing is for the menu or a fresh start with `--update`.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             if args.iter().any(|a| a == "--update") {
                 update::check_soon(app);
+            } else if let Some(files) = trigger::files_in_args(&args, std::path::Path::new(&cwd)) {
+                // Send To (Windows) or Open With (Linux) on files: the keyboard wheel.
+                trigger::open_for_keys(app, files);
             } else {
-                notify(app, "Convert Wheel is already running", "Hold Shift while dragging a file to open the wheel.");
+                notify(app, &format!("{APP_NAME} is already running"), "Hold Shift while dragging a file to open the wheel.");
             }
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // The folder picker for Copy To and Move To, used from Rust only: no page is
+        // given the plugin's permissions.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Anything that stops the start is logged and shown; otherwise the app
             // would vanish without a word.
             setup(app).map_err(|e| {
                 log::line(&format!("couldn't start: {e}"));
-                notify(app.handle(), "Convert Wheel couldn't start", &e.to_string());
+                notify(app.handle(), &format!("{APP_NAME} couldn't start"), &e.to_string());
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_cancel, wheel_words, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_cancel])
+        .invoke_handler(tauri::generate_handler![wheel_enter, settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
         .build(tauri::generate_context!());
     match app {
         Ok(app) => app.run(|_, event| {
@@ -673,6 +773,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     log::init(app.path().app_log_dir().ok());
     log::line(&format!("started, version {}", app.package_info().version));
     let (store, settings_problem) = settings::Store::load(app.path().app_config_dir()?.join("settings.json"));
+    wheel::set_keys(store.get().keys);
+    #[cfg(target_os = "macos")]
+    trigger::set_mac_arrows(store.get().arrow_keys);
     app.manage(store);
     app.manage(update::Pending::default());
     app.manage(reveal::Results::default());
@@ -699,18 +802,36 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     {
         let mtm = objc2::MainThreadMarker::new().ok_or("setup isn't on the main thread")?;
         wheel_window::install(app.handle(), mtm)?;
-        glass_slider::install(app.handle(), mtm);
         drop_view::install(app.handle())?;
+        services::install(app.handle(), mtm);
         shelf_window::install(app.handle(), mtm);
     }
     #[cfg(windows)]
     win32::install(app.handle());
     #[cfg(target_os = "linux")]
     linux::install(app.handle());
+    #[cfg(not(target_os = "macos"))]
+    shelf_web::start(app.handle());
     trigger::start(app.handle().clone());
+    // Windows: the Send To entry for the keyboard wheel, kept pointing at this copy.
+    #[cfg(windows)]
+    {
+        let handle = app.handle().clone();
+        std::thread::spawn(move || send_to::follow(&handle));
+    }
+    // Started by Send To or Open With with files (no copy was running): once the
+    // wheel window is up, the keyboard wheel opens on them.
+    if let Some(files) = trigger::files_in_args(&std::env::args().collect::<Vec<_>>(), &std::env::current_dir().unwrap_or_default()) {
+        let handle = app.handle().clone();
+        std::thread::spawn(move || {
+            // Long enough for the wheel's page to load and listen on a slow start.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            trigger::open_for_keys(&handle, files);
+        });
+    }
     update::start(app.handle().clone());
     if let Some(problem) = settings_problem {
-        notify(app.handle(), "Convert Wheel settings", &problem);
+        notify(app.handle(), &format!("{APP_NAME} settings"), &problem);
     }
     if std::env::args().any(|a| a == "--update") {
         update::install_soon(app.handle());

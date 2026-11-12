@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings</title>
+  <link rel="stylesheet" href="settings.css">
+  <script src="settings.js" defer></script>
+</head>
+<body>
+  <nav id="tabs" role="tablist" aria-label="Settings">
+    <button type="button" role="tab" id="tab-general" aria-controls="general">General</button>
+    <button type="button" role="tab" id="tab-wheel" aria-controls="wheel">Wheel</button>
+    <button type="button" role="tab" id="tab-quality" aria-controls="quality">Quality</button>
+    <button type="button" role="tab" id="tab-about" aria-controls="about">About</button>
+  </nav>
+  <main>
+    <section id="general" role="tabpanel" aria-labelledby="tab-general" hidden></section>
+    <section id="wheel" role="tabpanel" aria-labelledby="tab-wheel" hidden></section>
+    <section id="quality" role="tabpanel" aria-labelledby="tab-quality" hidden></section>
+    <section id="about" role="tabpanel" aria-labelledby="tab-about" hidden></section>
+    <p id="problem" role="alert" hidden></p>
+  </main>
+</body>
+</html>

@@ -24,12 +24,13 @@ use windows::Win32::System::Ole::{
 use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_MENU, VK_RBUTTON, VK_SHIFT,
+    GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DOWN, VK_LBUTTON, VK_LEFT, VK_MENU, VK_RBUTTON, VK_RIGHT, VK_SHIFT, VK_UP,
 };
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IsWindow,
-    SetWindowLongPtrW,
+    EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW,
+    GetWindowThreadProcessId, IsWindow, SetForegroundWindow, SetWindowLongPtrW,
     SetWindowPos, ShowWindow, WindowFromPoint, GA_PARENT, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, SM_CXDRAG,
     SM_CYDRAG, SM_SWAPBUTTON, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SWP_SHOWWINDOW, SW_HIDE, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX,
@@ -57,6 +58,7 @@ pub fn start_trigger(app: AppHandle) {
         // Polls in a row with Shift held during this drag.
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
+        let mut arrows = trigger::Arrows::default();
         loop {
             thread::sleep(POLL);
             let mut pt = POINT::default();
@@ -67,8 +69,10 @@ pub fn start_trigger(app: AppHandle) {
                 if shown {
                     trigger::released(&app);
                 }
+                crate::shelf_web::drag_ended(&app);
                 (was_down, from_files, shown, held) = (false, false, false, 0);
                 keys = KeyFollower::default();
+                arrows = trigger::Arrows::default();
                 continue;
             }
             if !was_down {
@@ -78,12 +82,17 @@ pub fn start_trigger(app: AppHandle) {
             }
             held = if key_down(VK_SHIFT) { held.saturating_add(1) } else { 0 };
             if from_files && !shown && held >= trigger::KEYS_SETTLE && moved_past_threshold(start, pt) {
-                // VK_MENU is Alt.
-                let which = Which::from_keys(key_down(VK_MENU), key_down(VK_CONTROL));
-                trigger::show_wheel(&app, Vec::new(), which);
-                shown = true;
+                // VK_MENU is Alt. Keys switched off in the menu open no wheel.
+                if let Some(which) = Which::from_keys(key_down(VK_MENU), key_down(VK_CONTROL)) {
+                    trigger::show_wheel(&app, Vec::new(), which);
+                    shown = true;
+                }
             } else if shown {
                 trigger::follow_keys(&app, &mut keys, key_down(VK_SHIFT), key_down(VK_MENU), key_down(VK_CONTROL));
+                trigger::follow_arrows(&app, &mut arrows, [key_down(VK_LEFT), key_down(VK_RIGHT), key_down(VK_UP), key_down(VK_DOWN)]);
+            } else if from_files && held == 0 && moved_past_threshold(start, pt) && at_top_edge(pt) {
+                // Files dragged to the top of the screen without Shift: the shelf.
+                crate::shelf_web::drag_near_top(&app);
             }
         }
     });
@@ -103,6 +112,13 @@ fn primary_button() -> VIRTUAL_KEY {
 }
 
 /// Windows' own distance before a press counts as a drag.
+/// The pointer is at the top edge of the screen it is on.
+fn at_top_edge(pt: POINT) -> bool {
+    let monitor = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() && pt.y <= info.rcMonitor.top + crate::shelf_web::EDGE
+}
+
 fn moved_past_threshold(a: POINT, b: POINT) -> bool {
     let (dx, dy) = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
     (b.x - a.x).abs() > dx || (b.y - a.y).abs() > dy
@@ -189,6 +205,55 @@ pub fn open(app: &AppHandle) {
     let _ = unsafe { SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, size, size, SWP_NOACTIVATE | SWP_SHOWWINDOW) };
 }
 
+/// The keyboard wheel (Send To) takes the keyboard, so Enter, Esc, the arrows and Tab
+/// all reach its page. Main thread, after `open`. Says whether the wheel is in front.
+///
+/// Tauri's own set_focus can't do this: it acts only on windows Tauri showed itself,
+/// and `open` shows the wheel with SetWindowPos. The wheel is also a window that
+/// never takes the focus (a Shift+drag must leave it with File Explorer), so that is
+/// switched off here and back on in `give_keys_back`. Windows lets this copy come to
+/// the front because the Send To start handed it that right (main.rs).
+pub fn take_keys(app: &AppHandle) -> bool {
+    let Some(hwnd) = wheel_hwnd(app) else {
+        return false;
+    };
+    set_no_activate(hwnd, false);
+    let mut front = unsafe { SetForegroundWindow(hwnd) }.as_bool();
+    if !front {
+        // The right was used up (another click in the meantime): share the front
+        // window's input for a moment, the usual way round.
+        let other = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), None) };
+        let me = unsafe { GetCurrentThreadId() };
+        if other != 0 && other != me && unsafe { AttachThreadInput(me, other, true) }.as_bool() {
+            front = unsafe { SetForegroundWindow(hwnd) }.as_bool();
+            let _ = unsafe { AttachThreadInput(me, other, false) };
+        }
+    }
+    // WebView2 draws the page in a window of its own: the focus has to move into it.
+    if let Some(win) = app.get_webview_window("wheel") {
+        let page: &tauri::Webview = win.as_ref();
+        let _ = page.set_focus();
+    }
+    front && unsafe { GetForegroundWindow() } == hwnd
+}
+
+/// After the keyboard wheel: the wheel is again a window that never takes the focus.
+/// Not Tauri's set_focusable: for a window Tauri thinks is hidden, that hides it at
+/// once and puts back the frame `make_bare_popup` took off.
+pub fn give_keys_back(app: &AppHandle) {
+    if let Some(hwnd) = wheel_hwnd(app) {
+        set_no_activate(hwnd, true);
+    }
+}
+
+fn set_no_activate(hwnd: HWND, on: bool) {
+    let flag = WS_EX_NOACTIVATE.0 as isize;
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, if on { ex | flag } else { ex & !flag });
+    }
+}
+
 /// Lets the page's close animation play, then hides the wheel unless a newer one
 /// opened in the meantime.
 pub fn close(app: &AppHandle, generation: u64) {
@@ -247,7 +312,7 @@ fn register_drop_targets(app: &AppHandle, wheel: HWND) {
     // Without any drop target the wheel would open and take nothing. Say so once.
     static WARNED: AtomicBool = AtomicBool::new(false);
     if REGISTERED.with(|r| r.borrow().is_empty()) && !WARNED.swap(true, Ordering::SeqCst) {
-        crate::notify(app, "Convert Wheel can't take drops", "Quit Convert Wheel and open it again.");
+        crate::notify(app, &format!("{} can't take drops", crate::APP_NAME), &format!("Quit {} and open it again.", crate::APP_NAME));
     }
 }
 
@@ -269,12 +334,13 @@ impl WheelDropTarget {
         wheel::hover_at(x - wheel::SIZE / 2.0, wheel::SIZE / 2.0 - y, n)
     }
 
-    /// Lights up what is under the cursor and accepts the drop only over a format, and
-    /// only as a copy the source allows (`allowed` is what Windows passed in).
+    /// Lights up what is under the cursor and accepts the drop only over a format (or on
+    /// the middle once the arrow keys picked one), and only as a copy the source allows
+    /// (`allowed` is what Windows passed in).
     fn track(&self, pt: &POINTL, allowed: DROPEFFECT) -> DROPEFFECT {
         let hover = self.hover_at(pt);
         self.set_hover(hover);
-        if hover.segment.is_some() && self.has_files.get() && (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY {
+        if trigger::accepts_drop(&self.app, hover) && self.has_files.get() && (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY {
             DROPEFFECT_COPY
         } else {
             DROPEFFECT_NONE
@@ -362,4 +428,79 @@ unsafe fn file_paths(data: Ref<'_, IDataObject>) -> Vec<String> {
     }
     unsafe { ReleaseStgMedium(&mut medium) };
     paths
+}
+
+/// The shelf's window (shelf_web.rs) takes file drops: they are held, as a copy the
+/// source allows, never a move. Its WebView2 child windows appear after it is made,
+/// so this runs again each time the shelf shows; known windows are skipped.
+pub fn register_shelf_drop(app: &AppHandle, window: &tauri::WebviewWindow) {
+    unsafe extern "system" fn collect(child: HWND, list: LPARAM) -> BOOL {
+        let list = unsafe { &mut *(list.0 as *mut Vec<HWND>) };
+        list.push(child);
+        BOOL(1)
+    }
+    let Ok(top) = window.hwnd() else {
+        return;
+    };
+    let mut windows = vec![top];
+    let _ = unsafe { EnumChildWindows(Some(top), Some(collect), LPARAM(&mut windows as *mut _ as isize)) };
+    REGISTERED.with(|r| r.borrow_mut().retain(|&key| unsafe { IsWindow(Some(HWND(key as _))) }.as_bool()));
+    for hwnd in windows {
+        let key = hwnd.0 as isize;
+        if REGISTERED.with(|r| r.borrow().contains(&key)) {
+            continue;
+        }
+        let target: IDropTarget = ShelfDropTarget { app: app.clone() }.into();
+        let _ = unsafe { RevokeDragDrop(hwnd) };
+        match unsafe { RegisterDragDrop(hwnd, &target) } {
+            Ok(()) => {
+                REGISTERED.with(|r| r.borrow_mut().insert(key));
+                TARGETS.with(|t| t.borrow_mut().push(target));
+            }
+            Err(e) => crate::log::line(&format!("drop target not registered on the shelf: {e}")),
+        }
+    }
+}
+
+#[implement(IDropTarget)]
+struct ShelfDropTarget {
+    app: AppHandle,
+}
+
+fn copy_only(allowed: DROPEFFECT) -> DROPEFFECT {
+    if (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY {
+        DROPEFFECT_COPY
+    } else {
+        DROPEFFECT_NONE
+    }
+}
+
+impl IDropTarget_Impl for ShelfDropTarget_Impl {
+    fn DragEnter(&self, data: Ref<'_, IDataObject>, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+        let files = !unsafe { file_paths(data) }.is_empty();
+        unsafe { *effect = if files { copy_only(*effect) } else { DROPEFFECT_NONE } };
+        Ok(())
+    }
+
+    fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+        unsafe { *effect = copy_only(*effect) };
+        Ok(())
+    }
+
+    fn DragLeave(&self) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn Drop(&self, data: Ref<'_, IDataObject>, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> windows::core::Result<()> {
+        let allowed = unsafe { *effect };
+        let paths = unsafe { file_paths(data) };
+        let take = (allowed & DROPEFFECT_COPY) == DROPEFFECT_COPY && !paths.is_empty();
+        if take {
+            crate::shelf_web::dropped(&self.app, paths);
+        }
+        // As for the wheel: always say "copy" or "none", never leave "move" for
+        // File Explorer to act on.
+        unsafe { *effect = if take { DROPEFFECT_COPY } else { DROPEFFECT_NONE } };
+        Ok(())
+    }
 }

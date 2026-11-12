@@ -38,20 +38,23 @@ npx --no-install tauri build --bundles app -- --locked
 
 bundle="src-tauri/target/release/bundle/macos"
 out="src-tauri/target/release/bundle/dmg"
-dmg="$out/Convert.Wheel_${version}_aarch64.dmg"
-upd="$out/Convert.Wheel_${version}_aarch64.app.tar.gz"
+# macOS ships as Pirouette from 0.3.0 (tauri.conf.json productName); Windows and Linux
+# keep the Convert Wheel name for now. The signing certificate and update key keep
+# their old names: macOS keys its permissions to the certificate.
+dmg="$out/Pirouette_${version}_aarch64.dmg"
+upd="$out/Pirouette_${version}_aarch64.app.tar.gz"
 mkdir -p "$out"
 rm -f "$dmg" "$upd" "$upd.sig"
 
 # The update file: the .app in a tar.gz, as the updater expects. COPYFILE_DISABLE keeps
 # macOS's ._ metadata files out of it.
-COPYFILE_DISABLE=1 tar -czf "$upd" -C "$bundle" "Convert Wheel.app"
+COPYFILE_DISABLE=1 tar -czf "$upd" -C "$bundle" "Pirouette.app"
 
 # The disk image holds the app and a link to Applications to drag it onto.
 staging=$(mktemp -d)
-ditto "$bundle/Convert Wheel.app" "$staging/Convert Wheel.app"
+ditto "$bundle/Pirouette.app" "$staging/Pirouette.app"
 ln -s /Applications "$staging/Applications"
-hdiutil create -volname "Convert Wheel" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null 2>&1
+hdiutil create -volname "Pirouette" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null 2>&1
 rm -rf "$staging"
 
 # Sign: the only command that sees the key. The signature records the version.

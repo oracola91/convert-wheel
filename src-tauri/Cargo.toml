@@ -1,6 +1,6 @@
 [package]
 name = "convert-wheel"
-version = "0.2.1"
+version = "0.3.0"
 description = "Hold Shift while dragging a file to pick a format to convert it to"
 edition = "2021"
 publish = false
@@ -25,19 +25,36 @@ rqrr = { version = "0.11", default-features = false }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri-plugin-dialog = "=2.8.3"
+# Traces a picture into an SVG (convert/svg.rs). Pure Rust, no image decoding or file
+# access of its own (ImageMagick reads the picture); only visioncortex and flo_curves
+# come with it. Pinned: a 1.0 pre-release, chosen over 0.6 which drags in clap 2 and an
+# old image crate.
+vtracer = "=1.0.0-alpha.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The folder picker as its own window (transfer.rs); the version the dialog plugin uses.
+rfd = { version = "=0.16.0", default-features = false }
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSURL", "NSGeometry", "NSNotification", "NSOperation", "block2"] }
 objc2-service-management = { version = "0.3", features = ["SMAppService"] }
 objc2-quick-look-thumbnailing = { version = "0.3", features = ["QLThumbnailGenerator", "QLThumbnailGenerationRequest", "QLThumbnailRepresentation", "block2", "objc2-app-kit"] }
 objc2-user-notifications = { version = "0.3", features = ["UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter", "block2"] }
-objc2-app-kit = { version = "0.3", features = ["NSAccessibility", "NSAnimation", "NSAnimationContext", "NSApplication", "NSBezierPath", "NSBitmapImageRep", "NSButton", "NSCell", "NSColor", "NSControl", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFont", "NSGlassEffectView", "NSGraphics", "NSHapticFeedback", "NSImage", "NSImageCell", "NSImageRep", "NSImageView", "NSMenu", "NSMenuItem", "NSPanel", "NSParagraphStyle", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSScreen", "NSSharingService", "NSSlider", "NSStatusBarButton", "NSStatusItem", "NSText", "NSTextField", "NSTrackingArea", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSAccessibility", "NSAnimation", "NSAnimationContext", "NSApplication", "NSBezierPath", "NSBitmapImageRep", "NSButton", "NSCell", "NSColor", "NSControl", "NSCursor", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSFont", "NSGlassEffectView", "NSGraphics", "NSHapticFeedback", "NSImage", "NSImageCell", "NSImageRep", "NSImageView", "NSMenu", "NSMenuItem", "NSPanel", "NSParagraphStyle", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSScreen", "NSSharingService", "NSSlider", "NSStatusBarButton", "NSStatusItem", "NSText", "NSTextField", "NSTrackingArea", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "block2"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-core = "0.62"
+# The stock IIterable for the share sheet; already in the build through windows.
+windows-collections = "0.3"
+# PNG for the hub picture; already in the build through tauri's image-png.
+png = "0.18"
 windows = { version = "0.62", features = [
+    "ApplicationModel_DataTransfer",
+    "Foundation",
+    "Foundation_Collections",
+    "Storage",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_Com",
@@ -48,6 +65,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_Registry",
     "Win32_System_SystemServices",
+    "Win32_System_Threading",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

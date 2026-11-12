@@ -62,16 +62,37 @@ fn bsdtar() -> Result<PathBuf, String> {
     Ok("/usr/bin/bsdtar".into())
 }
 
-/// Windows' own tar.exe is bsdtar, from Windows 10 1803 on.
+/// Windows' own tar.exe is bsdtar, from Windows 10 1803 on. It is asked once (by its
+/// `--version`) whether it still is: the app relies on bsdtar's refusal of ".." and
+/// absolute names, which a different tar.exe put in its place might not have.
 #[cfg(windows)]
 fn bsdtar() -> Result<PathBuf, String> {
-    let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
-    let tar = system.join("System32\\tar.exe");
-    if tar.is_file() {
-        Ok(tar)
-    } else {
-        Err("Windows' own tar.exe is missing (it comes with Windows 10 1803 and later)".into())
-    }
+    static CHECKED: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    CHECKED
+        .get_or_init(|| {
+            let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+            let tar = system.join("System32\\tar.exe");
+            if !tar.is_file() {
+                return Err("Windows' own tar.exe is missing (it comes with Windows 10 1803 and later)".into());
+            }
+            let mut cmd = Command::new(&tar);
+            cmd.arg("--version").stdin(Stdio::null()).stderr(Stdio::null());
+            convert::quiet(&mut cmd);
+            let said = cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            if is_bsdtar(&said) {
+                Ok(tar)
+            } else {
+                crate::log::line(&format!("System32 tar.exe is not bsdtar: {}", said.lines().next().unwrap_or("no answer")));
+                Err("Windows' tar.exe is not the bsdtar Windows comes with, so archives are not opened".into())
+            }
+        })
+        .clone()
+}
+
+/// tar --version's first line: "bsdtar 3.7.2 - libarchive 3.7.2 zlib/1.2.13 ...".
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_bsdtar(version: &str) -> bool {
+    version.lines().next().is_some_and(|l| l.trim_start().starts_with("bsdtar "))
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -142,7 +163,7 @@ pub fn make(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback: &P
 /// leaves nothing behind.
 pub fn unpack(src: &Path, save_in: Option<&Path>, fallback: &Path) -> Result<PathBuf, String> {
     let name = src.file_name().and_then(|n| n.to_str()).ok_or("the file name is not valid text")?;
-    let (kind, stem) = split_name(name).ok_or("this is not an archive Convert Wheel unpacks")?;
+    let (kind, stem) = split_name(name).ok_or_else(|| format!("this is not an archive {} unpacks", crate::APP_NAME))?;
     let meta = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?;
     if !meta.is_file() {
         return Err("this is not a regular file".into());
@@ -404,6 +425,13 @@ fn size_of(dir: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_bsdtar_counts_as_bsdtar() {
+        assert!(is_bsdtar("bsdtar 3.7.2 - libarchive 3.7.2 zlib/1.2.13.1-motley liblzma/5.4.3 bz2lib/1.0.8 libzstd/1.5.4\r\n"));
+        assert!(!is_bsdtar("tar (GNU tar) 1.35\nCopyright (C) 2023"));
+        assert!(!is_bsdtar(""));
+    }
 
     #[test]
     fn archive_names_are_read() {

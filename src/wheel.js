@@ -37,12 +37,21 @@ const TOOLS = {
   'tool:clean': ['No metadata', 'Remove metadata'],
   'tool:rotate': ['Rotate', 'Rotate right'],
   'tool:crop': ['Crop', 'Crop and turn'],
+  'tool:adjust': ['Adjust', 'Light and colour'],
+  'tool:markup': ['Mark up', 'Draw or black out'],
+  'tool:blackout': ['Black out', 'Black out parts'],
   'tool:trim': ['Trim', 'Trim the ends'],
+  'tool:bleep': ['Bleep', 'Bleep out a part'],
+  'tool:speed': ['Speed', 'Faster or slower'],
+  'tool:parts': ['Split', 'Split into parts'],
   'tool:join': ['Join', 'Join into one'],
   'tool:target': ['To a size', 'Compress to a size'],
   'tool:onepdf': ['One PDF', 'Into one PDF'],
+  'tool:collage': ['Collage', 'Into one picture'],
   'tool:merge': ['Merge', 'Merge into one'],
   'tool:split': ['Split', 'One file per page'],
+  'tool:order': ['Reorder', 'Change the page order'],
+  'tool:info': ['Info', 'See and edit details'],
   'tool:smaller': ['Smaller', 'Make smaller'],
   'tool:still': ['First frame', 'First frame as JPEG'],
   'tool:loudness': ['Loudness', 'Even out loudness'],
@@ -50,12 +59,17 @@ const TOOLS = {
   'tool:qr': ['QR code', 'Read the QR code'],
   'act:path': ['Copy path', 'Copy path'],
   'act:show': ['Show', 'Show in folder'],
+  'act:copyto': ['Copy to', 'Copy to a folder'],
+  'act:moveto': ['Move to', 'Move to a folder'],
+  'act:float': ['Float', 'Keep it on screen'],
   'act:terminal': ['Terminal', 'Open Terminal here'],
   'act:airdrop': ['AirDrop', 'Send with AirDrop'],
+  'act:share': ['Share', 'Send it to an app or person'],
   'act:zip': ['ZIP', 'Make a ZIP'],
   'act:tgz': ['TAR.GZ', 'Make a TAR.GZ'],
   'act:tar': ['TAR', 'Make a TAR'],
   'act:unpack': ['Unpack', 'Unpack here'],
+  more: ['More', 'Rest here for more'],
 };
 
 const svg = document.getElementById('wheel');
@@ -67,6 +81,11 @@ let paths = [];
 let formats = [];
 // "formats", "tools" or "actions".
 let wheel = 'formats';
+// More: how long the cursor rests on it before the next set shows, and the timer.
+const MORE_REST_MS = 450;
+// While it stays there, how often it goes on to the set after.
+const MORE_REPEAT_MS = 1200;
+let moreTimer = null;
 // Windows and Linux learn which files are dragged only when they reach the wheel.
 let pending = false;
 // Opened from the keyboard shortcut (Linux): waits for a file instead of a mouse-up.
@@ -229,8 +248,33 @@ function build() {
   hubLabel = el('text', { x: C, y: C + 30, class: 'hub-label' });
   tag.append(hubPill, hubLabel);
   svg.append(hub, hubShine, tag);
+  // Windows and Linux: the file's picture above the label, once it has arrived.
+  hubPicture = el('image', { x: C - 20, y: C - 28, width: 40, height: 40, class: 'hub-picture', preserveAspectRatio: 'xMidYMid meet' });
+  svg.append(hubPicture);
+  drawPicture();
   show({ segment: null, hub: false });
 }
+
+// The picture of the first file (Windows, Linux), sent when the system has made it;
+// macOS shows Quick Look's in a native view instead.
+let picture = null;
+let hubPicture = null;
+
+function drawPicture() {
+  const ok = picture !== null && paths.length > 0 && picture.path === paths[0];
+  if (!hubPicture) return;
+  if (ok) hubPicture.setAttribute('href', picture.url);
+  else hubPicture.removeAttribute('href');
+  hubPicture.classList.toggle('shown', ok);
+  document.documentElement.classList.toggle('pictured', ok);
+}
+
+listen('wheel-picture', (event) => {
+  const p = event.payload;
+  if (typeof p?.path !== 'string' || typeof p?.url !== 'string' || !p.url.startsWith('data:image/png;base64,')) return;
+  picture = { path: p.path, url: p.url };
+  if (open) drawPicture();
+});
 
 // Each segment's word, with its icon if it has one: its box where the segment rests.
 function wordBoxes() {
@@ -266,7 +310,13 @@ function clean(hover) {
 function show(raw) {
   if (!hub) return;
   const hover = clean(raw);
-  lastHover = hover;
+  lastHover = { ...hover };
+  // The arrow keys' pick shows while the mouse is on no segment; a drop on the hub
+  // goes there (trigger.rs).
+  if (hover.segment === null && picked !== null && picked < segments.length) {
+    hover.segment = picked;
+    hover.hub = false;
+  }
   segments.forEach((g, i) => g.classList.toggle('active', i === hover.segment));
   hub.classList.toggle('cancel', hover.hub);
   hubLabel.classList.toggle('strong', hover.segment !== null || hover.hub);
@@ -287,7 +337,8 @@ function show(raw) {
   } else if (formats.length === 0) {
     hubLabel.textContent = { tools: 'No tools', actions: 'No actions' }[wheel] ?? 'No formats';
   } else if (pinned) {
-    hubLabel.textContent = 'Esc to close';
+    // The keyboard wheel (or the shortcut's, with files over it).
+    hubLabel.textContent = '← → then Enter';
   } else {
     const count = paths.length === 1 ? '1 file' : `${paths.length} files`;
     if (bytes === null) hubLabel.textContent = count;
@@ -352,9 +403,15 @@ function nameWheel() {
 const HIGHLIGHTS = ['orange', 'red', 'pink', 'purple', 'blue', 'teal', 'green', 'graphite'];
 
 listen('wheel-show', (event) => {
+  stopMore();
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
   nameWheel();
+  if (picture && picture.path !== paths[0]) picture = null;
   pinned = event.payload?.pinned === true;
+  latched = 'none';
+  tapping = null;
+  picked = null;
+  if (pinned && !pending) say(`Wheel open, ${formats.length} items. Left and Right choose, Enter applies, Escape closes, Tab switches wheels.`);
   document.documentElement.classList.toggle('solid', event.payload?.glass !== true);
   const highlight = event.payload?.highlight;
   document.documentElement.dataset.highlight = HIGHLIGHTS.includes(highlight) ? highlight : 'orange';
@@ -363,6 +420,10 @@ listen('wheel-show', (event) => {
   const share = (v, fallback) => (Number.isFinite(v) && v >= 0 && v <= 1 ? v : fallback);
   document.documentElement.classList.toggle('plain', look?.plain === true);
   document.documentElement.style.setProperty('--seg-a', share(look?.seg, 0.23));
+  // Windows and Linux, Wheel Glass on: the page's own disc, see-through.
+  const see = Number.isFinite(look?.see);
+  document.documentElement.classList.toggle('see', see);
+  if (see) document.documentElement.style.setProperty('--disc-a', share(look.see, 1));
   build();
   frostWords();
   open = true;
@@ -375,9 +436,15 @@ listen('wheel-show', (event) => {
 // cursor moves or a key changes.
 listen('wheel-formats', (event) => {
   if (!open) return;
-  const keep = lastHover;
+  picked = null;
+  let keep = lastHover;
   ({ paths, formats, pending, wheel, bytes } = readWheel(event.payload));
+  // Going round with More: More (always last) stays lit under the resting cursor
+  // until the native side reports the new wheel's segment there.
+  if (moreTimer && formats[formats.length - 1] === 'more') keep = { segment: formats.length - 1, hub: false };
+  else stopMore();
   nameWheel();
+  if (pinned && !pending) say(`${svg.getAttribute('aria-label')}, ${formats.length} items.`);
   // No fade-in: in the wheel's window macOS can hold an animation at its first
   // frame, which left a switched-to wheel with invisible segments.
   build();
@@ -397,14 +464,40 @@ listen('wheel-estimates', (event) => {
   if (open) show(lastHover);
 });
 
+// A full wheel shows its items a set at a time, with More last: resting on More for
+// a moment asks for the next set, and staying there goes on round the sets. Moving
+// off More stops it, on whichever set is showing.
+function stopMore() {
+  clearTimeout(moreTimer);
+  moreTimer = null;
+}
+
+function watchMore(hover) {
+  const onMore = Number.isInteger(hover?.segment) && formats[hover.segment] === 'more';
+  if (!onMore) stopMore();
+  else if (!moreTimer) moreTimer = setTimeout(nextSet, MORE_REST_MS);
+}
+
+function nextSet() {
+  if (!open) {
+    moreTimer = null;
+    return;
+  }
+  invoke('wheel_more').catch((e) => console.error('wheel_more failed', e));
+  moreTimer = setTimeout(nextSet, MORE_REPEAT_MS);
+}
+
 listen('wheel-hover', (event) => {
-  if (open) show(event.payload);
+  if (!open) return;
+  show(event.payload);
+  watchMore(event.payload);
 });
 
 // A chosen segment stays lit while the wheel shrinks back to where it opened. If
 // nothing was chosen, nothing stays lit.
 listen('wheel-close', (event) => {
   open = false;
+  stopMore();
   if (event.payload !== true) show({ segment: null, hub: false });
   restart('closing');
   // Once the window is gone, empty the page, so the next wheel never shows this one
@@ -433,6 +526,69 @@ function cancel() {
 }
 document.addEventListener('keydown', (event) => {
   if (open && pinned && event.key === 'Escape') cancel();
+  // The keyboard wheel: Enter applies the item the arrow keys picked.
+  if (open && pinned && event.key === 'Enter') {
+    event.preventDefault();
+    invoke('wheel_enter').catch(() => {});
+  }
+});
+// A wheel that has the keyboard (the keyboard wheel; the shortcut's wheel on Linux):
+// a tap of Option (Alt) or Control switches to the wheel those keys open during a
+// Shift+drag and it stays, so Left, Right and Enter work on it with the key let go;
+// the same tap again goes back. Tab and Shift+Tab go round all three. Holding the key
+// was the first idea (2026-11-10), but the wheel went back as soon as the key was let
+// go, and Control with an arrow is the system's own (macOS: move to another desktop).
+const LATCHES = ['none', 'alt', 'control'];
+let latched = 'none';
+// The modifier pressed with no other key since: a tap if it comes up alone.
+let tapping = null;
+function latch(to) {
+  latched = to;
+  invoke('wheel_keys', { alt: to === 'alt', control: to === 'control' }).catch(() => {});
+}
+document.addEventListener('keydown', (event) => {
+  if (!open || !pinned) return;
+  if (event.key === 'Alt' || event.key === 'Control') {
+    if (!event.repeat) tapping = event.key;
+    return;
+  }
+  tapping = null;
+  if (event.key === 'Tab') {
+    event.preventDefault();
+    const at = LATCHES.indexOf(latched);
+    latch(LATCHES[(at + (event.shiftKey ? LATCHES.length - 1 : 1)) % LATCHES.length]);
+  }
+});
+document.addEventListener('keyup', (event) => {
+  if (!open || !pinned || event.key !== tapping) return;
+  tapping = null;
+  const key = event.key === 'Alt' ? 'alt' : 'control';
+  latch(latched === key ? 'none' : key);
+});
+
+// Arrow keys: the segment they picked (any system, from its own key polling), and on
+// the shortcut's wheel, which has the keyboard (Linux), the keys themselves.
+let picked = null;
+// Spoken on the keyboard wheel: what each item is, as the hub says it.
+function itemName(f) {
+  if (f === 'more') return 'More, the next set';
+  if (Object.hasOwn(TOOLS, f)) return TOOLS[f][1];
+  return `To ${Object.hasOwn(NAMES, f) ? NAMES[f] : f.toUpperCase()}`;
+}
+function say(text) {
+  const said = document.getElementById('said');
+  if (said) said.textContent = text;
+}
+listen('wheel-pick', (event) => {
+  picked = Number.isInteger(event.payload) ? event.payload : null;
+  if (open && lastHover) show(lastHover);
+  if (picked !== null && formats[picked]) say(`${itemName(formats[picked])}, ${picked + 1} of ${formats.length}`);
+});
+const ARROWS = { ArrowLeft: 0, ArrowRight: 1, ArrowUp: 2, ArrowDown: 3 };
+document.addEventListener('keydown', (event) => {
+  if (!open || !pinned || !Object.hasOwn(ARROWS, event.key)) return;
+  event.preventDefault();
+  invoke('wheel_arrow', { key: ARROWS[event.key] }).catch(() => {});
 });
 svg.addEventListener('click', (event) => {
   if (open && pinned && event.target === hub) cancel();

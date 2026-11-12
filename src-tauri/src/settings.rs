@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::formats::Kind;
-use crate::wheel::lock;
+use crate::wheel::{lock, Which};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -106,6 +106,117 @@ pub struct Settings {
     pub no_liquid_glass: bool,
     /// How see-through the Liquid Glass wheel is (macOS), from the menu's slider.
     pub transparency: Transparency,
+    /// Which keys open each wheel, from the menu's Keys.
+    pub keys: Keys,
+    /// The arrow keys move the wheel's highlight (macOS, Keys > Arrow Keys on the
+    /// Wheel). Off unless switched on there, as reading them needs Input Monitoring.
+    /// Windows and Linux read them always.
+    pub arrow_keys: bool,
+    /// Windows: the "Send to" entry for the keyboard wheel is taken out (it is there
+    /// unless switched off in Settings).
+    pub send_to_off: bool,
+}
+
+/// The keys held with Shift that open a wheel: Shift alone, with Option (Alt on Windows
+/// and Linux), or with Control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Combo {
+    Shift,
+    ShiftOption,
+    ShiftControl,
+}
+
+impl Combo {
+    pub const ALL: [Combo; 3] = [Combo::Shift, Combo::ShiftOption, Combo::ShiftControl];
+
+    /// The keys held with Shift now. Control wins when Option (Alt) is held too.
+    pub fn from_keys(option: bool, control: bool) -> Self {
+        match (option, control) {
+            (_, true) => Combo::ShiftControl,
+            (true, false) => Combo::ShiftOption,
+            (false, false) => Combo::Shift,
+        }
+    }
+
+    /// The name the menu and the settings file use.
+    pub fn key(self) -> &'static str {
+        match self {
+            Combo::Shift => "shift",
+            Combo::ShiftOption => "shift-option",
+            Combo::ShiftControl => "shift-control",
+        }
+    }
+
+    /// As the menu shows it, in the system's own names for the keys.
+    pub fn label(self) -> &'static str {
+        let mac = cfg!(target_os = "macos");
+        match self {
+            Combo::Shift => "Shift",
+            Combo::ShiftOption if mac => "Shift+Option",
+            Combo::ShiftOption => "Shift+Alt",
+            Combo::ShiftControl if mac => "Shift+Control",
+            Combo::ShiftControl => "Shift+Ctrl",
+        }
+    }
+}
+
+/// The keys that open each wheel, or None when that wheel is switched off. No two
+/// wheels share keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Keys {
+    pub formats: Option<Combo>,
+    pub tools: Option<Combo>,
+    pub actions: Option<Combo>,
+}
+
+impl Default for Keys {
+    fn default() -> Self {
+        Keys::STANDARD
+    }
+}
+
+impl Keys {
+    /// Shift for the formats, with Option (Alt) for the tools, with Control the actions.
+    pub const STANDARD: Keys =
+        Keys { formats: Some(Combo::Shift), tools: Some(Combo::ShiftOption), actions: Some(Combo::ShiftControl) };
+
+    pub fn get(&self, which: Which) -> Option<Combo> {
+        match which {
+            Which::Formats => self.formats,
+            Which::Tools => self.tools,
+            Which::Actions => self.actions,
+        }
+    }
+
+    fn slot(&mut self, which: Which) -> &mut Option<Combo> {
+        match which {
+            Which::Formats => &mut self.formats,
+            Which::Tools => &mut self.tools,
+            Which::Actions => &mut self.actions,
+        }
+    }
+
+    /// The wheel these keys open, if any (the first of Formats, Tools, Actions, should
+    /// a hand-edited settings file give two wheels the same keys).
+    pub fn wheel(&self, combo: Combo) -> Option<Which> {
+        Which::ALL.into_iter().find(|w| self.get(*w) == Some(combo))
+    }
+
+    /// Puts `which` on `combo`, or switches it off with None. A wheel that had those
+    /// keys takes the ones `which` had, so two wheels never share keys.
+    pub fn assign(&mut self, which: Which, combo: Option<Combo>) {
+        let old = self.get(which);
+        if let Some(combo) = combo {
+            for other in Which::ALL {
+                if other != which && self.get(other) == Some(combo) {
+                    *self.slot(other) = old;
+                }
+            }
+        }
+        *self.slot(which) = combo;
+    }
 }
 
 /// The colour the segment under the cursor lights up in. src/wheel.css has each one.
@@ -189,6 +300,12 @@ impl Transparency {
     /// How much white the segments carry.
     pub fn paint(self) -> f64 {
         0.40 - 0.34 * self.share()
+    }
+
+    /// Windows and Linux: how opaque the page's own disc is, with no blur behind it.
+    /// Never below half, so the words stay readable on a busy background.
+    pub fn disc(self) -> f64 {
+        0.92 - 0.40 * self.share()
     }
 }
 
@@ -296,12 +413,43 @@ mod tests {
     }
 
     #[test]
+    fn each_wheel_keeps_its_own_keys() {
+        // Older settings files have no keys: the standard ones.
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.keys, Keys::STANDARD);
+        let mut keys = Keys::STANDARD;
+        assert_eq!(keys.wheel(Combo::ShiftOption), Some(Which::Tools));
+        // Tools on Shift alone: the formats take Shift+Option, the keys Tools had.
+        keys.assign(Which::Tools, Some(Combo::Shift));
+        assert_eq!((keys.formats, keys.tools, keys.actions), (Some(Combo::ShiftOption), Some(Combo::Shift), Some(Combo::ShiftControl)));
+        // Actions off: Shift+Control opens nothing, and nothing else moves.
+        keys.assign(Which::Actions, None);
+        assert_eq!(keys.wheel(Combo::ShiftControl), None);
+        assert_eq!(keys.wheel(Combo::Shift), Some(Which::Tools));
+        // Actions back on Shift alone: Tools had them and Actions had none, so Tools is off.
+        keys.assign(Which::Actions, Some(Combo::Shift));
+        assert_eq!((keys.tools, keys.actions), (None, Some(Combo::Shift)));
+        let saved: Settings = serde_json::from_str(&serde_json::to_string(&Settings { keys, ..Settings::default() }).unwrap()).unwrap();
+        assert_eq!(saved.keys, keys);
+        assert_eq!(Combo::from_keys(true, true), Combo::ShiftControl);
+    }
+
+    #[test]
     fn the_shelf_is_on_unless_switched_off() {
         let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
         assert!(!old.shelf_off);
         let off = Settings { shelf_off: true, ..Settings::default() };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
         assert!(back.shelf_off);
+    }
+
+    #[test]
+    fn the_arrow_keys_are_off_unless_switched_on() {
+        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
+        assert!(!old.arrow_keys);
+        let on = Settings { arrow_keys: true, ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert!(back.arrow_keys);
     }
 
     #[test]

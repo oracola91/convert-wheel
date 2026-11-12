@@ -1,7 +1,14 @@
-//! The editing window some tools open first: Crop (the picture with a box to drag,
-//! turned a quarter at a time), Trim (a sound's or video's loudness and frames, with a
-//! start and an end to drag) and Compress to a Size (a size to type or pick). The page only sends numbers back; which file they
-//! apply to stays here, so the page can never name one.
+//! The editing window some tools open first: Crop (the picture, or a frame of a video,
+//! with a box to drag, turned a quarter at a time), Adjust (sliders for light and
+//! colour), Mark Up (drawing and blacking out on the picture; Black Out uses it on a
+//! frame of a video, with black boxes only), Trim (a sound's or
+//! video's loudness and frames, with a start and an end to drag; Bleep uses it too,
+//! for the part to bleep), Speed (a speed to pick), Split for sound and video (how many
+//! parts, or how long each), Compress to a Size (a size to type or pick), Reorder (a
+//! PDF's pages, to drag into a new order) and Info (what a file says about itself, and
+//! a sound's or PDF's tags to change). The page only sends numbers back (and Mark Up's
+//! words, Info's tags); which file they apply to stays here, so the page can never name
+//! one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -42,21 +49,43 @@ enum View {
     /// The picture's size upright, in pixels (the box comes back in these), and a JPEG
     /// of it, at most 1400 pixels across, as a data: URL.
     Crop { width: u32, height: u32, preview: String },
+    /// The same picture, for Adjust's sliders.
+    Adjust { preview: String },
+    /// The same picture and its size, for Mark Up's drawing (sent back in its pixels).
+    /// With `video`, a frame of a video for Black Out: the window offers only black
+    /// boxes, which cover the same place for the whole video.
+    Markup { width: u32, height: u32, preview: String, video: bool },
     /// The length (the times come back in milliseconds), the loudness along it, and for
     /// a video eight frames; the sound as a small MP3 to play, when not too long.
-    Trim { length_ms: u64, peaks: Vec<u8>, strip: Option<String>, sound: Option<String> },
+    /// With `bleep`, the same window picks the part Bleep turns into a tone.
+    Trim { length_ms: u64, peaks: Vec<u8>, strip: Option<String>, sound: Option<String>, bleep: bool },
     /// The file's size, what it is ("picture", "video", "sound"), for sound and video
     /// the least it can be compressed to, and for a picture the sizes under which it
     /// will probably get smaller, and small and blurry, to warn about.
     Size { bytes: u64, what: &'static str, least: Option<u64>, smaller_below: Option<u64>, blurry_below: Option<u64> },
+    /// How long it plays, what it is ("video", "sound"), and the speeds offered.
+    Speed { length_ms: u64, what: &'static str, speeds: &'static [u16] },
+    /// How long it plays and what it is, to split into parts.
+    Parts { length_ms: u64, what: &'static str },
+    /// A small PNG of each page of a PDF, in page order, as data: URLs. The new order
+    /// comes back as page numbers from 1.
+    Order { pages: Vec<String> },
+    /// What the file is, what it says (label, value) and the tags that can be changed.
+    Info { what: &'static str, facts: Vec<(String, String)>, fields: Vec<convert::info::Field> },
 }
 
 impl View {
     fn page(&self) -> &'static str {
         match self {
             View::Crop { .. } => "editor.html",
+            View::Adjust { .. } => "adjust.html",
+            View::Markup { .. } => "markup.html",
             View::Trim { .. } => "trim.html",
             View::Size { .. } => "size.html",
+            View::Speed { .. } => "speed.html",
+            View::Parts { .. } => "parts.html",
+            View::Order { .. } => "order.html",
+            View::Info { .. } => "info.html",
         }
     }
 
@@ -64,6 +93,11 @@ impl View {
     fn window(&self) -> ((f64, f64), (f64, f64)) {
         match self {
             View::Size { .. } => ((480.0, 370.0), (420.0, 330.0)),
+            View::Speed { .. } => ((480.0, 300.0), (420.0, 280.0)),
+            View::Parts { .. } => ((480.0, 360.0), (420.0, 330.0)),
+            View::Info { .. } => ((480.0, 560.0), (420.0, 360.0)),
+            // Room for all of Mark Up's tools on one row.
+            View::Markup { .. } => ((880.0, 660.0), (640.0, 480.0)),
             _ => ((780.0, 620.0), (560.0, 460.0)),
         }
     }
@@ -71,8 +105,16 @@ impl View {
     fn title(&self, name: &str) -> String {
         match self {
             View::Crop { .. } => format!("Crop: {name}"),
+            View::Adjust { .. } => format!("Adjust: {name}"),
+            View::Markup { video: true, .. } => format!("Black out: {name}"),
+            View::Markup { .. } => format!("Mark up: {name}"),
+            View::Trim { bleep: true, .. } => format!("Bleep: {name}"),
             View::Trim { .. } => format!("Trim: {name}"),
             View::Size { .. } => format!("Compress to a size: {name}"),
+            View::Speed { .. } => format!("Speed: {name}"),
+            View::Parts { .. } => format!("Split: {name}"),
+            View::Order { .. } => format!("Reorder: {name}"),
+            View::Info { .. } => format!("Info: {name}"),
         }
     }
 }
@@ -85,15 +127,35 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Trim and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Black Out, Trim, Bleep, Speed, Split, Reorder, Info and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
     thread::spawn(move || {
         let view = if tool == "tool:target" {
             size_view(&path)
-        } else if tool == "tool:crop" {
+        } else if tool == "tool:speed" {
+            play_length(&path).map(|(length_ms, what)| View::Speed { length_ms, what, speeds: convert::SPEEDS })
+        } else if tool == "tool:parts" {
+            play_length(&path).map(|(length_ms, what)| View::Parts { length_ms, what })
+        } else if tool == "tool:order" {
+            convert::page_pictures(&path)
+                .map(|pngs| View::Order { pages: pngs.iter().map(|png| data_url("image/png", png)).collect() })
+        } else if tool == "tool:info" {
+            convert::info::read(&path).map(|i| View::Info { what: i.what, facts: i.facts, fields: i.fields })
+        } else if tool == "tool:markup" {
             convert::preview(&path)
+                .map(|(width, height, jpeg)| View::Markup { width, height, preview: data_url("image/jpeg", &jpeg), video: false })
+        } else if tool == "tool:blackout" {
+            convert::blackout_preview(&path)
+                .map(|(width, height, jpeg)| View::Markup { width, height, preview: data_url("image/jpeg", &jpeg), video: true })
+        } else if tool == "tool:adjust" {
+            convert::preview(&path).map(|(_, _, jpeg)| View::Adjust { preview: data_url("image/jpeg", &jpeg) })
+        } else if tool == "tool:crop" {
+            // A video is cropped on one of its frames.
+            let ext = crate::formats::extension(&path).unwrap_or_default();
+            let video = crate::formats::kind_of(&ext) == Some(crate::formats::Kind::Video);
+            if video { convert::video_preview(&path) } else { convert::preview(&path) }
                 .map(|(width, height, jpeg)| View::Crop { width, height, preview: data_url("image/jpeg", &jpeg) })
         } else {
             convert::media_preview(&path).map(|m| View::Trim {
@@ -101,6 +163,7 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
                 peaks: m.peaks,
                 strip: m.strip.map(|jpeg| data_url("image/jpeg", &jpeg)),
                 sound: m.sound.map(|mp3| data_url("audio/mpeg", &mp3)),
+                bleep: tool == "tool:bleep",
             })
         };
         match view {
@@ -161,6 +224,7 @@ fn size_view(path: &Path) -> Result<View, String> {
     let what = match crate::formats::kind_of(&ext) {
         Some(crate::formats::Kind::Video) => "video",
         Some(crate::formats::Kind::Audio) => "sound",
+        Some(crate::formats::Kind::Pdf) => "PDF",
         _ => "picture",
     };
     let warnings = if what == "picture" { convert::picture_warnings(path) } else { None };
@@ -171,6 +235,13 @@ fn size_view(path: &Path) -> Result<View, String> {
         smaller_below: warnings.map(|w| w.0),
         blurry_below: warnings.map(|w| w.1),
     })
+}
+
+/// For Speed and Split: how long the file plays, and whether it is a video or a sound.
+fn play_length(path: &Path) -> Result<(u64, &'static str), String> {
+    let ext = crate::formats::extension(path).unwrap_or_default();
+    let what = if crate::formats::kind_of(&ext) == Some(crate::formats::Kind::Video) { "video" } else { "sound" };
+    Ok((convert::length_ms(path)?, what))
 }
 
 fn close_window(app: &AppHandle) {
@@ -217,8 +288,17 @@ pub fn editor_apply(app: AppHandle, editing: State<Editing>, crop: Crop) -> Resu
 #[tauri::command]
 pub fn editor_trim(app: AppHandle, editing: State<Editing>, trim: Trim) -> Result<(), String> {
     finish(&app, &editing, "tool:trim", |view| match view {
-        View::Trim { length_ms, .. } => trim.check(*length_ms).map(|()| Edit::Trim(trim)),
+        View::Trim { length_ms, bleep: false, .. } => trim.check(*length_ms).map(|()| Edit::Trim(trim)),
         _ => Err("this window doesn't trim".into()),
+    })
+}
+
+/// Bleep: the part to turn into a tone, checked like Trim's part to keep.
+#[tauri::command]
+pub fn editor_bleep(app: AppHandle, editing: State<Editing>, part: Trim) -> Result<(), String> {
+    finish(&app, &editing, "tool:bleep", |view| match view {
+        View::Trim { length_ms, bleep: true, .. } => part.check(*length_ms).map(|()| Edit::Trim(part)),
+        _ => Err("this window doesn't bleep".into()),
     })
 }
 
@@ -229,6 +309,74 @@ pub fn editor_size(app: AppHandle, editing: State<Editing>, bytes: u64) -> Resul
         View::Size { bytes: own, .. } if bytes >= 1_000 && bytes < *own => Ok(Edit::Size(bytes)),
         View::Size { .. } => Err("pick a size under the file's own, of at least 1 KB".into()),
         _ => Err("this window doesn't compress".into()),
+    })
+}
+
+/// Speed: one of the speeds the window offers.
+#[tauri::command]
+pub fn editor_speed(app: AppHandle, editing: State<Editing>, percent: u16) -> Result<(), String> {
+    finish(&app, &editing, "tool:speed", |view| match view {
+        View::Speed { speeds, .. } if speeds.contains(&percent) => Ok(Edit::Speed(percent)),
+        View::Speed { .. } => Err("pick one of the speeds offered".into()),
+        _ => Err("this window doesn't change speed".into()),
+    })
+}
+
+/// Split for sound and video: parts of this many milliseconds, if that makes from two
+/// to the most parts it takes.
+#[tauri::command]
+pub fn editor_parts(app: AppHandle, editing: State<Editing>, every_ms: u64) -> Result<(), String> {
+    finish(&app, &editing, "tool:parts", |view| match view {
+        View::Parts { length_ms, .. } if convert::parts_count(*length_ms, every_ms).is_some() => Ok(Edit::Parts(every_ms)),
+        View::Parts { .. } => Err("that makes fewer than two parts, or too many".into()),
+        _ => Err("this window doesn't split".into()),
+    })
+}
+
+/// Adjust: the sliders, within what the window offers, with something changed.
+#[tauri::command]
+pub fn editor_adjust(app: AppHandle, editing: State<Editing>, adjust: convert::Adjust) -> Result<(), String> {
+    finish(&app, &editing, "tool:adjust", |view| match view {
+        View::Adjust { .. } => adjust.check().map(|()| Edit::Adjust(adjust)),
+        _ => Err("this window doesn't adjust".into()),
+    })
+}
+
+/// Mark Up: the shapes, every one inside the picture and from the window's tools.
+#[tauri::command]
+pub fn editor_markup(app: AppHandle, editing: State<Editing>, markup: convert::markup::Markup) -> Result<(), String> {
+    finish(&app, &editing, "tool:markup", |view| match view {
+        View::Markup { width, height, video: false, .. } => markup.check(*width, *height).map(|()| Edit::Markup(markup)),
+        _ => Err("this window doesn't mark up".into()),
+    })
+}
+
+/// Black Out: black boxes only, each inside the video's frame, then the job is queued.
+#[tauri::command]
+pub fn editor_blackout(app: AppHandle, editing: State<Editing>, markup: convert::markup::Markup) -> Result<(), String> {
+    finish(&app, &editing, "tool:blackout", |view| match view {
+        View::Markup { width, height, video: true, .. } => {
+            markup.video_boxes(*width, *height).map(|_| Edit::Markup(markup))
+        }
+        _ => Err("this window doesn't black out a video".into()),
+    })
+}
+
+/// Reorder: every page once, in an order that isn't the old one.
+#[tauri::command]
+pub fn editor_order(app: AppHandle, editing: State<Editing>, order: Vec<u32>) -> Result<(), String> {
+    finish(&app, &editing, "tool:order", |view| match view {
+        View::Order { pages } => convert::check_order(&order, pages.len()).map(|()| Edit::Order(order)),
+        _ => Err("this window doesn't reorder".into()),
+    })
+}
+
+/// Info: changed tags, only ones the window offered for this file.
+#[tauri::command]
+pub fn editor_info(app: AppHandle, editing: State<Editing>, changes: Vec<(String, String)>) -> Result<(), String> {
+    finish(&app, &editing, "tool:info", |view| match view {
+        View::Info { fields, .. } => convert::info::check(&changes, fields).map(|()| Edit::Info(changes)),
+        _ => Err("this window doesn't change tags".into()),
     })
 }
 
