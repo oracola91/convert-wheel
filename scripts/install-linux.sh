@@ -1,7 +1,7 @@
 #!/bin/sh
 # Sets up Pirouette (called Convert Wheel up to 0.3.x) on Ubuntu or Debian in one go:
 #
-#   curl -fsSL https://raw.githubusercontent.com/oracola91/convert-wheel/main/scripts/install-linux.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/oracola91/pirouette/main/scripts/install-linux.sh | sh
 #
 # 1. the converters: ffmpeg, ImageMagick, LibreOffice (Writer, Calc, Impress), MuPDF,
 #    bsdtar (archives) and pandoc, pandoc from its own releases unless an up-to-date
@@ -22,7 +22,7 @@
 
 set -eu
 
-REPO=oracola91/convert-wheel
+REPO=oracola91/pirouette
 EXE=/usr/bin/convert-wheel
 # The public half of the project's update key: the same one built into the app.
 UPDATE_KEY=RWSSm9yM9UYMp00bQLUwwNEMjwlQkpEI/3KR9vIf38mMNQSY7YaRG7Tf

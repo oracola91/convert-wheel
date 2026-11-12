@@ -2,7 +2,7 @@
 
 Called Convert Wheel before. On Windows and Linux it kept that name up to 0.3.x; copies there take the new name when they update (the old copy is removed, settings stay). Files up to 0.3.x are named `Convert.Wheel_…`.
 
-Every version is on the repo's [Releases page](https://github.com/oracola91/convert-wheel/releases).
+Every version is on the repo's [Releases page](https://github.com/oracola91/pirouette/releases).
 
 **From version 0.1.1 the app updates itself.** It asks github.com for the newest version shortly after it starts and then once a day; when a new version is out, a notification says so and the menu offers **Install Update … and Restart**. So install once, by hand, and later versions arrive through the app. Copies of 0.1.0 have no updater and need one manual install of 0.1.1 or newer.
 
@@ -87,7 +87,7 @@ Or install only the ones you need, when you need them: when a drop needs a missi
 **One command (Ubuntu, Debian):** in a terminal on the desktop, as yourself (not root):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/oracola91/convert-wheel/main/scripts/install-linux.sh | sh
+curl -fsSL https://raw.githubusercontent.com/oracola91/pirouette/main/scripts/install-linux.sh | sh
 ```
 
 It asks for your password, then installs the converters (pandoc from pandoc's own releases, see below) and the newest release, turns on Open at Login, adds the keyboard shortcut Super+Shift+C on GNOME, and starts the app. Before installing the release it checks the release's signature, made with the project's update key (the same check the app makes on every update), and the version in it; a file that fails is not installed. To install a given version instead of the newest, add it at the end: `... | sh -s -- 0.2.0`. Running it again is safe: it installs what's missing and turns Open at Login back on, and keeps a shortcut key you changed. To read it before it runs: `curl -fsSLO <the same address>`, open `install-linux.sh`, then `sh install-linux.sh`.
