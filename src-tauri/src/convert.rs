@@ -1662,20 +1662,42 @@ fn utf16_text(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
-/// Pages' bundle id: its files can only be written by Pages itself.
+/// Pages' bundle ids: the Mac app's own, and the one of the single Pages for iPhone, iPad
+/// and Mac that the App Store sells now (checked 2026-11-13: "Requires macOS 26.0 or
+/// later"). Pages files can only be written by Pages itself.
 #[cfg(target_os = "macos")]
-const PAGES_ID: &str = "com.apple.iWork.Pages";
+const PAGES_IDS: [&str; 2] = ["com.apple.iWork.Pages", "com.apple.Pages"];
+
+/// Pages in the App Store app (id361309726, checked 2026-11-13: the page covers Mac).
+pub const PAGES_STORE: &str = "macappstore://apps.apple.com/app/id361309726";
+
+/// How a conversion's error starts when Pages is missing; `converters::offer` reads it.
+pub const PAGES_MISSING: &str = "Pages isn't installed";
+
+/// The bundle id of the Pages on this Mac, if there is one.
+#[cfg(target_os = "macos")]
+fn pages_app() -> Option<&'static str> {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::NSString;
+    let workspace = NSWorkspace::sharedWorkspace();
+    PAGES_IDS.into_iter().find(|id| workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(id)).is_some())
+}
 
 /// Whether Apple's Pages app is on this Mac. Elsewhere there is no Pages.
 pub fn pages_installed() -> bool {
     #[cfg(target_os = "macos")]
-    {
-        use objc2_app_kit::NSWorkspace;
-        use objc2_foundation::NSString;
-        NSWorkspace::sharedWorkspace().URLForApplicationWithBundleIdentifier(&NSString::from_str(PAGES_ID)).is_some()
-    }
+    return pages_app().is_some();
     #[cfg(not(target_os = "macos"))]
     false
+}
+
+/// Opens the App Store app on Pages (macOS), for Settings' Get Pages… and a drop on
+/// Pages without it.
+pub fn open_pages_store() {
+    #[cfg(target_os = "macos")]
+    if let Err(e) = Command::new("/usr/bin/open").arg(PAGES_STORE).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        crate::log::line(&format!("couldn't open the App Store: {e}"));
+    }
 }
 
 /// Opens a Word file in Pages and saves it as a Pages file, by AppleScript. Pages is
@@ -1685,8 +1707,8 @@ pub fn pages_installed() -> bool {
 const PAGES_SCRIPT: &str = r#"on run argv
 	set inFile to POSIX file (item 1 of argv)
 	set outFile to POSIX file (item 2 of argv)
-	set wasRunning to application id "com.apple.iWork.Pages" is running
-	tell application id "com.apple.iWork.Pages"
+	set wasRunning to application id "PAGES_ID" is running
+	tell application id "PAGES_ID"
 		with timeout of 150 seconds
 			set theDoc to open inFile
 			save theDoc in outFile
@@ -1702,7 +1724,7 @@ fn check_pages() -> Result<(), String> {
     if pages_installed() {
         Ok(())
     } else if cfg!(target_os = "macos") {
-        Err("Pages isn't installed: it is free in the App Store".into())
+        Err(format!("{PAGES_MISSING}: it is free in the App Store"))
     } else {
         Err("Pages files can only be made on a Mac with Pages".into())
     }
@@ -1712,8 +1734,10 @@ fn to_pages(docx: &Path, out: &Path, work: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         check_pages()?;
+        let id = pages_app().ok_or(PAGES_MISSING)?;
         let script = work.join("pages.applescript");
-        fs::write(&script, PAGES_SCRIPT).map_err(|e| format!("work file: {e}"))?;
+        // The id is one of PAGES_IDS, never anything from the file.
+        fs::write(&script, PAGES_SCRIPT.replace("PAGES_ID", id)).map_err(|e| format!("work file: {e}"))?;
         let mut cmd = Command::new("/usr/bin/osascript");
         cmd.arg(&script).arg(docx).arg(out);
         return match run_tool(cmd, OFFICE) {
@@ -5667,6 +5691,9 @@ mod tests {
             let err = convert(&src, "pages", None, work.path()).unwrap_err();
             if cfg!(target_os = "macos") {
                 assert_eq!(err, "Pages isn't installed: it is free in the App Store");
+                // converters::offer knows it by this start, and opens the App Store.
+                assert!(err.starts_with(PAGES_MISSING));
+                assert!(PAGES_STORE.starts_with("macappstore://apps.apple.com/app/id"));
             } else {
                 assert_eq!(err, ".txt files can't become .pages");
             }

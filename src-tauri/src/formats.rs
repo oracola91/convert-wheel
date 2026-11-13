@@ -44,8 +44,8 @@ impl Kind {
     }
 }
 
-/// Pages files are written by Apple's Pages app, so they are offered on a Mac only, and
-/// there only while Pages is installed (`available`).
+/// Pages files are written by Apple's Pages app, so they are offered on a Mac only. A drop
+/// on Pages without it opens the App Store on Pages (converters::offer).
 #[cfg(target_os = "macos")]
 const DOC_OUT: &[&str] = &["pdf", "docx", "odt", "html", "md", "txt", "epub", "pages"];
 #[cfg(not(target_os = "macos"))]
@@ -54,12 +54,6 @@ const DOC_OUT: &[&str] = &["pdf", "docx", "odt", "html", "md", "txt", "epub"];
 const PDF_OUT: &[&str] = &["docx", "jpg", "png", "txt", "svg", "md", "epub", "pptx", "xlsx", "pages"];
 #[cfg(not(target_os = "macos"))]
 const PDF_OUT: &[&str] = &["docx", "jpg", "png", "txt", "svg", "md", "epub", "pptx", "xlsx"];
-
-/// Whether this computer can make `format` now. Only Pages depends on an app being
-/// there; every other format's converter is installed on demand.
-pub fn available(format: &str) -> bool {
-    format != "pages" || crate::convert::pages_installed()
-}
 
 /// What each kind of file is read from and can be turned into.
 const KINDS: &[(Kind, &[&str], &[&str])] = &[
@@ -443,8 +437,6 @@ mod tests {
         assert_eq!(formats_for(&v(&["/tmp/a.docx"]), all_shown).contains(&"pages"), cfg!(target_os = "macos"));
         // A Pages file doesn't become Pages again.
         assert!(!formats_for(&v(&["/tmp/a.pages"]), all_shown).contains(&"pages"));
-        assert!(!available("pages") || cfg!(target_os = "macos"));
-        assert!(available("xlsx"));
         // RTFD folders and text clippings are documents.
         assert_eq!(formats_for(&v(&["/tmp/Notes.rtfd"]), all_shown), DOC_OUT);
         assert_eq!(kind_of(&extension(Path::new("/tmp/Clip.textClipping")).unwrap()), Some(Kind::Doc));
