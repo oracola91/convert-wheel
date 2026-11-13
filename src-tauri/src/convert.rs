@@ -1703,12 +1703,27 @@ pub fn open_pages_store() {
 /// Opens a Word file in Pages and saves it as a Pages file, by AppleScript. Pages is
 /// quit again if it wasn't running before. macOS asks once whether the app may control
 /// Pages (System Settings > Privacy & Security > Automation).
+///
+/// Pages is started first and asked until it answers: an `open` that starts Pages
+/// itself gets back a placeholder that can't be saved ("doesn't understand the save
+/// message", Pages 15.4, 2026-11-13); once Pages is up, `open` gives the document.
 #[cfg(target_os = "macos")]
 const PAGES_SCRIPT: &str = r#"on run argv
 	set inFile to POSIX file (item 1 of argv)
 	set outFile to POSIX file (item 2 of argv)
 	set wasRunning to application id "PAGES_ID" is running
 	tell application id "PAGES_ID"
+		launch
+		set ready to false
+		repeat 120 times
+			try
+				count of documents
+				set ready to true
+				exit repeat
+			end try
+			delay 0.25
+		end repeat
+		if not ready then error "Pages didn't start within 30 seconds" number -1712
 		with timeout of 150 seconds
 			set theDoc to open inFile
 			save theDoc in outFile
