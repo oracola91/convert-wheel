@@ -114,6 +114,17 @@ function general(v) {
     group('', ...rows),
     group('Open the wheel from the keyboard', keyboardRow),
   ];
+  // Pages files come from Apple's Pages app, which only the App Store has (macOS).
+  const pagesRow = v.pages === null
+    ? null
+    : v.pages
+      ? row('Pages is installed, for Pages files', h('span', { class: 'note' }, ''))
+      : row(
+        'Pages, for Pages files: not installed',
+        h('button', { type: 'button', class: 'action', id: 'get-pages', onclick: () => invoke('settings_action', { action: 'get-pages' }).catch((e) => showProblem(String(e))) }, 'Get Pages…'),
+        'Free in the App Store. Open it once after installing, then come back here.',
+      );
+  if (!v.converters && pagesRow) parts.push(group('Converters', pagesRow));
   if (v.converters) {
     const button = h(
       'button',
@@ -161,7 +172,7 @@ function general(v) {
         'All of them in one go (LibreOffice is a large download). A notification says when they are in.',
       )
       : row('All converters are installed', h('span', { class: 'note' }, ''));
-    parts.push(group('Converters', installRow, row('Newer versions of ffmpeg, ImageMagick and the others', button, 'Only those the package manager installed. A notification says what changed.')));
+    parts.push(group('Converters', installRow, pagesRow, row('Newer versions of ffmpeg, ImageMagick and the others', button, 'Only those the package manager installed. A notification says what changed.')));
   }
   return parts;
 }

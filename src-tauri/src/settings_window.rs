@@ -113,6 +113,8 @@ pub struct View {
     icon_hidden: bool,
     /// Hold to Convert; None where the app can't see a drag start (Wayland).
     hold: Option<bool>,
+    /// macOS: whether Pages is installed, for Pages files. None elsewhere.
+    pages: Option<bool>,
 }
 
 /// One change from the page.
@@ -207,6 +209,7 @@ fn view(app: &AppHandle) -> View {
         terminals: terminals.iter().map(|t| Choice { key: t.key, label: t.name }).collect(),
         icon_hidden: s.hide_icon,
         hold: hold_here().then_some(s.hold_to_convert),
+        pages: cfg!(target_os = "macos").then(crate::convert::pages_installed),
     }
 }
 
@@ -364,8 +367,8 @@ pub fn settings_change(app: AppHandle, change: Change) -> Result<View, String> {
     Ok(view(&app))
 }
 
-/// The window's buttons: "log" (Show Log), "update-converters", "install-all", and
-/// "close" (Esc).
+/// The window's buttons: "log" (Show Log), "update-converters", "install-all",
+/// "get-pages" (macOS) and "close" (Esc).
 #[tauri::command]
 pub fn settings_action(app: AppHandle, action: String) -> Result<(), String> {
     match action.as_str() {
@@ -380,6 +383,11 @@ pub fn settings_action(app: AppHandle, action: String) -> Result<(), String> {
         }
         "install-all" if converters::available() => {
             converters::install_all(&app);
+            Ok(())
+        }
+        // Pages comes from the App Store: it opens on Pages.
+        "get-pages" if cfg!(target_os = "macos") => {
+            crate::convert::open_pages_store();
             Ok(())
         }
         "close" => {

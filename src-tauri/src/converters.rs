@@ -142,6 +142,12 @@ static INSTALLING: AtomicBool = AtomicBool::new(false);
 /// converter is missing and this system can install it, the menu offers it and the
 /// message points there instead of at a command.
 pub fn offer(app: &AppHandle, error: String) -> String {
+    // Pages comes from the App Store, never from a package manager: the App Store opens
+    // on it, and the message says what to do there.
+    if cfg!(target_os = "macos") && error.starts_with(convert::PAGES_MISSING) {
+        convert::open_pages_store();
+        return PAGES_HINT.to_string();
+    }
     // A converter the package manager can't install keeps the message that says where
     // to get it (Ghostscript on Windows).
     let Some(c) = convert::missing(&error).filter(|c| available() && updatable(c)) else {
@@ -157,6 +163,9 @@ pub fn offer(app: &AppHandle, error: String) -> String {
     show(app);
     pointer(c)
 }
+
+/// What a drop on Pages without Pages says, with the App Store opening on it.
+const PAGES_HINT: &str = "Pages files are made by Apple's Pages app. The App Store is opening on it (free): get it, open it once, then drop the file again.";
 
 fn pointer(c: &Converter) -> String {
     format!("{} is not installed. Choose Install {} in the {} menu.", c.name, c.name, crate::APP_NAME)

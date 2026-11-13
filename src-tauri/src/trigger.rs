@@ -269,8 +269,7 @@ fn items_for(app: &AppHandle, paths: &[String], which: Which) -> Vec<&'static st
     match which {
         Which::Formats => {
             let settings = app.state::<crate::settings::Store>().get();
-            // Pages only while Apple's Pages app is installed.
-            formats::formats_for(paths, |kind, f| settings.shows(kind, f) && formats::available(f))
+            formats::formats_for(paths, |kind, f| settings.shows(kind, f))
         }
         Which::Tools => formats::tools_for(paths),
         Which::Actions => formats::actions_for(paths),
