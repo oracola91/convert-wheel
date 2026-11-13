@@ -52,7 +52,7 @@ pub struct Ivars {
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ConvertWheelFloatCard"]
+    #[name = "PirouetteFloatCard"]
     #[ivars = Ivars]
     pub struct CardView;
 

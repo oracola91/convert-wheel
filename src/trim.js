@@ -3,7 +3,7 @@
 // part to play before trimming. For Bleep the same window picks the part to bleep
 // instead. The app hands over the length, the loudness, the frames and a small MP3;
 // this page sends back only the two times, in milliseconds.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

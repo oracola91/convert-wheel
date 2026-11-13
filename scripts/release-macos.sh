@@ -6,9 +6,9 @@
 # never find a latest.json without their system in it. (GitHub's Mac machines cost ten
 # times the minutes, so the Mac build happens here.)
 #
-# Needs the update signing key: ~/.tauri/convert-wheel-updater.key, with its password
-# in the macOS Keychain (service "convert-wheel-updater-key"). Only the final signing
-# command sees them, never the build. And the code-signing certificate "Convert Wheel
+# Needs the update signing key: ~/.tauri/pirouette-updater.key, with its password
+# in the macOS Keychain (service "pirouette-updater-key"). Only the final signing
+# command sees them, never the build. And the code-signing certificate "Pirouette
 # Signing" in the login keychain (scripts/macos-signing-cert.sh).
 set -eu
 cd "$(dirname "$0")/.."
@@ -23,14 +23,14 @@ remote=$(git ls-remote origin "refs/tags/$tag^{}" | cut -f1)
 [ -n "$remote" ] && [ "$remote" = "$(git rev-parse HEAD)" ] || { echo "Local $tag differs from GitHub's: fetch the tags again."; exit 1; }
 [ "$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null)" = "true" ] || { echo "No draft release $tag: push the tag and wait for its build (or it is already published)."; exit 1; }
 
-key="$HOME/.tauri/convert-wheel-updater.key"
+key="$HOME/.tauri/pirouette-updater.key"
 [ -f "$key" ] || { echo "Update signing key missing: $key"; exit 1; }
 
 # Every release is signed with the same certificate, so macOS keeps the permissions it
 # gave the app across updates.
-security find-certificate -c "Convert Wheel Signing" >/dev/null 2>&1 ||
+security find-certificate -c "Pirouette Signing" >/dev/null 2>&1 ||
   { echo "Code-signing certificate missing: run scripts/macos-signing-cert.sh, or import its backup."; exit 1; }
-export APPLE_SIGNING_IDENTITY="Convert Wheel Signing"
+export APPLE_SIGNING_IDENTITY="Pirouette Signing"
 
 # The exact tool versions from the lock files, and no install scripts.
 npm ci --ignore-scripts
@@ -38,9 +38,6 @@ npx --no-install tauri build --bundles app -- --locked
 
 bundle="src-tauri/target/release/bundle/macos"
 out="src-tauri/target/release/bundle/dmg"
-# macOS ships as Pirouette from 0.3.0 (tauri.conf.json productName), Windows and Linux
-# after 0.3.x (they were Convert Wheel). The signing certificate and update key keep
-# their old names: macOS keys its permissions to the certificate.
 dmg="$out/Pirouette_${version}_aarch64.dmg"
 upd="$out/Pirouette_${version}_aarch64.app.tar.gz"
 mkdir -p "$out"
@@ -59,7 +56,7 @@ rm -rf "$staging"
 
 # Sign: the only command that sees the key. The signature records the version.
 TAURI_SIGNING_PRIVATE_KEY=$(cat "$key") \
-TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(security find-generic-password -a convert-wheel -s convert-wheel-updater-key -w) \
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(security find-generic-password -a pirouette -s pirouette-updater-key -w) \
   npx --no-install tauri signer sign --app-version "$version" "$upd" >/dev/null
 
 work=$(mktemp -d)

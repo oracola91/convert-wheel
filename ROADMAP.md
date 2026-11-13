@@ -46,7 +46,7 @@ Status, 2026-11-10: stages 1 to 8 are built (on branches, not yet released). Sta
 - Text from scanned PDFs and photos (OCR), into text, Word or a searchable PDF.
 - A second way in: the right-click menu of Finder, File Explorer and the Linux file managers.
 - Presets: a named set of tool and format steps, run with one drop.
-- The command line can do everything the wheels do (`convert-wheel --convert` today).
+- The command line can do everything the wheels do (`pirouette --convert` today).
 - Translations and full keyboard and screen-reader support.
 
 ## How each item ships

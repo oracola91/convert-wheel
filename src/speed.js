@@ -1,7 +1,7 @@
 // The Speed window: how long the file plays, a speed to pick, and how long it will play
 // then. The app hands over the length and the speeds it takes; this page sends back
 // only the speed chosen, in percent.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

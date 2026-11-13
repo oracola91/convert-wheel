@@ -133,7 +133,7 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         return Err("this is not a regular file".into());
     }
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let out = work.path().join(format!("result.{out_ext}"));
@@ -1093,7 +1093,7 @@ fn video_crop_filter(crop: &Crop, fit: Option<&str>) -> String {
 /// size, then made into the preview the way a picture's is.
 pub fn video_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let frame = work.path().join("frame.jpg");
@@ -1121,7 +1121,7 @@ fn frame_at(src: &Path, ms: u64, out: &Path) -> Result<(), String> {
 /// Snapshot's window: the frame at `ms`, made into the preview the way a picture's is.
 pub fn frame_preview(src: &Path, ms: u64) -> Result<Vec<u8>, String> {
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let frame = work.path().join("frame.jpg");
@@ -1145,7 +1145,7 @@ pub fn moment_text(ms: u64) -> String {
 /// upright, with its size, made into the preview the way a picture's is.
 pub fn blackout_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let frame = work.path().join("frame.jpg");
@@ -1202,7 +1202,7 @@ fn atempo(percent: u16) -> String {
 pub fn length_ms(src: &Path) -> Result<u64, String> {
     tool("ffprobe")?;
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let length = media_length(src, &work.path().join("probe")).ok_or("can't tell how long it plays")?;
@@ -2188,7 +2188,7 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
         return Err(format!("One PDF takes up to {MAX_PICTURES} pictures"));
     }
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let deadline = Instant::now() + PDF_TOTAL;
@@ -2254,7 +2254,7 @@ fn collage(srcs: &[PathBuf], only: &str, save_in: Option<&Path>, fallback: &Path
         return Err(format!("Collage takes up to {MAX_COLLAGE} pictures"));
     }
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let magick = magick()?;
@@ -2571,7 +2571,7 @@ fn join_media(srcs: &[PathBuf], only: &str, save_in: Option<&Path>, fallback: &P
         return Err(format!("Join takes up to {MAX_JOIN} files"));
     }
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let (width, height, rate) = if video {
@@ -3819,14 +3819,14 @@ fn soffice() -> Result<PathBuf, String> {
 /// Our own working files: LibreOffice's profile and, on macOS, the font list.
 fn cache_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
-        home().join("Library/Caches/local.convertwheel")
+        home().join("Library/Caches/io.github.oracola91.pirouette")
     } else if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(home).join("convertwheel")
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(home).join("pirouette")
     } else {
         std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home().join(".cache"))
-            .join("convertwheel")
+            .join("pirouette")
     }
 }
 
@@ -4136,10 +4136,10 @@ mod tests {
     #[test]
     fn paths_are_kept_out_of_messages() {
         let src = Path::new("/Users/someone/Secret Projects/clip.mov");
-        let work = Path::new("/tmp/convert-wheel-abc");
+        let work = Path::new("/tmp/pirouette-abc");
         let msg = "ffmpeg failed: file:/Users/someone/Secret Projects/clip.mov: Invalid data";
         assert_eq!(redact(msg, src, work), "ffmpeg failed: clip.mov: Invalid data");
-        assert_eq!(redact("magick: /tmp/convert-wheel-abc/input.png bad", src, work), "magick: input.png bad");
+        assert_eq!(redact("magick: /tmp/pirouette-abc/input.png bad", src, work), "magick: input.png bad");
     }
 
     #[test]
@@ -4350,7 +4350,7 @@ mod tests {
             return;
         };
         let work = tempfile::tempdir().unwrap();
-        let code = qrcode::QrCode::new(b"https://example.com/convert-wheel").unwrap();
+        let code = qrcode::QrCode::new(b"https://example.com/pirouette").unwrap();
         let colors = code.to_colors();
         let (n, scale, quiet) = (code.width(), 8, 4);
         let side = (n + 2 * quiet) * scale;
@@ -4370,7 +4370,7 @@ mod tests {
         run(make, QUICK).unwrap();
         let text = convert(&png, "tool:qr", None, work.path()).unwrap();
         assert_eq!(text, work.path().join("code (QR code).txt"));
-        assert_eq!(fs::read_to_string(&text).unwrap(), "https://example.com/convert-wheel\n");
+        assert_eq!(fs::read_to_string(&text).unwrap(), "https://example.com/pirouette\n");
 
         let blank = work.path().join("blank.png");
         let mut make = Command::new(&magick);

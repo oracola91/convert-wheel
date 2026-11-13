@@ -1,6 +1,6 @@
 // The Password window: a password for the PDF, typed twice. It goes to the app once,
 // when the button is pressed; this page keeps it nowhere and clears the fields then.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

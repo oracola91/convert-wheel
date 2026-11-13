@@ -542,47 +542,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "convert-wheel"
-version = "0.3.0"
-dependencies = [
- "base64 0.22.1",
- "block2",
- "flate2",
- "gdk",
- "glib",
- "gtk",
- "libc",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "objc2-quick-look-thumbnailing",
- "objc2-service-management",
- "objc2-user-notifications",
- "plist",
- "png",
- "qrcode",
- "resvg",
- "rfd",
- "rqrr",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tempfile",
- "vtracer",
- "webkit2gtk",
- "windows",
- "windows-collections",
- "windows-core",
- "x11rb",
- "zbus",
-]
-
-[[package]]
 name = "cookie"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3024,6 +2983,47 @@ dependencies = [
  "atomic-waker",
  "fastrand",
  "futures-io",
+]
+
+[[package]]
+name = "pirouette"
+version = "0.3.0"
+dependencies = [
+ "base64 0.22.1",
+ "block2",
+ "flate2",
+ "gdk",
+ "glib",
+ "gtk",
+ "libc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-quick-look-thumbnailing",
+ "objc2-service-management",
+ "objc2-user-notifications",
+ "plist",
+ "png",
+ "qrcode",
+ "resvg",
+ "rfd",
+ "rqrr",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tempfile",
+ "vtracer",
+ "webkit2gtk",
+ "windows",
+ "windows-collections",
+ "windows-core",
+ "x11rb",
+ "zbus",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@
 // (src-tauri/src/convert/markup.rs), the blacked-out parts last, over everything.
 // For Black Out on a video, the same window shows a frame of it with only Select and
 // Black out: each box covers that place for the whole video (ffmpeg fills it).
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

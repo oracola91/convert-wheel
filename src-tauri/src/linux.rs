@@ -6,7 +6,7 @@
 //! the pointer private. On GNOME, the app's GNOME Shell extension (gnome_shell.rs)
 //! reports each drag and its keys over the shortcut's socket, so Shift+drag works
 //! there too. Everywhere, the wheel also opens from a keyboard shortcut
-//! (`convert-wheel --show`, bound in the desktop's keyboard settings) and stays open
+//! (`pirouette --show`, bound in the desktop's keyboard settings) and stays open
 //! until a file is dropped on it.
 
 use std::cell::RefCell;
@@ -175,11 +175,11 @@ fn class_names(conn: &RustConnection, window: Window) -> Option<Vec<String>> {
     )
 }
 
-/// Where the running app listens for `convert-wheel --show`: the user's private
+/// Where the running app listens for `pirouette --show`: the user's private
 /// runtime folder. Without one there is no listener: a shared folder such as /tmp
 /// would let other users squat the name.
 fn socket_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("convert-wheel.sock"))
+    std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("pirouette.sock"))
 }
 
 /// Starts the listener for the shortcut; false if there is none.
@@ -298,7 +298,7 @@ fn shown_wheel(line: &str) -> Option<crate::wheel::Which> {
     }
 }
 
-/// `convert-wheel --show [tools|actions]`: asks the running app to open the wheel.
+/// `pirouette --show [tools|actions]`: asks the running app to open the wheel.
 pub fn send_show(wheel: Option<&str>) -> Result<(), String> {
     let line = match wheel {
         None | Some("formats") => "show\n",

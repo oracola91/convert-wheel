@@ -1,5 +1,5 @@
 #!/bin/sh
-# Sets up Pirouette (called Convert Wheel up to 0.3.x) on Ubuntu or Debian in one go:
+# Sets up Pirouette on Ubuntu or Debian in one go:
 #
 #   curl -fsSL https://raw.githubusercontent.com/oracola91/pirouette/main/scripts/install-linux.sh | sh
 #
@@ -23,7 +23,8 @@
 set -eu
 
 REPO=oracola91/pirouette
-EXE=/usr/bin/convert-wheel
+# The program the package installs: read from the package itself (step 2/5).
+EXE=
 # The public half of the project's update key: the same one built into the app.
 UPDATE_KEY=RWSSm9yM9UYMp00bQLUwwNEMjwlQkpEI/3KR9vIf38mMNQSY7YaRG7Tf
 # The app runs pandoc with --sandbox. That needs pandoc 2.15 or newer (Ubuntu 22.04 ships
@@ -33,7 +34,7 @@ UPDATE_KEY=RWSSm9yM9UYMp00bQLUwwNEMjwlQkpEI/3KR9vIf38mMNQSY7YaRG7Tf
 PANDOC_VERSION=3.12.1
 PANDOC_SHA256=b4217ac7c54067c442f9d4cd38bcd0c184a43f3e7053431a12263a6f92a33ba2
 KEYS=org.gnome.settings-daemon.plugins.media-keys
-SLOT=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/convert-wheel/
+SLOT=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/pirouette/
 SHORTCUT='<Shift><Super>c'
 
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -198,8 +199,8 @@ main() {
         printf '%s' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' || fail "couldn't find the newest release on GitHub."
     fi
     version=${tag#v}
-    # The .deb's name comes from the release's own list: it was Convert.Wheel_... up
-    # to 0.3.x and is Pirouette_... after. The signature check below names it again.
+    # The .deb's name comes from the release's own list. The signature check below
+    # names it again.
     fetch -o "$work/latest.json" "https://github.com/$REPO/releases/download/$tag/latest.json" ||
         fail "couldn't download the list of release $version."
     name=$(python3 -I -c 'import json,os,sys; print(os.path.basename(json.load(open(sys.argv[1]))["platforms"]["linux-x86_64-deb"]["url"]))' "$work/latest.json" 2>/dev/null) ||
@@ -211,6 +212,9 @@ main() {
     signed "$deb" "$work/latest.json" "$version" || fail "the download isn't the signed release; nothing was installed."
     echo "Signature checked: Pirouette $version, signed with the project's update key."
     chmod 644 "$deb"
+    # The program file in /usr/bin, as this release names it.
+    EXE=$(dpkg-deb -c "$deb" | awk '{print $NF}' | sed -n 's|^\./usr/bin/\([^/]*\)$|/usr/bin/\1|p' | head -n 1)
+    [ -n "$EXE" ] || fail "the package holds no program in /usr/bin."
     apt_get install -y "$deb"
     [ -x "$EXE" ] || fail "$EXE isn't there after installing."
 
@@ -219,7 +223,7 @@ main() {
     autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
     mkdir -p "$autostart"
     printf '[Desktop Entry]\nType=Application\nName=Pirouette\nExec="%s"\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n' \
-        "$EXE" >"$autostart/convert-wheel.desktop"
+        "$EXE" >"$autostart/pirouette.desktop"
     echo "On. To turn it off, untick Open at Login in Pirouette's Settings."
 
     step "4/5 Keyboard shortcut"
@@ -233,17 +237,17 @@ main() {
     fi
 
     step "5/5 Starting Pirouette"
-    if pgrep -x convert-wheel >/dev/null; then
+    if pgrep -x "$(basename "$EXE")" >/dev/null; then
         echo "It's already running. Quit it from its menu and start it again to use the version just installed."
     elif [ -n "${SSH_CONNECTION:-}" ] || [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
         echo "Not started from here (this terminal isn't on the desktop): it starts at your next login."
     else
         setsid "$EXE" >/dev/null 2>&1 </dev/null &
         sleep 2
-        if pgrep -x convert-wheel >/dev/null; then
+        if pgrep -x "$(basename "$EXE")" >/dev/null; then
             echo "Started: its icon is in the top bar."
         else
-            echo "It didn't stay running. Run convert-wheel in a terminal to see why."
+            echo "It didn't stay running. Run $EXE in a terminal to see why."
         fi
     fi
 

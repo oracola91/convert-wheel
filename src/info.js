@@ -3,7 +3,7 @@
 // (written by ExifTool). The app reads the file; this page sends back only the tags
 // that changed, which the app checks and writes into a copy next to the file
 // (src-tauri/src/convert/info.rs).
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

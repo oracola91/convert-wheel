@@ -82,7 +82,7 @@ pub struct Ivars {
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ConvertWheelShelfView"]
+    #[name = "PirouetteShelfView"]
     #[ivars = Ivars]
     pub struct ShelfView;
 

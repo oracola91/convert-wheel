@@ -1,7 +1,7 @@
 // The Resize window: the picture's or video's size, a longest side to type or pick,
 // and the size it will have. The app hands over the size and the limits; this page
 // sends back only the longest side chosen, in pixels.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

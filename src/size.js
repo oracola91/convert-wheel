@@ -1,7 +1,7 @@
 // The Compress to a Size window: the file's size, a size to type or pick, and how small
 // it can go. The app hands over the file's size and kind; this page sends back only
 // the size to aim under, in bytes.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

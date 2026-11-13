@@ -1,7 +1,7 @@
 // The Split window for sound and video: how long the file plays, how many equal parts
 // or how long each part, and what that makes. The app hands over the length; this page
 // sends back only the length of a part, in milliseconds, which the app checks again.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

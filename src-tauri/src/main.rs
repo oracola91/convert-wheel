@@ -25,6 +25,7 @@ mod login;
 #[cfg(target_os = "macos")]
 mod mac_notification;
 mod menu;
+mod migrate;
 mod reveal;
 mod settings;
 mod settings_window;
@@ -284,15 +285,11 @@ impl Running {
 
 /// Longer file names are cut in the progress line, so the percent after them still
 /// fits in the menu.
-/// The name people see in the menu, the tooltip and notifications. Pirouette on macOS
-/// from 0.3.0; Windows and Linux were still Convert Wheel up to 0.3.x. Their installers
-/// take the old copy away: on Windows the .exe uninstalls it first
-/// (windows/hooks.nsh) and the .msi keeps its upgrade code; on Linux the .deb replaces
-/// the convert-wheel package. The program file stays convert-wheel everywhere.
+/// The name people see in the menu, the tooltip and notifications. What the app was
+/// called before is moved over by migrate.rs and the installers.
 pub(crate) const APP_NAME: &str = "Pirouette";
-/// The name Windows and Linux used up to 0.3.x, for moving what carried it.
-#[cfg(windows)]
-pub(crate) const OLD_NAME: &str = "Convert Wheel";
+/// When this copy started (setup), for telling a second start apart from a restart.
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 const NAME_MAX_CHARS: usize = 32;
 
@@ -673,14 +670,14 @@ fn show_notification(app: &AppHandle, id: i32, title: &str, body: &str, files: &
     }
 }
 
-/// `convert-wheel --convert <format> <file>...` converts without the wheel, for scripts and tests.
+/// `pirouette --convert <format> <file>...` converts without the wheel, for scripts and tests.
 fn cli(args: &[String]) -> i32 {
     let [format, files @ ..] = args else {
-        eprintln!("usage: convert-wheel --convert <format> <file>...");
+        eprintln!("usage: pirouette --convert <format> <file>...");
         return 2;
     };
     if files.is_empty() {
-        eprintln!("usage: convert-wheel --convert <format> <file>...");
+        eprintln!("usage: pirouette --convert <format> <file>...");
         return 2;
     }
     let downloads = convert::downloads();
@@ -796,8 +793,16 @@ fn main() {
                 trigger::open_for_keys(app, files);
             } else {
                 // Opened again from the Start menu, the app list or a launcher: Settings,
-                // which is also the way back when the menu bar icon is hidden.
-                settings_window::open(app);
+                // which is also the way back when the menu bar icon is hidden. Not in
+                // the first half minute: a copy from before the new program name
+                // restarts the updated app by trying to start it again and again
+                // (update.rs there waits for the old process name), and each try lands
+                // here.
+                if STARTED.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(30)) {
+                    log::line("started again right after the start: nothing to do");
+                } else {
+                    settings_window::open(app);
+                }
             }
         }))
         .plugin(tauri_plugin_notification::init())
@@ -838,8 +843,25 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+    let _ = STARTED.set(std::time::Instant::now());
     log::init(app.path().app_log_dir().ok());
     log::line(&format!("started, version {}", app.package_info().version));
+    // What the app's earlier names still hold moves over first, the settings above all.
+    let id = app.config().identifier.clone();
+    migrate::settings(&app.path().app_config_dir()?, &id);
+    migrate::leftovers(
+        &[app.path().app_log_dir(), app.path().app_cache_dir(), app.path().app_local_data_dir(), app.path().app_data_dir()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        &id,
+    );
+    migrate::login();
+    #[cfg(target_os = "linux")]
+    {
+        migrate::shortcut();
+        migrate::gnome_extension();
+    }
     let (store, settings_problem) = settings::Store::load(app.path().app_config_dir()?.join("settings.json"));
     wheel::set_keys(store.get().keys);
     trigger::set_hold(store.get().hold_to_convert);
@@ -886,9 +908,6 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     shelf_web::start(app.handle());
     trigger::start(app.handle().clone());
-    // Windows: Open at Login kept from a copy under the old name.
-    #[cfg(windows)]
-    login::move_old_entry();
     // Windows: notifications' links open this copy.
     #[cfg(windows)]
     win_toast::register();

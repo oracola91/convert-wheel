@@ -114,7 +114,7 @@ pub fn make(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback: &P
         return Err("nothing to pack".into());
     };
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let out = work.path().join(format!("result.{ext}"));
@@ -218,7 +218,7 @@ impl From<String> for Failure {
 fn unpack_into_new_folder(src: &Path, dir: &Path, stem: &str, budget: u64) -> Result<PathBuf, Failure> {
     let tar = bsdtar()?;
     let work = tempfile::Builder::new()
-        .prefix(".convert-wheel-")
+        .prefix(".pirouette-")
         .tempdir_in(dir)
         .map_err(Failure::Io)?;
     let mut cmd = Command::new(tar);
@@ -280,7 +280,7 @@ fn move_to_free_name(from: &Path, dir: &Path, name: &str) -> io::Result<PathBuf>
 fn gunzip(src: &Path, dir: &Path, stem: &str, budget: u64) -> Result<PathBuf, Failure> {
     let input = fs::File::open(src).map_err(|e| format!("can't read the file: {e}"))?;
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir_in(dir)
         .map_err(Failure::Io)?;
     let tmp = work.path().join("result");
@@ -487,7 +487,7 @@ mod tests {
         fs::write(&fake, b"not an archive").unwrap();
         assert!(unpack(&fake, None, work.path()).is_err());
         let left: Vec<_> = fs::read_dir(work.path()).unwrap().flatten().map(|e| e.file_name()).collect();
-        assert!(left.iter().all(|n| !n.to_string_lossy().starts_with(".convert-wheel-") && n != "fake"), "{left:?}");
+        assert!(left.iter().all(|n| !n.to_string_lossy().starts_with(".pirouette-") && n != "fake"), "{left:?}");
     }
 
     #[test]
