@@ -44,6 +44,23 @@ impl Kind {
     }
 }
 
+/// Pages files are written by Apple's Pages app, so they are offered on a Mac only, and
+/// there only while Pages is installed (`available`).
+#[cfg(target_os = "macos")]
+const DOC_OUT: &[&str] = &["pdf", "docx", "odt", "html", "md", "txt", "epub", "pages"];
+#[cfg(not(target_os = "macos"))]
+const DOC_OUT: &[&str] = &["pdf", "docx", "odt", "html", "md", "txt", "epub"];
+#[cfg(target_os = "macos")]
+const PDF_OUT: &[&str] = &["docx", "jpg", "png", "txt", "svg", "md", "epub", "pptx", "xlsx", "pages"];
+#[cfg(not(target_os = "macos"))]
+const PDF_OUT: &[&str] = &["docx", "jpg", "png", "txt", "svg", "md", "epub", "pptx", "xlsx"];
+
+/// Whether this computer can make `format` now. Only Pages depends on an app being
+/// there; every other format's converter is installed on demand.
+pub fn available(format: &str) -> bool {
+    format != "pages" || crate::convert::pages_installed()
+}
+
 /// What each kind of file is read from and can be turned into.
 const KINDS: &[(Kind, &[&str], &[&str])] = &[
     (
@@ -66,10 +83,12 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
         &["mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"],
         &["mp4", "mov", "webm", "mkv", "avi", "wmv", "gif", "mp3"],
     ),
+    // RTFD (a folder: macOS rich text with its pictures) and text clippings (what
+    // Finder saves when text is dragged to a folder) come in as plain documents first.
     (
         Kind::Doc,
-        &["docx", "doc", "odt", "rtf", "pages", "md", "markdown", "html", "htm", "txt", "epub"],
-        &["pdf", "docx", "odt", "html", "md", "txt", "epub"],
+        &["docx", "doc", "odt", "rtf", "pages", "md", "markdown", "html", "htm", "txt", "epub", "rtfd", "textclipping"],
+        DOC_OUT,
     ),
     // Apple's Numbers and Keynote files go in through LibreOffice, which reads them.
     (Kind::Sheet, &["xlsx", "xls", "ods", "csv", "tsv", "numbers"], &["pdf", "xlsx", "ods", "csv", "tsv"]),
@@ -78,8 +97,9 @@ const KINDS: &[(Kind, &[&str], &[&str])] = &[
     // Pictures of the pages, or the text (as a Word file it is text only: the PDF's
     // layout isn't kept).
     // SVG: each page as vector shapes. Markdown and EPUB: the text, like Word. PPTX: a
-    // slide with a picture of each page.
-    (Kind::Pdf, &["pdf"], &["docx", "jpg", "png", "txt", "svg", "md", "epub", "pptx"]),
+    // slide with a picture of each page. XLSX: each page's text put back into rows and
+    // columns, one sheet per page.
+    (Kind::Pdf, &["pdf"], PDF_OUT),
     // TXT: only the words, without times.
     (Kind::Subtitles, &["srt", "vtt"], &["srt", "vtt", "txt"]),
 ];
@@ -175,6 +195,8 @@ const TOOLS: &[(&str, &[&str])] = &[
     ("tool:smaller", &["pdf"]),
     // A password to open it, from its window.
     ("tool:lock", &["pdf"]),
+    // PDF/A-2b, the archive form of PDF (Ghostscript).
+    ("tool:pdfa", &["pdf"]),
     ("tool:still", &["mp4", "mov", "m4v", "mkv", "webm", "avi"]),
     // A picture of the moment chosen in its window.
     ("tool:snapshot", &["mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv"]),
@@ -414,7 +436,18 @@ mod tests {
     fn new_formats_are_offered() {
         assert!(formats_for(&v(&["/tmp/a.png"]), all_shown).ends_with(&["bmp", "ico", "pdf", "svg"]));
         assert!(formats_for(&v(&["/tmp/a.heic", "/tmp/b.gif"]), all_shown).contains(&"svg"));
-        assert_eq!(formats_for(&v(&["/tmp/a.pdf"]), all_shown), ["docx", "jpg", "png", "txt", "svg", "md", "epub", "pptx"]);
+        let pdf = formats_for(&v(&["/tmp/a.pdf"]), all_shown);
+        assert_eq!(pdf[..9], ["docx", "jpg", "png", "txt", "svg", "md", "epub", "pptx", "xlsx"]);
+        // Pages comes from Apple's Pages app: Mac only.
+        assert_eq!(pdf.contains(&"pages"), cfg!(target_os = "macos"));
+        assert_eq!(formats_for(&v(&["/tmp/a.docx"]), all_shown).contains(&"pages"), cfg!(target_os = "macos"));
+        // A Pages file doesn't become Pages again.
+        assert!(!formats_for(&v(&["/tmp/a.pages"]), all_shown).contains(&"pages"));
+        assert!(!available("pages") || cfg!(target_os = "macos"));
+        assert!(available("xlsx"));
+        // RTFD folders and text clippings are documents.
+        assert_eq!(formats_for(&v(&["/tmp/Notes.rtfd"]), all_shown), DOC_OUT);
+        assert_eq!(kind_of(&extension(Path::new("/tmp/Clip.textClipping")).unwrap()), Some(Kind::Doc));
         assert!(formats_for(&v(&["/tmp/a.svg"]), all_shown).contains(&"png"));
         assert!(!formats_for(&v(&["/tmp/a.svg"]), all_shown).contains(&"svg"));
         assert!(formats_for(&v(&["/tmp/a.pptx"]), all_shown).ends_with(&["jpg", "png"]));
@@ -496,8 +529,11 @@ mod tests {
         assert_eq!(tools_for(&v(&["/tmp/a.mp3", "/tmp/b.mp4"])), ["tool:compress", "tool:clean", "tool:percent"]);
         assert!(tools_for(&v(&["/tmp/a.png", "/tmp/b.pdf"])).is_empty());
         // Merge only once there is something to merge.
-        assert_eq!(tools_for(&v(&["/tmp/a.pdf"])), ["tool:split", "tool:order", "tool:smaller", "tool:lock", "tool:target", "tool:info"]);
-        assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller", "tool:percent"]);
+        assert_eq!(
+            tools_for(&v(&["/tmp/a.pdf"])),
+            ["tool:split", "tool:order", "tool:smaller", "tool:lock", "tool:pdfa", "tool:target", "tool:info"]
+        );
+        assert_eq!(tools_for(&v(&["/tmp/a.pdf", "/tmp/b.PDF"])), ["tool:merge", "tool:split", "tool:smaller", "tool:pdfa", "tool:percent"]);
         assert!(tools_for(&v(&["/tmp/Makefile"])).is_empty());
         assert!(tool_takes("tool:half", "jpeg") && !tool_takes("tool:half", "pdf"));
         assert!(TOOLS.iter().all(|(id, _)| is_tool(id)));

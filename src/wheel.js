@@ -49,6 +49,7 @@ const TOOLS = {
   'tool:snapshot': ['Snapshot', 'A picture of any moment'],
   'tool:percent': ['To %', 'Each to a share of its size'],
   'tool:lock': ['Password', 'Lock it with a password'],
+  'tool:pdfa': ['PDF/A', 'For long-term archiving'],
   'tool:parts': ['Split', 'Split into parts'],
   'tool:join': ['Join', 'Join into one'],
   'tool:target': ['To a size', 'Compress to a size'],

@@ -35,6 +35,7 @@ mod send_to;
 mod shelf;
 #[cfg(target_os = "macos")]
 mod shelf_window;
+mod terminal;
 mod transfer;
 mod trigger;
 mod update;
@@ -199,6 +200,7 @@ impl Words {
                 "lock",
                 "Stopped adding the password",
             ),
+            "tool:pdfa" => tool("Making {} a PDF/A", "Made into PDF/A", "Made {} files into PDF/A", "make PDF/A of", "Stopped making PDF/A"),
             "tool:parts" => tool(
                 "Splitting {} into parts",
                 "Split into parts",
@@ -793,7 +795,9 @@ fn main() {
                 // Send To (Windows) or Open With (Linux) on files: the keyboard wheel.
                 trigger::open_for_keys(app, files);
             } else {
-                notify(app, &format!("{APP_NAME} is already running"), "Hold Shift while dragging a file to open the wheel.");
+                // Opened again from the Start menu, the app list or a launcher: Settings,
+                // which is also the way back when the menu bar icon is hidden.
+                settings_window::open(app);
             }
         }))
         .plugin(tauri_plugin_notification::init())
@@ -813,11 +817,14 @@ fn main() {
         .invoke_handler(tauri::generate_handler![wheel_enter, settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_resize, editor::editor_lock, editor::editor_frame, editor::editor_snapshot, editor::editor_percent, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
         .build(tauri::generate_context!());
     match app {
-        Ok(app) => app.run(|_, event| {
+        Ok(app) => app.run(|_app, event| match event {
             // Tools still running would otherwise carry on after the app is gone.
-            if let RunEvent::Exit = event {
-                convert::stop_all();
-            }
+            RunEvent::Exit => convert::stop_all(),
+            // macOS: the app opened again from Finder, Launchpad or Spotlight while it
+            // runs. Settings opens, the way back when the menu bar icon is hidden.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => settings_window::open(_app),
+            _ => {}
         }),
         Err(e) => {
             log::line(&format!("couldn't start: {e}"));
@@ -835,6 +842,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     log::line(&format!("started, version {}", app.package_info().version));
     let (store, settings_problem) = settings::Store::load(app.path().app_config_dir()?.join("settings.json"));
     wheel::set_keys(store.get().keys);
+    trigger::set_hold(store.get().hold_to_convert);
     #[cfg(target_os = "macos")]
     trigger::set_mac_arrows(store.get().arrow_keys);
     app.manage(store);
@@ -856,6 +864,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
     menu::build(app)?;
+    // Hidden in Settings: the icon is made, then hidden, so it can come back.
+    if app.state::<settings::Store>().get().hide_icon {
+        menu::show_icon(app.handle(), false);
+    }
     app.manage(start_worker(app.handle().clone()));
     app.manage(estimates::start(app.handle().clone()));
     app.manage(wheel::WheelState::default());

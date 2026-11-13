@@ -5,6 +5,10 @@
 	<!-- Menu bar app: no Dock icon, not even for a moment at launch. -->
 	<key>LSUIElement</key>
 	<true/>
+	<!-- Pages output: the app asks Pages to open a Word file and save it as Pages
+	     (convert.rs, to_pages). macOS shows this when it asks the first time. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Pirouette asks Pages to save documents as Pages files when you choose Pages on the wheel.</string>
 	<!-- Keyboard mode: Finder's right-click > Services > Open in Pirouette Wheel hands
 	     the selected files to the app (src/services.rs). Shown without being switched
 	     on first (an empty NSRequiredContext). -->

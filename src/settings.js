@@ -87,6 +87,19 @@ function general(v) {
   if (v.shelf !== null) {
     rows.push(row('Shelf at the top of the screen', toggle('shelf', v.shelf, (e) => change({ what: 'shelf', on: e.target.checked })), 'Holds files you drag to the top of the screen, to drag out later.'));
   }
+  // The Actions wheel's Terminal: the system's own, or one of those found here.
+  const terminal = h(
+    'select',
+    { id: 'terminal', onchange: (e) => change({ what: 'terminal', key: e.target.value === 'default' ? null : e.target.value }) },
+    [{ key: 'default', label: 'System default' }, ...v.terminals].map((t) => h('option', { value: t.key, selected: (v.terminal ?? 'default') === t.key }, t.label)),
+  );
+  rows.push(row('Terminal', terminal, 'What Terminal on the Actions wheel opens, in the file\'s folder.'));
+  const icon = { macos: 'menu bar icon', windows: 'icon in the notification area', linux: 'tray icon' }[v.system];
+  const back = { macos: 'Spotlight, Launchpad or Applications', windows: 'the Start menu', linux: 'the app list' }[v.system];
+  rows.push(row(`Hide the ${icon}`, toggle('hide-icon', v.icon_hidden, (e) => change({ what: 'hide-icon', on: e.target.checked })), `${v.app} keeps working. Open it again from ${back} to come back to Settings.`));
+  if (v.hold !== null) {
+    rows.push(row('Hold to convert', toggle('hold', v.hold, (e) => change({ what: 'hold', on: e.target.checked })), 'Press a file, hold it still for half a second, then drag: the Formats wheel opens without a key. For touch screens.'));
+  }
   // The keyboard wheel: how each system hands it the selected files.
   const entry = {
     macos: ['Finder: right-click > Services > Open in Pirouette Wheel', 'Set a key for it in System Settings > Keyboard > Keyboard Shortcuts > Services. Then ← → pick, Enter applies, Esc closes.'],

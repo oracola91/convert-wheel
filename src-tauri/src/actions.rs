@@ -1,16 +1,16 @@
 //! The Actions wheel (Control+Shift while dragging): what can be done with the dragged
 //! files themselves. None of them changes a file: Copy Path puts the paths on the
 //! clipboard, Show in Folder opens the file manager on them, Copy To and Move To put
-//! them in a folder of the user's choosing (transfer.rs), Terminal opens one in their
-//! folder, and AirDrop (macOS) or Share offers to send them (macOS: a menu of the
+//! them in a folder of the user's choosing (transfer.rs), Terminal opens the one chosen
+//! in Settings in their folder (terminal.rs), and AirDrop (macOS) or Share offers to
+//! send them (macOS: a menu of the
 //! services macOS has for the files; Windows: the share sheet; Linux: email,
 //! Bluetooth or a phone through KDE Connect, whichever this computer has). Making and unpacking archives take
 //! a while, so they go through the conversion queue (archive.rs).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-#[cfg(not(windows))]
-use std::process::Stdio;
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
 use std::thread;
 
 use tauri::AppHandle;
@@ -34,11 +34,16 @@ pub fn run(app: &AppHandle, action: &str, paths: Vec<String>) {
         "act:moveto" => crate::transfer::start(app, true, files),
         "act:terminal" => {
             let app = app.clone();
+            // The terminal chosen in Settings, or the system's own.
+            let choice = {
+                use tauri::Manager;
+                app.state::<crate::settings::Store>().get().terminal
+            };
             thread::spawn(move || {
                 let Some(dir) = files.first().map(|f| folder_of(f)) else {
                     return;
                 };
-                if let Err(e) = open_terminal(&dir) {
+                if let Err(e) = crate::terminal::open(choice.as_deref(), &dir) {
                     log::line(&format!("couldn't open a terminal: {e}"));
                     notify(&app, "Couldn't open a terminal", &e);
                 }
@@ -171,70 +176,6 @@ fn windows_clipboard(text: &str) -> Result<(), String> {
     // SAFETY: opened above on this thread.
     let _ = unsafe { CloseClipboard() };
     result.map_err(|e| e.to_string())
-}
-
-/// Opens the system's terminal in `dir`. The folder goes in as a separate argument or
-/// as the starting folder, never inside a command line, so no name can be read as a
-/// command.
-#[cfg(target_os = "macos")]
-fn open_terminal(dir: &Path) -> Result<(), String> {
-    let status = Command::new("/usr/bin/open")
-        .args(["-a", "Terminal"])
-        .arg(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("Terminal didn't open ({status})"))
-    }
-}
-
-/// PowerShell in a console of its own, started in the folder. (Windows Terminal reads
-/// ";" in its arguments as a command separator, so it isn't handed the folder.)
-#[cfg(windows)]
-fn open_terminal(dir: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
-    Command::new(system.join("System32\\WindowsPowerShell\\v1.0\\powershell.exe"))
-        .arg("-NoExit")
-        .current_dir(dir)
-        .creation_flags(CREATE_NEW_CONSOLE)
-        .spawn()
-        .map(drop)
-        .map_err(|e| e.to_string())
-}
-
-/// The first terminal found, from the common desktops' own to Debian's default choice.
-#[cfg(target_os = "linux")]
-fn open_terminal(dir: &Path) -> Result<(), String> {
-    let mut working_dir = std::ffi::OsString::from("--working-directory=");
-    working_dir.push(dir);
-    let candidates: [(&str, Vec<std::ffi::OsString>); 4] = [
-        ("gnome-terminal", vec![working_dir.clone()]),
-        ("kgx", vec![working_dir]),
-        ("konsole", vec!["--workdir".into(), dir.into()]),
-        ("x-terminal-emulator", Vec::new()),
-    ];
-    for (name, args) in candidates {
-        let Some(path) = find_in_path(name) else {
-            continue;
-        };
-        return Command::new(path)
-            .args(args)
-            .current_dir(dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(drop)
-            .map_err(|e| e.to_string());
-    }
-    Err("no terminal app found (GNOME Terminal, Console, Konsole or x-terminal-emulator)".into())
 }
 
 #[cfg(target_os = "linux")]

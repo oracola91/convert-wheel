@@ -142,7 +142,9 @@ static INSTALLING: AtomicBool = AtomicBool::new(false);
 /// converter is missing and this system can install it, the menu offers it and the
 /// message points there instead of at a command.
 pub fn offer(app: &AppHandle, error: String) -> String {
-    let Some(c) = convert::missing(&error).filter(|_| available()) else {
+    // A converter the package manager can't install keeps the message that says where
+    // to get it (Ghostscript on Windows).
+    let Some(c) = convert::missing(&error).filter(|c| available() && updatable(c)) else {
         return error;
     };
     {
@@ -485,7 +487,13 @@ impl Report {
 /// The converters this system's package manager provides. bsdtar is built into macOS
 /// and Windows, and the app uses that one there.
 fn updatable(c: &Converter) -> bool {
-    c.tool != "bsdtar" || cfg!(not(any(target_os = "macos", windows)))
+    match c.tool {
+        // Built into macOS and Windows.
+        "bsdtar" => cfg!(not(any(target_os = "macos", windows))),
+        // Not in winget: Windows gets the download page instead.
+        "gs" => cfg!(not(windows)),
+        _ => true,
+    }
 }
 
 /// The menu's "Update Converters…": asks the package manager for a newer version of
