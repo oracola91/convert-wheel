@@ -213,7 +213,8 @@ main() {
     echo "Signature checked: Pirouette $version, signed with the project's update key."
     chmod 644 "$deb"
     # The program file in /usr/bin, as this release names it.
-    EXE=$(dpkg-deb -c "$deb" | awk '{print $NF}' | sed -n 's|^\./usr/bin/\([^/]*\)$|/usr/bin/\1|p' | head -n 1)
+    # (Paths are listed with or without a leading "./"; the folder itself has no name after it.)
+    EXE=$(dpkg-deb -c "$deb" | awk '{print $NF}' | sed -n 's|^\(\./\)\{0,1\}usr/bin/\([^/][^/]*\)$|/usr/bin/\2|p' | head -n 1)
     [ -n "$EXE" ] || fail "the package holds no program in /usr/bin."
     apt_get install -y "$deb"
     [ -x "$EXE" ] || fail "$EXE isn't there after installing."
