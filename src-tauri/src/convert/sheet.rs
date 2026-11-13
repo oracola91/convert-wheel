@@ -246,13 +246,12 @@ fn columns(rows: &[Vec<Piece>]) -> Vec<(f64, f64)> {
 }
 
 /// The column a piece goes in: the one it overlaps most. A lone piece on its row (a
-/// title, a paragraph, a single value) only when at least half of it lies in that
-/// column, otherwise the first: a title that just reaches into the last column stays
-/// at the left.
+/// title, a paragraph, a single value) only when it lies almost wholly in that column,
+/// otherwise the first: a centred title over the table stays at the left.
 fn column_of(piece: &Piece, columns: &[(f64, f64)], lone: bool) -> usize {
     let overlap = |c: &(f64, f64)| piece.x1.min(c.1) - piece.x0.max(c.0);
     let best = columns.iter().enumerate().max_by(|a, b| overlap(a.1).total_cmp(&overlap(b.1)));
-    let enough = if lone { 0.5 * (piece.x1 - piece.x0) } else { 0.0 };
+    let enough = if lone { 0.8 * (piece.x1 - piece.x0) } else { 0.0 };
     match best {
         Some((i, c)) if overlap(c) > enough => i,
         // Between two columns: the nearest one, by its left edge.
@@ -568,7 +567,8 @@ mod tests {
         let xml = format!(
             "<document>{}</document>",
             page(&[
-                line(250.0, 20.0, "Sales report"),
+                // Centred over the table, half of it over the Price column: column A.
+                line(205.0, 20.0, "Sales report"),
                 line(50.0, 60.0, "Product"),
                 line(150.0, 60.0, "Units"),
                 line(220.0, 60.0, "Price"),
