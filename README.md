@@ -376,3 +376,7 @@ scripts/macos-signing-cert.sh  make the Mac code-signing certificate, once
 INSTALL.md                 installing, updating, uninstalling, making a release
 ROADMAP.md                 what comes next, in order
 ```
+
+## Licence
+
+Pirouette is under your choice of the [MIT licence](LICENSE-MIT) or the [Apache License 2.0](LICENSE-APACHE), as most of the Rust and Tauri code it is built from. Code it includes from others keeps its own licence: see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The converters (ffmpeg, ImageMagick, pandoc, LibreOffice, MuPDF, ExifTool, bsdtar) are separate programs that you install; the app only starts them, and each comes under its own licence.
