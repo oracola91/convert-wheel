@@ -59,6 +59,9 @@ pub fn start_trigger(app: AppHandle) {
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
         let mut arrows = trigger::Arrows::default();
+        let mut hold = trigger::HoldWatch::default();
+        // Windows' own distance before a press counts as a drag (larger with touch).
+        let slack = unsafe { (f64::from(GetSystemMetrics(SM_CXDRAG)), f64::from(GetSystemMetrics(SM_CYDRAG))) };
         loop {
             thread::sleep(POLL);
             let mut pt = POINT::default();
@@ -73,8 +76,10 @@ pub fn start_trigger(app: AppHandle) {
                 (was_down, from_files, shown, held) = (false, false, false, 0);
                 keys = KeyFollower::default();
                 arrows = trigger::Arrows::default();
+                hold = trigger::HoldWatch::default();
                 continue;
             }
+            hold.poll((f64::from(pt.x), f64::from(pt.y)), slack, POLL);
             if !was_down {
                 was_down = true;
                 start = pt;
@@ -90,6 +95,10 @@ pub fn start_trigger(app: AppHandle) {
             } else if shown {
                 trigger::follow_keys(&app, &mut keys, key_down(VK_SHIFT), key_down(VK_MENU), key_down(VK_CONTROL));
                 trigger::follow_arrows(&app, &mut arrows, [key_down(VK_LEFT), key_down(VK_RIGHT), key_down(VK_UP), key_down(VK_DOWN)]);
+            } else if from_files && held == 0 && trigger::hold_on() && hold.held() {
+                // Hold to Convert: held still, then dragged, with no key.
+                trigger::show_wheel(&app, Vec::new(), Which::Formats);
+                shown = true;
             } else if from_files && held == 0 && moved_past_threshold(start, pt) && at_top_edge(pt) {
                 // Files dragged to the top of the screen without Shift: the shelf.
                 crate::shelf_web::drag_near_top(&app);

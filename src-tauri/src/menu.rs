@@ -66,6 +66,16 @@ pub fn build(app: &App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Shows or hides the menu bar (tray) icon, from Settings > General. Hidden, the app
+/// still runs; opening it again shows Settings.
+pub fn show_icon(app: &AppHandle, shown: bool) {
+    if let Some(tray) = app.tray_by_id("main") {
+        if let Err(e) = tray.set_visible(shown) {
+            crate::log::line(&format!("couldn't {} the menu bar icon: {e}", if shown { "show" } else { "hide" }));
+        }
+    }
+}
+
 /// Puts how the last drop went in the menu, for example "Last: Converted to PDF:
 /// report.pdf", cut short to keep the menu narrow. `clickable`: the drop produced
 /// files, and a click on the line shows them. Stop Converting goes away.

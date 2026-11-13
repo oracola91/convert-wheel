@@ -115,6 +115,14 @@ pub struct Settings {
     /// Windows: the "Send to" entry for the keyboard wheel is taken out (it is there
     /// unless switched off in Settings).
     pub send_to_off: bool,
+    /// The terminal app the Actions wheel's Terminal opens, by its key in
+    /// actions::terminals ("iterm", "wt", "konsole"); None is the system's own.
+    pub terminal: Option<String>,
+    /// The menu bar (tray) icon is hidden. Opening the app again shows Settings.
+    pub hide_icon: bool,
+    /// Hold to Convert: a file pressed and held still for a moment, then dragged,
+    /// opens the Formats wheel without a key (for touch screens). Off unless chosen.
+    pub hold_to_convert: bool,
 }
 
 /// The keys held with Shift that open a wheel: Shift alone, with Option (Alt on Windows
@@ -441,6 +449,15 @@ mod tests {
         let off = Settings { shelf_off: true, ..Settings::default() };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
         assert!(back.shelf_off);
+    }
+
+    #[test]
+    fn terminal_icon_and_hold_keep_their_old_ways_until_chosen() {
+        let old: Settings = serde_json::from_str(r#"{"save_to":"downloads","hidden":[]}"#).unwrap();
+        assert_eq!((old.terminal.as_deref(), old.hide_icon, old.hold_to_convert), (None, false, false));
+        let set = Settings { terminal: Some("iterm".into()), hide_icon: true, hold_to_convert: true, ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
+        assert_eq!(back, set);
     }
 
     #[test]

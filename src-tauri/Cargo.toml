@@ -34,6 +34,8 @@ vtracer = "=1.0.0-alpha.4"
 # Draws SVG pictures for conversion (convert.rs, svg_to_png): pure Rust, in the app, so
 # no outside SVG reader runs. External files an SVG points to are never read. Pinned.
 resvg = "=0.49.0"
+# Reads Finder's text clippings (property lists, convert.rs); Tauri already uses it.
+plist = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The folder picker as its own window (transfer.rs); the version the dialog plugin uses.

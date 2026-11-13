@@ -81,6 +81,7 @@ fn start_x11(app: AppHandle) {
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
         let mut arrows = trigger::Arrows::default();
+        let mut hold = trigger::HoldWatch::default();
         loop {
             thread::sleep(POLL);
             let pointer = match conn.query_pointer(root).map(|c| c.reply()) {
@@ -100,6 +101,7 @@ fn start_x11(app: AppHandle) {
                 (was_down, from_files, shown, held) = (false, false, false, 0);
                 keys = KeyFollower::default();
                 arrows = trigger::Arrows::default();
+                hold = trigger::HoldWatch::default();
                 continue;
             }
             let (px, py) = (i32::from(pointer.root_x), i32::from(pointer.root_y));
@@ -110,6 +112,8 @@ fn start_x11(app: AppHandle) {
             }
             let moved = (px - start.0).abs() > DRAG_THRESHOLD || (py - start.1).abs() > DRAG_THRESHOLD;
             held = if pointer.mask.contains(KeyButMask::SHIFT) { held.saturating_add(1) } else { 0 };
+            let slack = f64::from(DRAG_THRESHOLD);
+            hold.poll((f64::from(px), f64::from(py)), (slack, slack), POLL);
             if from_files && !shown && held >= trigger::KEYS_SETTLE && moved {
                 // MOD1 is Alt. Keys switched off in the menu open no wheel.
                 if let Some(which) = Which::from_keys(pointer.mask.contains(KeyButMask::MOD1), pointer.mask.contains(KeyButMask::CONTROL)) {
@@ -120,6 +124,10 @@ fn start_x11(app: AppHandle) {
                 let held = |key| pointer.mask.contains(key);
                 trigger::follow_keys(&app, &mut keys, held(KeyButMask::SHIFT), held(KeyButMask::MOD1), held(KeyButMask::CONTROL));
                 trigger::follow_arrows(&app, &mut arrows, x11_arrows(&conn));
+            } else if from_files && held == 0 && trigger::hold_on() && hold.held() {
+                // Hold to Convert: held still, then dragged, with no key.
+                trigger::show_wheel(&app, Vec::new(), Which::Formats);
+                shown = true;
             } else if from_files && held == 0 && moved && py <= crate::shelf_web::EDGE {
                 // Files dragged to the top of the screen without Shift: the shelf.
                 crate::shelf_web::drag_near_top(&app);

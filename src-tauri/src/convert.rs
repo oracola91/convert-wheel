@@ -26,6 +26,7 @@ use crate::settings::{Level, Quality};
 pub mod estimate;
 pub mod info;
 pub mod markup;
+pub mod sheet;
 pub mod svg;
 
 /// How long each tool may run before it is stopped. Generous: a stuck tool should not
@@ -122,9 +123,13 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
         }
         None => (base.to_string(), target.to_string()),
     };
-    // Not a folder, a device or a pipe (a pipe would block the read below forever).
+    // Not a folder, a device or a pipe (a pipe would block the read below forever). An
+    // RTFD is a folder by design: rich text with its pictures beside it.
     let meta = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?;
-    if !meta.is_file() {
+    if ext == "rtfd" && !meta.is_dir() {
+        return Err("this .rtfd is not an RTFD folder".into());
+    }
+    if ext != "rtfd" && !meta.is_file() {
         return Err("this is not a regular file".into());
     }
     let work = tempfile::Builder::new()
@@ -134,12 +139,16 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
     let out = work.path().join(format!("result.{out_ext}"));
 
     // Audio and video can be huge; ffmpeg reads them in place, locked down instead.
-    let input = if matches!(kind, Kind::Audio | Kind::Video) {
-        src.to_path_buf()
+    // RTFD folders and text clippings become a plain document first (`plain_document`),
+    // converted from then on as that.
+    let (input, ext) = if matches!(kind, Kind::Audio | Kind::Video) {
+        (src.to_path_buf(), ext)
+    } else if matches!(ext.as_str(), "rtfd" | "textclipping") {
+        plain_document(src, &ext, work.path()).map_err(|e| redact(&e, src, work.path()))?
     } else {
         let staged = work.path().join(format!("input.{ext}"));
         fs::copy(src, &staged).map_err(|e| format!("can't read the file: {e}"))?;
-        staged
+        (staged, ext)
     };
 
     // Office files must really be what their name says. LibreOffice otherwise picks a
@@ -182,6 +191,8 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
             _ => Err("Info opens its window from the wheel".to_string()),
         },
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
+        // Ghostscript alone; MuPDF isn't needed for it.
+        (Some("tool:pdfa"), Kind::Pdf) => file(to_pdfa(&input, &out, work.path())),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
         (Some(_), _) => Err("the Tools wheel has no tools for this kind of file yet".to_string()),
@@ -484,6 +495,8 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:snapshot" => "frame",
         "tool:percent" => "compressed",
         "tool:lock" => "locked",
+        // No slash: it can't be in a file name.
+        "tool:pdfa" => "PDF-A",
         "tool:parts" => "parts",
         "tool:join" => "joined",
         "tool:target" => "compressed",
@@ -522,6 +535,7 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:snapshot" => "turned into a picture",
         "tool:percent" => "compressed to a share of their size",
         "tool:lock" => "locked with a password",
+        "tool:pdfa" => "made into PDF/A",
         "tool:parts" => "split into parts",
         "tool:join" => "joined",
         "tool:target" => "compressed to a size",
@@ -1267,6 +1281,19 @@ fn document(src: &Path, ext: &str, target: &str, out: &Path, work: &TempDir) -> 
     let ext = formats::canonical(ext);
     let office_in = matches!(ext, "docx" | "doc" | "odt" | "rtf" | "pages");
     match target {
+        // A clipping's plain text to plain text, or an RTFD that is already Word: as it is.
+        _ if ext == target => fs::copy(src, out).map(drop).map_err(|e| format!("work folder: {e}")),
+        // Pages writes its own files: Word first, then Pages opens that and saves it.
+        "pages" => {
+            check_pages()?;
+            let docx = work.path().join("for pages.docx");
+            if ext == "docx" {
+                fs::copy(src, &docx).map_err(|e| format!("work folder: {e}"))?;
+            } else {
+                document(src, ext, "docx", &docx, work)?;
+            }
+            to_pages(&docx, out, work.path())
+        }
         // Plain text keeps its exact characters through LibreOffice; pandoc would read
         // it as Markdown and change *, # and _.
         "pdf" | "docx" | "odt" if office_in || ext == "txt" => libreoffice(src, target, out),
@@ -1431,7 +1458,7 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
             }
             let text = paragraphs(&String::from_utf8_lossy(&bytes));
             if text.is_empty() {
-                return Err("this PDF has no text to take out (its pages may be scans)".into());
+                return Err(NO_TEXT.into());
             }
             if target == "txt" {
                 fs::write(out, text.join("\n\n") + "\n").map_err(|e| format!("work folder: {e}"))?;
@@ -1442,8 +1469,367 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
             }
             Ok(Output::File)
         }
+        // Each page's text back in rows and columns, one sheet per page (convert/sheet.rs).
+        "xlsx" => {
+            if count > MAX_TEXT_PAGES {
+                return Err(format!("this PDF has {count} pages: spreadsheets are made from PDFs up to {MAX_TEXT_PAGES} pages"));
+            }
+            let mut sheets = Vec::new();
+            for first in (1..=count).step_by(SHEET_BATCH) {
+                let pages = format!("{first}-{}", (first + SHEET_BATCH - 1).min(count));
+                mutool.run(work.path(), &["draw", "-q", "-F", "stext", "-o", "text.xml"], &pages)?;
+                let part = work.path().join("text.xml");
+                if fs::metadata(&part).map_err(|e| format!("work folder: {e}"))?.len() > SHEET_BATCH_BUDGET {
+                    return Err("this PDF holds too much text to put in a spreadsheet".into());
+                }
+                let xml = fs::read(&part).map_err(|e| format!("work folder: {e}"))?;
+                for table in sheet::tables(&String::from_utf8_lossy(&xml)) {
+                    sheets.push((format!("Page {}", sheets.len() + 1), table));
+                }
+            }
+            if sheets.iter().all(|(_, rows)| rows.is_empty()) {
+                return Err(NO_TEXT.into());
+            }
+            sheet::write_xlsx(out, &sheets).map_err(|e| format!("couldn't write the spreadsheet: {e}"))?;
+            Ok(Output::File)
+        }
+        // The text as Word, as for DOCX, then into Pages.
+        "pages" => {
+            check_pages()?;
+            let docx = work.path().join("text.docx");
+            pdf(src, "docx", &docx, work)?;
+            to_pages(&docx, out, work.path())?;
+            Ok(Output::File)
+        }
         other => Err(format!("a PDF can't become .{other}")),
     }
+}
+
+const NO_TEXT: &str = "this PDF has no text to take out (its pages may be scans)";
+
+/// Pages read for a spreadsheet at a time: MuPDF's structured text says where every
+/// character is, so it is far bigger than the text itself.
+const SHEET_BATCH: usize = 20;
+const SHEET_BATCH_BUDGET: u64 = 200 * 1024 * 1024;
+
+/// RTFD folders and text clippings as a document the converters read, with its format.
+/// macOS turns an RTFD into a web page with its pictures inside (textutil, whose Word
+/// files leave the pictures out); elsewhere its rich text (TXT.rtf, inside the folder)
+/// is used, without the pictures. A text clipping holds rich text, plain text or both:
+/// rich text is taken first.
+fn plain_document(src: &Path, ext: &str, work: &Path) -> Result<(PathBuf, String), String> {
+    if ext == "textclipping" {
+        return clipping_document(src, work);
+    }
+    if cfg!(target_os = "macos") {
+        // textutil writes each picture as a file beside the page; they go into the
+        // page as data, so pandoc's sandbox never has to open another file.
+        let dir = work.join("rtfd");
+        fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
+        let page = dir.join("page.html");
+        let mut cmd = Command::new("/usr/bin/textutil");
+        cmd.args(["-convert", "html", "-output"]).arg(&page).arg(src);
+        run(cmd, QUICK)?;
+        let html = fs::read_to_string(&page).map_err(|_| "macOS couldn't read this RTFD".to_string())?;
+        let html_in = work.join("input.html");
+        fs::write(&html_in, inline_pictures(&html, &dir)).map_err(|e| format!("work folder: {e}"))?;
+        return Ok((html_in, "html".into()));
+    }
+    // Only a real file inside the folder, never a link out of it.
+    let inner = src.join("TXT.rtf");
+    if !fs::symlink_metadata(&inner).is_ok_and(|m| m.is_file()) {
+        return Err("this RTFD folder has no TXT.rtf inside".into());
+    }
+    let rtf = work.join("input.rtf");
+    fs::copy(&inner, &rtf).map_err(|e| format!("can't read the file: {e}"))?;
+    Ok((rtf, "rtf".into()))
+}
+
+/// A Finder text clipping: a property list whose "UTI-Data" holds the text under its
+/// type ("public.rtf", "public.utf8-plain-text", ...). Clippings from before macOS
+/// 10.x keep it in a resource fork instead, which other systems can't see.
+fn clipping_document(src: &Path, work: &Path) -> Result<(PathBuf, String), String> {
+    let size = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?.len();
+    if size == 0 {
+        return Err("this clipping keeps its text the old way (in a resource fork), which can't be read".into());
+    }
+    if size > 20 * 1024 * 1024 {
+        return Err("this clipping is too large".into());
+    }
+    let value = plist::Value::from_file(src).map_err(|_| "this is not a text clipping macOS saved".to_string())?;
+    let data = value
+        .as_dictionary()
+        .and_then(|d| d.get("UTI-Data"))
+        .and_then(plist::Value::as_dictionary)
+        .ok_or("this clipping holds no text")?;
+    let bytes = |key: &str| -> Option<Vec<u8>> {
+        let v = data.get(key)?;
+        v.as_data().map(<[u8]>::to_vec).or_else(|| v.as_string().map(|s| s.as_bytes().to_vec()))
+    };
+    if let Some(rtf) = bytes("public.rtf").filter(|b| b.starts_with(b"{\\rtf")) {
+        let path = work.join("input.rtf");
+        fs::write(&path, rtf).map_err(|e| format!("work folder: {e}"))?;
+        return Ok((path, "rtf".into()));
+    }
+    let text = bytes("public.utf8-plain-text")
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .or_else(|| bytes("public.utf16-external-plain-text").or_else(|| bytes("public.utf16-plain-text")).map(|b| utf16_text(&b)))
+        .or_else(|| bytes("public.plain-text").map(|b| String::from_utf8_lossy(&b).into_owned()))
+        .filter(|t| !t.trim().is_empty())
+        .ok_or("this clipping holds no text (it may be a picture or a link)")?;
+    let path = work.join("input.txt");
+    fs::write(&path, text).map_err(|e| format!("work folder: {e}"))?;
+    Ok((path, "txt".into()))
+}
+
+/// textutil's page with each `src="file:///NAME"` picture in `dir` put in as a data:
+/// URL. Only plain names count (no folders, no ".."), only picture types, and only
+/// pictures up to 50 MB; anything else is left as it was.
+fn inline_pictures(html: &str, dir: &Path) -> String {
+    use base64::Engine;
+    const MARK: &str = "src=\"file:///";
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find(MARK) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + MARK.len()..];
+        let Some(end) = after.find('"') else {
+            rest = &rest[at..];
+            break;
+        };
+        let name = percent_decode(&after[..end]);
+        let mime = Path::new(&name).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).and_then(|e| {
+            Some(match e.as_str() {
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "tif" | "tiff" => "image/tiff",
+                "heic" => "image/heic",
+                "webp" => "image/webp",
+                "bmp" => "image/bmp",
+                _ => return None,
+            })
+        });
+        let plain = !name.is_empty() && !name.contains(['/', '\\']) && name != ".." && name != ".";
+        let picture = dir.join(&name);
+        let small = fs::symlink_metadata(&picture).is_ok_and(|m| m.is_file() && m.len() <= 50 * 1024 * 1024);
+        match (mime, plain && small) {
+            (Some(mime), true) => match fs::read(&picture) {
+                Ok(bytes) => out.push_str(&format!("src=\"data:{mime};base64,{}\"", base64::engine::general_purpose::STANDARD.encode(bytes))),
+                Err(_) => out.push_str(&rest[at..at + MARK.len() + end + 1]),
+            },
+            _ => out.push_str(&rest[at..at + MARK.len() + end + 1]),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// "My%20Picture.png" to "My Picture.png".
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// UTF-16 text, big- or little-endian by its byte order mark (little without one, as
+/// Macs write it).
+fn utf16_text(bytes: &[u8]) -> String {
+    let (big, body) = match bytes {
+        [0xFE, 0xFF, rest @ ..] => (true, rest),
+        [0xFF, 0xFE, rest @ ..] => (false, rest),
+        rest => (false, rest),
+    };
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|p| if big { u16::from_be_bytes([p[0], p[1]]) } else { u16::from_le_bytes([p[0], p[1]]) })
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// Pages' bundle id: its files can only be written by Pages itself.
+#[cfg(target_os = "macos")]
+const PAGES_ID: &str = "com.apple.iWork.Pages";
+
+/// Whether Apple's Pages app is on this Mac. Elsewhere there is no Pages.
+pub fn pages_installed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWorkspace;
+        use objc2_foundation::NSString;
+        NSWorkspace::sharedWorkspace().URLForApplicationWithBundleIdentifier(&NSString::from_str(PAGES_ID)).is_some()
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+/// Opens a Word file in Pages and saves it as a Pages file, by AppleScript. Pages is
+/// quit again if it wasn't running before. macOS asks once whether the app may control
+/// Pages (System Settings > Privacy & Security > Automation).
+#[cfg(target_os = "macos")]
+const PAGES_SCRIPT: &str = r#"on run argv
+	set inFile to POSIX file (item 1 of argv)
+	set outFile to POSIX file (item 2 of argv)
+	set wasRunning to application id "com.apple.iWork.Pages" is running
+	tell application id "com.apple.iWork.Pages"
+		with timeout of 150 seconds
+			set theDoc to open inFile
+			save theDoc in outFile
+			close theDoc saving no
+		end timeout
+		if not wasRunning then quit
+	end tell
+end run
+"#;
+
+/// Pages is there to write a Pages file: checked before the Word file is made for it.
+fn check_pages() -> Result<(), String> {
+    if pages_installed() {
+        Ok(())
+    } else if cfg!(target_os = "macos") {
+        Err("Pages isn't installed: it is free in the App Store".into())
+    } else {
+        Err("Pages files can only be made on a Mac with Pages".into())
+    }
+}
+
+fn to_pages(docx: &Path, out: &Path, work: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        check_pages()?;
+        let script = work.join("pages.applescript");
+        fs::write(&script, PAGES_SCRIPT).map_err(|e| format!("work file: {e}"))?;
+        let mut cmd = Command::new("/usr/bin/osascript");
+        cmd.arg(&script).arg(docx).arg(out);
+        return match run_tool(cmd, OFFICE) {
+            // Apple events to Pages not allowed (errAEEventNotPermitted).
+            Err(f) if f.output.contains("-1743") || f.message.contains("-1743") => Err(format!(
+                "{} may not use Pages yet: allow it in System Settings > Privacy & Security > Automation, then try again",
+                crate::APP_NAME
+            )),
+            Err(f) => Err(f.message),
+            Ok(()) if out.is_dir() => Err("Pages saved a package folder: choose Pages > Settings > General > Save new documents as single files".into()),
+            Ok(()) => Ok(()),
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (docx, out, work);
+        Err("Pages files can only be made on a Mac with Pages".into())
+    }
+}
+
+/// The PDF/A output intent: the sRGB profile copied into the work folder as
+/// "srgb.icc", embedded once and named in the catalog. Ghostscript's own example
+/// (PDFA_def.ps) also sets the title to "Title"; this leaves the PDF's own.
+const PDFA_DEF: &str = r#"%!
+/ICCProfile (srgb.icc) def
+[/_objdef {icc_PDFA} /type /stream /OBJ pdfmark
+[{icc_PDFA} << /N 3 >> /PUT pdfmark
+[{icc_PDFA} ICCProfile (r) file /PUT pdfmark
+[/_objdef {OutputIntent_PDFA} /type /dict /OBJ pdfmark
+[{OutputIntent_PDFA} <<
+  /Type /OutputIntent
+  /S /GTS_PDFA1
+  /DestOutputProfile {icc_PDFA}
+  /OutputConditionIdentifier (sRGB)
+>> /PUT pdfmark
+[{Catalog} << /OutputIntents [ {OutputIntent_PDFA} ] >> /PUT pdfmark
+"#;
+
+/// PDF/A-2b, the archive form of PDF, with Ghostscript: fonts embedded, colours in
+/// sRGB. What PDF/A can't hold (scripts, outside links) is left out rather than giving
+/// up. Run in the work folder with short names, so no "%" in a path can reach
+/// Ghostscript's output name, and -dSAFER lets it read only the profile besides.
+fn to_pdfa(src: &Path, out: &Path, work: &Path) -> Result<(), String> {
+    let gs = ghostscript()?;
+    let profile = srgb_profile(&gs).ok_or("no sRGB colour profile was found for the PDF/A (reinstall Ghostscript)")?;
+    fs::copy(&profile, work.join("srgb.icc")).map_err(|e| format!("couldn't read the colour profile: {e}"))?;
+    fs::write(work.join("pdfa.ps"), PDFA_DEF).map_err(|e| format!("work file: {e}"))?;
+    let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).map(str::to_string).ok_or("work folder name");
+    let (input, output) = (name(src)?, name(out)?);
+    if src.parent() != Some(work) || out.parent() != Some(work) {
+        return Err("work folder".into());
+    }
+    let mut cmd = Command::new(gs);
+    cmd.current_dir(work)
+        .args(["-q", "-dPDFA=2", "-dBATCH", "-dNOPAUSE", "-dNOOUTERSAVE", "-dSAFER"])
+        .args(["-sColorConversionStrategy=RGB", "-sDEVICE=pdfwrite", "-dPDFACompatibilityPolicy=1", "--permit-file-read=srgb.icc"])
+        .arg(format!("-sOutputFile={output}"))
+        .arg("pdfa.ps")
+        .arg(input);
+    match run_tool(cmd, PDF_TOTAL) {
+        Err(f) if f.output.to_lowercase().contains("password") => Err("this PDF is locked with a password: Ghostscript can't open it".into()),
+        other => other.map_err(|f| f.message),
+    }
+}
+
+/// An sRGB colour profile: Ghostscript's own (beside it, or where Linux distributions
+/// put it), or else the system's.
+fn srgb_profile(gs: &Path) -> Option<PathBuf> {
+    let real = fs::canonicalize(gs).unwrap_or_else(|_| gs.to_path_buf());
+    let mut found = Vec::new();
+    if let Some(bin) = real.parent() {
+        // Homebrew and builds from source: bin/../share/ghostscript/iccprofiles.
+        found.push(bin.join("../share/ghostscript/iccprofiles/srgb.icc"));
+        // Windows: gs10.xx\bin\..\iccprofiles.
+        found.push(bin.join("../iccprofiles/srgb.icc"));
+    }
+    if cfg!(target_os = "linux") {
+        found.push("/usr/share/color/icc/ghostscript/srgb.icc".into());
+        found.push("/usr/share/ghostscript/iccprofiles/srgb.icc".into());
+        if let Ok(entries) = fs::read_dir("/usr/share/ghostscript") {
+            found.extend(entries.flatten().map(|e| e.path().join("iccprofiles/srgb.icc")));
+        }
+        found.push("/usr/share/color/icc/colord/sRGB.icc".into());
+    }
+    if cfg!(target_os = "macos") {
+        found.push("/System/Library/ColorSync/Profiles/sRGB Profile.icc".into());
+    }
+    if cfg!(windows) {
+        let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+        found.push(system.join("System32\\spool\\drivers\\color\\sRGB Color Space Profile.icm"));
+    }
+    found.into_iter().find(|p| p.is_file())
+}
+
+/// Ghostscript: `gs`, or on Windows `gswin64c.exe`, which its installer puts in
+/// "C:\Program Files\gs\gs<version>\bin" without adding it to the PATH.
+fn ghostscript() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        if let Ok(found) = tool("gswin64c") {
+            return Ok(found);
+        }
+        let programs = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap_or_else(|| "C:\\Program Files".into());
+        let version = |name: &str| -> Vec<u32> { name.trim_start_matches("gs").split('.').filter_map(|n| n.parse().ok()).collect() };
+        return fs::read_dir(programs.join("gs"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| (version(&e.file_name().to_string_lossy()), e.path().join("bin\\gswin64c.exe")))
+            .filter(|(_, exe)| exe.is_file())
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .map(|(_, exe)| exe)
+            .ok_or_else(|| not_installed("gs"));
+    }
+    #[cfg(not(windows))]
+    tool("gs")
 }
 
 /// The pages of a PDF drawn into a "pages" folder in `work`, as "1.png", "2.png", ...
@@ -3306,7 +3692,22 @@ pub const CONVERTERS: &[Converter] = &[
         pacman: "perl-image-exiftool",
         zypper: "perl-Image-ExifTool",
     },
+    // PDF/A. Not in winget (checked 2026-11-13): on Windows the message names the
+    // download page instead, and the menu doesn't offer to install it.
+    Converter {
+        tool: "gs",
+        name: "Ghostscript",
+        brew: "ghostscript",
+        winget: "",
+        apt: "ghostscript",
+        dnf: "ghostscript",
+        pacman: "ghostscript",
+        zypper: "ghostscript",
+    },
 ];
+
+/// Where Ghostscript for Windows is downloaded, as winget has no package for it.
+pub const GHOSTSCRIPT_DOWNLOAD: &str = "https://ghostscript.com/releases/gsdnld.html";
 
 fn converter(tool: &str) -> Option<&'static Converter> {
     CONVERTERS.iter().find(|c| c.tool == tool)
@@ -3328,6 +3729,7 @@ pub fn installed(c: &Converter) -> bool {
     match c.tool {
         "magick" => magick().is_ok(),
         "soffice" => soffice().is_ok(),
+        "gs" => ghostscript().is_ok(),
         tool_name => tool(tool_name).is_ok(),
     }
 }
@@ -3337,7 +3739,10 @@ fn install_hint(name: &str) -> String {
     if cfg!(target_os = "macos") {
         format!("brew install {}", c.map_or(name, |c| c.brew))
     } else if cfg!(windows) {
-        format!("winget install {}", c.map_or(name, |c| c.winget))
+        match c {
+            Some(c) if c.winget.is_empty() && c.tool == "gs" => format!("download it from {GHOSTSCRIPT_DOWNLOAD}"),
+            _ => format!("winget install {}", c.map_or(name, |c| c.winget)),
+        }
     } else {
         match (c, crate::converters::Linux::here()) {
             (Some(c), Some(pm)) => pm.hint(c),
@@ -5039,5 +5444,232 @@ mod tests {
         let fake = work.path().join("fake.nef");
         fs::write(&fake, [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10]).unwrap();
         assert_eq!(convert(&fake, "jpg", None, work.path()).unwrap_err(), "this is not a valid .nef file");
+    }
+
+    /// A one-page PDF with each text at its own place (x, y from the bottom left).
+    fn placed_pdf(texts: &[(u32, u32, &str)]) -> Vec<u8> {
+        let mut stream = String::new();
+        for (x, y, text) in texts {
+            stream.push_str(&format!("BT /F1 10 Tf {x} {y} Td ({text}) Tj ET\n"));
+        }
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [4 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend(format!("{} 0 obj\n{object}\nendobj\n", i + 1).bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            pdf.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        pdf.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
+        pdf
+    }
+
+    /// The first sheet of a workbook, read with the system's unzip (None without it).
+    fn first_sheet(xlsx: &Path) -> Option<String> {
+        let out = Command::new("unzip").arg("-p").arg(xlsx).arg("xl/worksheets/sheet1.xml").output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Needs MuPDF (REQUIRE_MUTOOL makes its absence a failure, as in CI).
+    #[test]
+    fn a_pdf_table_becomes_a_spreadsheet() {
+        if tool("mutool").is_err() {
+            assert!(std::env::var_os("REQUIRE_MUTOOL").is_none_or(|v| v.is_empty()), "mutool should be installed here");
+            eprintln!("mutool isn't installed: PDF to XLSX not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("prices.pdf");
+        fs::write(
+            &src,
+            placed_pdf(&[
+                (60, 720, "Product"),
+                (200, 720, "Units"),
+                (300, 720, "Price"),
+                (60, 700, "Widget A"),
+                (205, 700, "1200"),
+                (300, 700, "4.50"),
+                (60, 680, "Gadget & Co"),
+                (210, 680, "-3"),
+                (300, 680, "1,234.56"),
+            ]),
+        )
+        .unwrap();
+        let out = convert(&src, "xlsx", None, work.path()).unwrap();
+        assert_eq!(out, work.path().join("prices.xlsx"));
+        assert!(fs::read(&out).unwrap().starts_with(b"PK\x03\x04"));
+        if let Some(sheet) = first_sheet(&out) {
+            for cell in [
+                r#"<c r="A1" t="inlineStr"><is><t xml:space="preserve">Product</t></is></c>"#,
+                r#"<c r="B2"><v>1200</v></c>"#,
+                r#"<c r="A3" t="inlineStr"><is><t xml:space="preserve">Gadget &amp; Co</t></is></c>"#,
+                r#"<c r="B3"><v>-3</v></c>"#,
+                r#"<c r="C3"><v>1234.56</v></c>"#,
+            ] {
+                assert!(sheet.contains(cell), "{cell} not in {sheet}");
+            }
+        }
+        // A page without text: nothing to put in cells.
+        let blank = work.path().join("blank.pdf");
+        fs::write(&blank, placed_pdf(&[])).unwrap();
+        assert_eq!(convert(&blank, "xlsx", None, work.path()).unwrap_err(), NO_TEXT);
+    }
+
+    /// Needs Ghostscript; where it isn't installed this passes without checking.
+    #[test]
+    fn a_pdf_becomes_pdf_a() {
+        if ghostscript().is_err() {
+            eprintln!("Ghostscript isn't installed: PDF/A not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("report.pdf");
+        fs::write(&src, tiny_pdf(&["Archive me"])).unwrap();
+        let out = convert(&src, "tool:pdfa", None, work.path()).unwrap();
+        assert_eq!(out, work.path().join("report (PDF-A).pdf"));
+        let bytes = fs::read(&out).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        // The PDF/A part and level in its metadata, and the sRGB output intent.
+        let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"pdfaid:part"), "no PDF/A metadata");
+        assert!(has(b"OutputIntents") || has(b"GTS_PDFA1"), "no output intent");
+        // The original is never touched.
+        assert_eq!(fs::read(&src).unwrap(), tiny_pdf(&["Archive me"]));
+        assert!(srgb_profile(&ghostscript().unwrap()).is_some());
+    }
+
+    #[test]
+    fn ghostscript_is_offered_where_it_can_be_installed() {
+        let gs = converter("gs").unwrap();
+        assert_eq!(gs.name, "Ghostscript");
+        assert_eq!(missing(&not_installed("gs")).map(|c| c.tool), Some("gs"));
+        if cfg!(windows) {
+            assert!(install_hint("gs").contains("ghostscript.com"));
+        }
+    }
+
+    /// A binary property list like the ones Finder saves for dragged text.
+    fn clipping(data: &[(&str, plist::Value)]) -> Vec<u8> {
+        let mut uti = plist::Dictionary::new();
+        for (key, value) in data {
+            uti.insert((*key).to_string(), value.clone());
+        }
+        let mut top = plist::Dictionary::new();
+        top.insert("UTI-Data".into(), plist::Value::Dictionary(uti));
+        let mut bytes = Vec::new();
+        plist::Value::Dictionary(top).to_writer_binary(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn text_clippings_give_their_text() {
+        let work = tempfile::tempdir().unwrap();
+        let clip = work.path().join("Quote.textClipping");
+        fs::write(&clip, clipping(&[("public.utf8-plain-text", plist::Value::String("To be, or not *to* be.".into()))])).unwrap();
+        // Plain text to plain text: exactly as it was, no converter needed.
+        let out = convert(&clip, "txt", None, work.path()).unwrap();
+        assert_eq!(out, work.path().join("Quote.txt"));
+        assert_eq!(fs::read_to_string(out).unwrap(), "To be, or not *to* be.");
+        // UTF-16, as some apps put it.
+        let wide = work.path().join("Wide.textClipping");
+        let units: Vec<u8> = [0xFF, 0xFE].into_iter().chain("Grüße".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        fs::write(&wide, clipping(&[("public.utf16-external-plain-text", plist::Value::Data(units))])).unwrap();
+        assert_eq!(fs::read_to_string(convert(&wide, "txt", None, work.path()).unwrap()).unwrap(), "Grüße");
+        // Rich text is preferred, so it keeps its formatting.
+        let rich = work.path().join("Rich.textClipping");
+        let rtf = b"{\\rtf1\\ansi {\\b Bold} words}".to_vec();
+        fs::write(&rich, clipping(&[("public.utf8-plain-text", plist::Value::String("Bold words".into())), ("public.rtf", plist::Value::Data(rtf))])).unwrap();
+        let (staged, ext) = plain_document(&rich, "textclipping", work.path()).unwrap();
+        assert_eq!(ext, "rtf");
+        assert!(fs::read(staged).unwrap().starts_with(b"{\\rtf1"));
+        // An old clipping (text in the resource fork), a picture clipping, and junk.
+        let old = work.path().join("Old.textClipping");
+        fs::write(&old, b"").unwrap();
+        assert!(convert(&old, "txt", None, work.path()).unwrap_err().contains("resource fork"));
+        let picture = work.path().join("Picture.textClipping");
+        fs::write(&picture, clipping(&[("public.png", plist::Value::Data(vec![0x89, b'P']))])).unwrap();
+        assert!(convert(&picture, "txt", None, work.path()).unwrap_err().contains("holds no text"));
+        let junk = work.path().join("Junk.textClipping");
+        fs::write(&junk, b"not a property list").unwrap();
+        assert_eq!(convert(&junk, "txt", None, work.path()).unwrap_err(), "this is not a text clipping macOS saved");
+    }
+
+    /// An RTFD is a folder with TXT.rtf inside. macOS reads it with textutil; elsewhere
+    /// its TXT.rtf goes through LibreOffice. Either way pandoc writes the text.
+    #[test]
+    fn an_rtfd_folder_becomes_a_document() {
+        let work = tempfile::tempdir().unwrap();
+        let rtfd = work.path().join("Notes.rtfd");
+        fs::create_dir(&rtfd).unwrap();
+        fs::write(rtfd.join("TXT.rtf"), b"{\\rtf1\\ansi Hello from an RTFD.\\par}").unwrap();
+        // A file named .rtfd is not an RTFD.
+        let fake = work.path().join("Fake.rtfd");
+        fs::write(&fake, b"x").unwrap();
+        assert_eq!(convert(&fake, "txt", None, work.path()).unwrap_err(), "this .rtfd is not an RTFD folder");
+        let ready = tool("pandoc").is_ok_and(|p| check_pandoc_version(&p).is_ok()) && (cfg!(target_os = "macos") || soffice().is_ok());
+        if !ready {
+            eprintln!("pandoc (and LibreOffice off macOS) isn't installed: RTFD not tested");
+            return;
+        }
+        let out = convert(&rtfd, "txt", None, work.path()).unwrap();
+        assert_eq!(out, work.path().join("Notes.txt"));
+        assert!(fs::read_to_string(out).unwrap().contains("Hello from an RTFD."));
+        // macOS keeps the pictures: an RTFD made by textutil from a page with a PNG.
+        if cfg!(target_os = "macos") && magick().is_ok() {
+            let png = work.path().join("dot.png");
+            let mut make = Command::new(magick().unwrap());
+            make.args(["-size", "40x20", "xc:orange"]).arg(&png);
+            assert!(make.status().unwrap().success());
+            let page = work.path().join("page.html");
+            fs::write(&page, r#"<html><body><p>Before</p><img src="dot.png"><p>After</p></body></html>"#).unwrap();
+            let pictured = work.path().join("Pictured.rtfd");
+            let made = Command::new("/usr/bin/textutil").args(["-convert", "rtfd"]).arg(&page).arg("-output").arg(&pictured).status().unwrap();
+            assert!(made.success());
+            let docx = convert(&pictured, "docx", None, work.path()).unwrap();
+            let listed = Command::new("unzip").arg("-l").arg(&docx).output().unwrap();
+            assert!(String::from_utf8_lossy(&listed.stdout).contains("media/"), "the picture didn't reach the Word file");
+        }
+    }
+
+    #[test]
+    fn rtfd_pictures_go_into_the_page() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("My Pic.png"), b"\x89PNG\r\n").unwrap();
+        fs::write(dir.path().join("notes.pdf"), b"%PDF-").unwrap();
+        let html = r#"<img src="file:///My%20Pic.png" alt="a"><img src="file:///notes.pdf"><img src="file:///../up.png"><img src="file:///gone.png"><img src="file:///cut"#;
+        let out = inline_pictures(html, dir.path());
+        assert!(out.starts_with(r#"<img src="data:image/png;base64,iVBORw0K" alt="a">"#), "{out}");
+        // Not a picture, a way out of the folder, a missing file: left as they were.
+        assert!(out.contains(r#"<img src="file:///notes.pdf">"#));
+        assert!(out.contains(r#"<img src="file:///../up.png">"#));
+        assert!(out.contains(r#"<img src="file:///gone.png">"#));
+        assert!(out.ends_with(r#"<img src="file:///cut"#));
+        assert_eq!(percent_decode("a%20b%2"), "a b%2");
+        assert_eq!(percent_decode("caf%C3%A9"), "café");
+    }
+
+    #[test]
+    fn pages_needs_pages() {
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("letter.txt");
+        fs::write(&src, "Dear reader").unwrap();
+        if !pages_installed() {
+            let err = convert(&src, "pages", None, work.path()).unwrap_err();
+            if cfg!(target_os = "macos") {
+                assert_eq!(err, "Pages isn't installed: it is free in the App Store");
+            } else {
+                assert_eq!(err, ".txt files can't become .pages");
+            }
+        }
     }
 }
