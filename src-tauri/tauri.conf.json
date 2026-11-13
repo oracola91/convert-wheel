@@ -33,6 +33,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "Pirouette",
     "targets": [
       "app"
     ],

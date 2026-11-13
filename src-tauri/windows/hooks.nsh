@@ -10,6 +10,9 @@
 
 !define OLDNAME "Convert Wheel"
 !define OLDPROGRAM "convert-wheel"
+; Where the installer under the earlier app id kept its own keys: Tauri names that folder
+; after the publisher, which was the app id's second part then. Now it is "Pirouette".
+!define OLDMANUKEY "Software\convertwheel"
 !define OLDUNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${OLDNAME}"
 !define RUNKEY "Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -22,8 +25,7 @@ Var OldDesktopShortcut
   StrCpy $OldRunAtLogin ""
   StrCpy $OldDesktopShortcut 0
   ; Where the old copy is and its uninstaller (quoted), as the old installer saved them.
-  ; MANUKEY only inside the macros: the installer defines it after reading this file.
-  ReadRegStr $R8 HKCU "${MANUKEY}\${OLDNAME}" ""
+  ReadRegStr $R8 HKCU "${OLDMANUKEY}\${OLDNAME}" ""
   ReadRegStr $R9 HKCU "${OLDUNINSTKEY}" "UninstallString"
   ${If} $R8 != ""
   ${AndIf} $R9 != ""
@@ -40,13 +42,16 @@ Var OldDesktopShortcut
     DetailPrint "Old uninstaller finished ($0)"
     Delete "$R8\uninstall.exe"
     RMDir "$R8"
-    DeleteRegKey HKCU "${MANUKEY}\${OLDNAME}"
-    DeleteRegKey /ifempty HKCU "${MANUKEY}"
+    DeleteRegKey HKCU "${OLDMANUKEY}\${OLDNAME}"
+    DeleteRegKey /ifempty HKCU "${OLDMANUKEY}"
     StrCpy $OldRemoved 1
   ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; A copy installed under the earlier app id kept its keys in the old publisher folder.
+  DeleteRegKey HKCU "${OLDMANUKEY}\${PRODUCTNAME}"
+  DeleteRegKey /ifempty HKCU "${OLDMANUKEY}"
   ${If} ${FileExists} "$INSTDIR\${OLDPROGRAM}.exe"
     Delete "$INSTDIR\${OLDPROGRAM}.exe"
     ${If} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"
