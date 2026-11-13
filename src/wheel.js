@@ -1,7 +1,7 @@
 // Draws the wheel: formats, (Option/Alt+Shift) tools or (Control+Shift) actions.
 // The drop itself is handled natively (drop_view.rs), which
 // says what is under the cursor. The glass and the file icon in the hub are native too.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { listen } = window.__TAURI__.event;
 const { invoke } = window.__TAURI__.core;
 

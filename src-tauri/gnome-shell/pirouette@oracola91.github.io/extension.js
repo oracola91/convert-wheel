@@ -1,7 +1,7 @@
-// Convert Wheel's helper inside GNOME Shell.
+// Pirouette's helper inside GNOME Shell.
 //
 // On Wayland an app can't see another app's drag, the keys held during it or the
-// pointer, so Convert Wheel can't notice a Shift+drag by itself. GNOME Shell can.
+// pointer, so Pirouette can't notice a Shift+drag by itself. GNOME Shell can.
 // While a drag goes on, this tells the app which keys are held, over the socket the
 // app already listens on (src-tauri/src/linux.rs), and puts the wheel the app opens
 // under the pointer: a Wayland app can't place its own windows. While that wheel is
@@ -21,14 +21,14 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 // How often the keys are sent while a drag goes on: the app's X11 poll.
 const POLL_MS = 30;
 // The wheel's window: its title and its size (src-tauri/tauri.conf.json).
-const WHEEL_TITLE = 'Convert Wheel';
+const WHEEL_TITLE = 'Pirouette';
 const WHEEL_SIZE = 340;
 // The arrow keys, in the order the app numbers them, and the keys that may be held
 // with them during a drag (Shift opens the wheel; Alt and Control pick another one).
 const ARROWS = ['Left', 'Right', 'Up', 'Down'];
 const HELD = ['', '<Shift>', '<Shift><Alt>', '<Shift><Control>', '<Alt>', '<Control>'];
 
-export default class ConvertWheelExtension extends Extension {
+export default class PirouetteExtension extends Extension {
     enable() {
         this._handlers = [];
         this._displayHandlers = [];
@@ -131,7 +131,7 @@ export default class ConvertWheelExtension extends Extension {
             if (sent === bytes.length)
                 return true;
         } catch (e) {
-            console.debug(`Convert Wheel: the app stopped listening (${e.message})`);
+            console.debug(`Pirouette: the app stopped listening (${e.message})`);
         }
         this._close();
         return false;
@@ -209,7 +209,7 @@ function isWheel(win) {
 
 // A connection to the app's socket, or null when the app isn't running.
 function connect() {
-    const path = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'convert-wheel.sock']);
+    const path = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'pirouette.sock']);
     try {
         return new Gio.SocketClient().connect(Gio.UnixSocketAddress.new(path), null);
     } catch {

@@ -255,7 +255,7 @@ mod mac_share {
     define_class!(
         #[unsafe(super(NSObject))]
         #[thread_kind = MainThreadOnly]
-        #[name = "ConvertWheelShareMenuTarget"]
+        #[name = "PirouetteShareMenuTarget"]
         struct Target;
 
         impl Target {

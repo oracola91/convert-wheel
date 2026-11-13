@@ -96,11 +96,11 @@ pub fn config(style: Style, level: &str) -> Option<Config> {
 /// The tracing process: `--trace <pixels.pam> <out.svg> <photo|flat> <smaller|balanced|best>`.
 /// Returns the exit code; a failure's reason goes to the error output, whose last
 /// line becomes the notification's text.
-/// `convert-wheel --draw-svg <in.svg> <out.png>`: draws an SVG as a PNG (run by the
+/// `pirouette --draw-svg <in.svg> <out.png>`: draws an SVG as a PNG (run by the
 /// app itself, convert.rs draw_svg). Never reads another file the SVG points to.
 pub fn draw_main(args: &[String]) -> i32 {
     let [svg, png] = args else {
-        eprintln!("usage: convert-wheel --draw-svg <in.svg> <out.png>");
+        eprintln!("usage: pirouette --draw-svg <in.svg> <out.png>");
         return 2;
     };
     match draw_file(Path::new(svg), Path::new(png)) {
@@ -156,7 +156,7 @@ fn draw_scale(width: f32, height: f32) -> f32 {
 
 pub fn trace_main(args: &[String]) -> i32 {
     let [pam, out, style, level] = args else {
-        eprintln!("usage: convert-wheel --trace <pixels.pam> <out.svg> <photo|flat> <smaller|balanced|best>");
+        eprintln!("usage: pirouette --trace <pixels.pam> <out.svg> <photo|flat> <smaller|balanced|best>");
         return 2;
     };
     match trace_file(Path::new(pam), Path::new(out), style, level) {

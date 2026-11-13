@@ -402,7 +402,7 @@ pub(crate) fn files_in_args(args: &[String], cwd: &std::path::Path) -> Option<Ve
 }
 
 /// Opens the wheel from the keyboard shortcut and closes it again if no file comes.
-/// `convert-wheel --show tools` (or actions) opens that wheel instead of the formats.
+/// `pirouette --show tools` (or actions) opens that wheel instead of the formats.
 #[cfg(target_os = "linux")]
 pub(crate) fn show_pinned(app: &AppHandle, which: Which) {
     let generation = open_wheel(app, Vec::new(), true, which);

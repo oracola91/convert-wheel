@@ -1,14 +1,12 @@
 # Installing Pirouette
 
-Called Convert Wheel before. On Windows and Linux it kept that name up to 0.3.x; copies there take the new name when they update (the old copy is removed, settings stay). Files up to 0.3.x are named `Convert.Wheel_…`.
-
 Every version is on the repo's [Releases page](https://github.com/oracola91/pirouette/releases).
 
 **From version 0.1.1 the app updates itself.** It asks github.com for the newest version shortly after it starts and then once a day; when a new version is out, a notification says so and the menu offers **Install Update … and Restart**. So install once, by hand, and later versions arrive through the app. Copies of 0.1.0 have no updater and need one manual install of 0.1.1 or newer.
 
 | System | File |
 |---|---|
-| macOS, Apple silicon | `Pirouette_<version>_aarch64.dmg` (`Convert.Wheel_…` up to 0.2.1) |
+| macOS, Apple silicon | `Pirouette_<version>_aarch64.dmg` (`Pirouette_…` up to 0.2.1) |
 | Windows, one user, no admin rights | `Pirouette_<version>_x64-setup.exe` |
 | Windows, all users, management tools | `Pirouette_<version>_x64_en-US.msi` |
 | Ubuntu, Debian | `Pirouette_<version>_amd64.deb` |
@@ -29,7 +27,7 @@ brew install --cask libreoffice
 
 Or install only the ones you need, when you need them: when a drop needs a missing one, the menu offers **Install …** and runs the same `brew install` for you. ExifTool (`brew install exiftool`) is only needed to change a picture's or video's date and place in Info; the menu offers it the same way.
 
-**2. The app:** open the `.dmg` and drag Pirouette onto Applications. If an older Convert Wheel is there, delete it: it is the same app under its old name.
+**2. The app:** open the `.dmg` and drag Pirouette onto Applications. Delete an older copy first if there is one.
 
 **3. First launch:** macOS blocks apps that aren't signed by an Apple developer. Open Pirouette once, then go to System Settings > Privacy & Security and click "Open Anyway" next to Pirouette. Or, in Terminal:
 
@@ -43,9 +41,9 @@ xattr -dr com.apple.quarantine "/Applications/Pirouette.app"
 
 **From the source instead:** `./scripts/install-macos.sh` builds the app on this Mac, installs it in Applications and starts it. A local build needs no Gatekeeper step.
 
-**Update:** the app updates itself (menu > Install Update). By hand: install the new `.dmg` the same way, or run the script again. A copy that updated itself from 0.2.x keeps its old folder name, `Convert Wheel.app`, but shows Pirouette inside; the script replaces it with `Pirouette.app`.
+**Update:** the app updates itself (menu > Install Update). By hand: install the new `.dmg` the same way, or run the script again. A copy that updated itself from 0.2.x keeps its old folder name, `Pirouette.app`, but shows Pirouette inside; the script replaces it with `Pirouette.app`.
 
-**Uninstall:** turn off Open at login in Settings, quit, and delete Pirouette (or Convert Wheel) from Applications. Its settings, working files and log are in `~/Library/Application Support/local.convertwheel`, `~/Library/Caches/local.convertwheel` and `~/Library/Logs/local.convertwheel`; delete them too for a clean removal.
+**Uninstall:** turn off Open at login in Settings, quit, and delete Pirouette (or Pirouette) from Applications. Its settings, working files and log are in `~/Library/Application Support/io.github.oracola91.pirouette`, `~/Library/Caches/io.github.oracola91.pirouette` and `~/Library/Logs/io.github.oracola91.pirouette`; delete them too for a clean removal.
 
 ## Windows
 
@@ -80,7 +78,7 @@ Or install only the ones you need, when you need them: when a drop needs a missi
 
 **Update:** the app updates itself (menu > Install Update), and Open at Login stays as it was. By hand: run the new installer over the old one. The `.exe` then removes the old version first ("Uninstall before installing" is ticked); your settings stay, unless you tick "Delete the application data", but Open at Login is switched off, so turn it on again in the menu.
 
-**Uninstall:** Settings > Apps > Installed apps > Pirouette > Uninstall. The `.exe`'s uninstaller also removes Open at Login. For the `.msi`, turn off Open at Login in the icon's menu first (its uninstaller doesn't remove it), then uninstall, or `msiexec /x "Pirouette_<version>_x64_en-US.msi" /qn`. Settings are in `%APPDATA%\local.convertwheel`, working files in `%LOCALAPPDATA%\convertwheel`, the log in `%LOCALAPPDATA%\local.convertwheel\logs`.
+**Uninstall:** Settings > Apps > Installed apps > Pirouette > Uninstall. The `.exe`'s uninstaller also removes Open at Login. For the `.msi`, turn off Open at Login in the icon's menu first (its uninstaller doesn't remove it), then uninstall, or `msiexec /x "Pirouette_<version>_x64_en-US.msi" /qn`. Settings are in `%APPDATA%\io.github.oracola91.pirouette`, working files in `%LOCALAPPDATA%\pirouette`, the log in `%LOCALAPPDATA%\io.github.oracola91.pirouette\logs`.
 
 ## Linux
 
@@ -122,7 +120,7 @@ sudo apt install ./pandoc-3.12.1-1-amd64.deb
   sudo apt install ./Pirouette_<version>_amd64.deb
   ```
 
-  Start it from the app menu, or run `convert-wheel`.
+  Start it from the app menu, or run `pirouette`.
 
 - **Other Linux:** make the AppImage runnable and start it. Ubuntu 22.04 and later also need FUSE 2 for AppImages (`sudo apt install libfuse2`, or `libfuse2t64` on 24.04).
 
@@ -136,13 +134,13 @@ sudo apt install ./pandoc-3.12.1-1-amd64.deb
 **Without a drag (any session):** in Files, right-click a file > **Open With** > Pirouette: the wheel opens with the keyboard (arrows pick, Enter applies, Esc closes).
 
 - **x11:** hold Shift while dragging a file in the file manager (Files, Nemo, Caja, Thunar, Dolphin, PCManFM) or on the desktop.
-- **wayland** (the default on current Ubuntu and Fedora): Wayland doesn't let apps watch the mouse, so the wheel opens from a keyboard shortcut. In Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts, add one with the command `convert-wheel --show` (for the AppImage: its full path, then ` --show`) and a key such as Super+Shift+C. Press it, then drag a file onto the wheel. Esc or a click in the middle closes it; it also closes by itself after 20 seconds.
+- **wayland** (the default on current Ubuntu and Fedora): Wayland doesn't let apps watch the mouse, so the wheel opens from a keyboard shortcut. In Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts, add one with the command `pirouette --show` (for the AppImage: its full path, then ` --show`) and a key such as Super+Shift+C. Press it, then drag a file onto the wheel. Esc or a click in the middle closes it; it also closes by itself after 20 seconds.
 
 The menu icon needs AppIndicator support: on by default in Ubuntu, an extension on plain GNOME.
 
 **Update:** the app updates itself (menu > Install Update). For the `.deb` this installs as root, so it asks for your password: normally in the system's own dialog; where that isn't available, in a plain box titled "Authentication Required". Enter it only right after you chose Install Update. By hand: install the newer `.deb` the same way.
 
-**Uninstall:** turn off Open at Login in the icon's menu (the package doesn't remove it), then `sudo apt remove pirouette` (`convert-wheel` up to 0.3.x) or delete the AppImage. Remove the Pirouette shortcut (Convert Wheel up to 0.3.x) in Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts, and if nothing else needs them, the converters (`sudo apt remove pandoc mupdf-tools` and so on). Settings are in `~/.config/local.convertwheel`, working files in `~/.cache/convertwheel`, the log in `~/.local/share/local.convertwheel/logs`.
+**Uninstall:** turn off Open at Login in the icon's menu (the package doesn't remove it), then `sudo apt remove pirouette` or delete the AppImage. Remove the Pirouette shortcut in Settings > Keyboard > View and Customize Shortcuts > Custom Shortcuts, and if nothing else needs them, the converters (`sudo apt remove pandoc mupdf-tools` and so on). Settings are in `~/.config/io.github.oracola91.pirouette`, working files in `~/.cache/pirouette`, the log in `~/.local/share/io.github.oracola91.pirouette/logs`.
 
 **Known gaps:** Ubuntu's ImageMagick 6 refuses to write PDFs (a security policy) and may lack HEIC and AVIF support.
 
@@ -174,18 +172,18 @@ Getting past the warning, for a file you checked:
 
 ## Making a release
 
-1. On a new branch, raise the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json` (all three the same), and in the two lock files that repeat it: `package-lock.json` (twice, at the top) and `src-tauri/Cargo.lock` (the `convert-wheel` entry). The builds use the lock files as they are, so a version left behind there stops them.
+1. On a new branch, raise the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json` (all three the same), and in the two lock files that repeat it: `package-lock.json` (twice, at the top) and `src-tauri/Cargo.lock` (the `pirouette` entry). The builds use the lock files as they are, so a version left behind there stops them.
 2. Push the branch and merge it through a pull request: `main` takes changes only that way. Then tag the merged `main` and push the tag:
 
    ```sh
    git switch main && git pull
-   git tag -a v0.2.0 -m "Convert Wheel 0.2.0"
+   git tag -a v0.2.0 -m "Pirouette 0.2.0"
    git push origin v0.2.0
    ```
 
    Release tags can't be moved or deleted once pushed, so a release with a mistake is fixed with the next version.
 
 3. GitHub builds the Windows and Linux files (about 20 minutes), signs the update files in a separate step, and creates the release as a **draft** with them, `latest.json` (what installed copies read to find the update) and `SHA256SUMS.txt`. Installed copies don't see a draft. The build stops early if the tag and the version don't match.
-4. On the release Mac, with the tag checked out and nothing uncommitted, run `./scripts/release-macos.sh`. It builds and signs the macOS files, adds them and their entry in `latest.json`, checks every system is listed, and publishes the release. It needs the update signing key (`~/.tauri/convert-wheel-updater.key`, password in the Keychain) and the code-signing certificate "Convert Wheel Signing" in the login keychain (`scripts/macos-signing-cert.sh` makes it once; on another Mac, import its .p12 backup).
+4. On the release Mac, with the tag checked out and nothing uncommitted, run `./scripts/release-macos.sh`. It builds and signs the macOS files, adds them and their entry in `latest.json`, checks every system is listed, and publishes the release. It needs the update signing key (`~/.tauri/pirouette-updater.key`, password in the Keychain) and the code-signing certificate "Pirouette Signing" in the login keychain (`scripts/macos-signing-cert.sh` makes it once; on another Mac, import its .p12 backup).
 
 A build without a release, for testing: Actions > Build > Run workflow, or `gh workflow run build.yml -f platform=windows` (`linux`, `both`). Its files stay on the run's page for 14 days.

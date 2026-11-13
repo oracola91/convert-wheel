@@ -1,6 +1,6 @@
 //! Shift+drag on GNOME under Wayland. Wayland keeps the pointer and the keys private,
 //! so the app can't watch a drag the way it does on X11. GNOME Shell can, and a small
-//! extension of the app's own (`gnome-shell/convert-wheel@oracola91.github.io`) tells
+//! extension of the app's own (`gnome-shell/pirouette@oracola91.github.io`) tells
 //! the app the keys held while a drag goes on (see linux.rs) and puts the wheel under
 //! the pointer. The app copies the extension into the user's extension folder, keeps
 //! it up to date, and turns it on the first time. GNOME Shell loads a new or changed
@@ -14,11 +14,11 @@ use tauri::AppHandle;
 
 use crate::wheel::Which;
 
-pub const UUID: &str = "convert-wheel@oracola91.github.io";
+pub const UUID: &str = "pirouette@oracola91.github.io";
 
 const FILES: &[(&str, &str)] = &[
-    ("metadata.json", include_str!("../gnome-shell/convert-wheel@oracola91.github.io/metadata.json")),
-    ("extension.js", include_str!("../gnome-shell/convert-wheel@oracola91.github.io/extension.js")),
+    ("metadata.json", include_str!("../gnome-shell/pirouette@oracola91.github.io/metadata.json")),
+    ("extension.js", include_str!("../gnome-shell/pirouette@oracola91.github.io/extension.js")),
 ];
 
 /// GNOME, by the desktop the session names ("ubuntu:GNOME" on Ubuntu).
@@ -190,12 +190,12 @@ mod tests {
 
     #[test]
     fn the_extension_is_added_to_the_list_once() {
-        assert_eq!(with_uuid("@as []").as_deref(), Some("['convert-wheel@oracola91.github.io']"));
+        assert_eq!(with_uuid("@as []").as_deref(), Some("['pirouette@oracola91.github.io']"));
         assert_eq!(
             with_uuid("['ding@rastersoft.com', 'ubuntu-dock@ubuntu.com']").as_deref(),
-            Some("['ding@rastersoft.com', 'ubuntu-dock@ubuntu.com', 'convert-wheel@oracola91.github.io']")
+            Some("['ding@rastersoft.com', 'ubuntu-dock@ubuntu.com', 'pirouette@oracola91.github.io']")
         );
-        assert_eq!(with_uuid("['convert-wheel@oracola91.github.io']"), None);
+        assert_eq!(with_uuid("['pirouette@oracola91.github.io']"), None);
         // Something gsettings never prints: left alone.
         assert_eq!(with_uuid("nonsense"), None);
     }
@@ -245,7 +245,7 @@ mod tests {
         let metadata: serde_json::Value = serde_json::from_str(FILES[0].1).unwrap();
         assert_eq!(metadata["uuid"], UUID);
         let script = FILES[1].1;
-        assert!(script.contains("'convert-wheel.sock'"), "the socket in linux.rs");
+        assert!(script.contains("'pirouette.sock'"), "the socket in linux.rs");
         assert!(script.contains(&format!("const WHEEL_SIZE = {};", crate::wheel::SIZE)), "the wheel's size");
         let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         let wheel = config["app"]["windows"].as_array().unwrap().iter().find(|w| w["label"] == "wheel").unwrap();

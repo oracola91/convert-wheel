@@ -3,7 +3,7 @@
 // arrow keys, or with the buttons. The app hands over the pictures; this page sends
 // back only the page numbers in their new order, which the app checks and hands to
 // mutool (pdf_tool in src-tauri/src/convert.rs).
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

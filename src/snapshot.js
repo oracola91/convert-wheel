@@ -1,7 +1,7 @@
 // The Snapshot window: a slider along the video and the frame at that moment. The app
 // hands over only the length and draws each frame asked for; this page sends back
 // only the moment, in milliseconds.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

@@ -47,8 +47,6 @@ mod imp {
     /// The value's name: the app's name (crate::APP_NAME), which the uninstaller also
     /// takes away.
     const NAME: PCWSTR = w!("Pirouette");
-    /// Its name up to 0.3.x (crate::OLD_NAME).
-    const OLD_NAME: PCWSTR = w!("Convert Wheel");
 
     /// A development build would register a path that disappears on the next build.
     pub fn available() -> bool {
@@ -89,27 +87,36 @@ mod imp {
         read(NAME).is_some_and(|v| command().is_ok_and(|c| v.eq_ignore_ascii_case(&c)))
     }
 
-    /// Open at Login under the old name (an MSI update from 0.3.x keeps it; the .exe
-    /// update moves it itself, windows/hooks.nsh): the same choice under the new name,
-    /// starting this copy, and the old value goes.
+    /// Open at Login made by a copy under the app's earlier names (migrate.rs): under
+    /// the earlier name (an MSI update keeps it; the .exe update moves it itself,
+    /// windows/hooks.nsh), or under this name but starting the earlier program file.
+    /// Either way the same choice, starting this copy, and the old value goes.
     pub fn move_old_entry() {
-        if !available() || read(OLD_NAME).is_none() {
+        if !available() {
+            return;
+        }
+        let old_name = windows::core::HSTRING::from(crate::migrate::NAME);
+        let old_value = read(PCWSTR(old_name.as_ptr()));
+        let old_program = format!("\\{}.exe", crate::migrate::PROGRAM);
+        let stale = read(NAME).is_some_and(|v| v.to_ascii_lowercase().contains(&old_program));
+        if old_value.is_none() && !stale {
             return;
         }
         match set_enabled(true) {
             Ok(()) => {
-                let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, OLD_NAME) };
-                crate::log::line("Open at Login now under the new name");
+                if old_value.is_some() {
+                    let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, PCWSTR(old_name.as_ptr())) };
+                }
+                crate::log::line("Open at Login moved from the app's earlier name");
             }
-            Err(e) => crate::log::line(&format!("couldn't move Open at Login to the new name: {e}")),
+            Err(e) => crate::log::line(&format!("couldn't move Open at Login from the app's earlier name: {e}")),
         }
     }
 
     #[cfg(test)]
     #[test]
-    fn the_run_values_carry_the_app_names() {
+    fn the_run_value_carries_the_app_name() {
         assert_eq!(unsafe { NAME.to_string() }.unwrap(), crate::APP_NAME);
-        assert_eq!(unsafe { OLD_NAME.to_string() }.unwrap(), crate::OLD_NAME);
     }
 
     pub fn set_enabled(on: bool) -> Result<(), String> {
@@ -148,7 +155,7 @@ mod imp {
         let config = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-        Some(config.join("autostart/convert-wheel.desktop"))
+        Some(config.join("autostart/pirouette.desktop"))
     }
 
     /// A development build would register a path that disappears on the next build.

@@ -1,7 +1,7 @@
 // The Compress to % window: several files, each to the same share of its own size.
 // The app hands over how many and their size together; this page sends back only
 // the share, in percent.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

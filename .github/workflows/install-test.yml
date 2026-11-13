@@ -45,20 +45,21 @@ jobs:
           cat > "$RUNNER_TEMP/check.sh" <<'EOF'
           set -eu
           keys=org.gnome.settings-daemon.plugins.media-keys
-          mine=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/convert-wheel/
+          mine=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/pirouette/
           theirs=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/
           gsettings set $keys custom-keybindings "['$theirs']"
-          # The package is pirouette from the rename on, convert-wheel up to 0.3.x.
-          installed() { dpkg-query -W -f='${Version}' pirouette 2>/dev/null || dpkg-query -W -f='${Version}' convert-wheel; }
+          # The program the setup put in Open at Login, and the package it came in.
+          app() { sed -n 's/^Exec="\(.*\)"$/\1/p' "$HOME/.config/autostart/pirouette.desktop"; }
+          installed() { dpkg-query -W -f='${Version}' "$(dpkg-query -S "$(app)" | cut -d: -f1)"; }
           sh scripts/install-linux.sh
           # A key the user picked must survive a second run.
           gsettings set $keys.custom-keybinding:$mine binding '<Super>w'
           sh scripts/install-linux.sh "$(installed)"
           gsettings get $keys custom-keybindings
           [ "$(gsettings get $keys custom-keybindings)" = "['$theirs', '$mine']" ]
-          [ "$(gsettings get $keys.custom-keybinding:$mine command)" = "'/usr/bin/convert-wheel --show'" ]
+          [ "$(gsettings get $keys.custom-keybinding:$mine command)" = "'$(app) --show'" ]
           [ "$(gsettings get $keys.custom-keybinding:$mine binding)" = "'<Super>w'" ]
-          grep -qx 'Exec="/usr/bin/convert-wheel"' "$HOME/.config/autostart/convert-wheel.desktop"
+          [ -x "$(app)" ]
           pandoc --version | head -n 1
           command -v mutool
           EOF
@@ -68,23 +69,24 @@ jobs:
         run: |
           set -eu
           cd "$RUNNER_TEMP"
+          app=$(sed -n 's/^Exec="\(.*\)"$/\1/p' "$HOME/.config/autostart/pirouette.desktop")
           convert -size 64x48 xc:orange in.png
           printf '# Title\n\nSome *text*.\n' > notes.md
-          convert-wheel --convert jpg "$PWD/in.png"
-          convert-wheel --convert docx "$PWD/notes.md"
-          convert-wheel --convert html "$PWD/notes.md"
-          convert-wheel --convert pdf "$PWD/notes.docx"
+          "$app" --convert jpg "$PWD/in.png"
+          "$app" --convert docx "$PWD/notes.md"
+          "$app" --convert html "$PWD/notes.md"
+          "$app" --convert pdf "$PWD/notes.docx"
           file in.jpg notes.docx notes.html notes.pdf
           file in.jpg | grep -q JPEG
           head -c 2 notes.docx | grep -q PK
           grep -q '<h1' notes.html
           head -c 5 notes.pdf | grep -q '%PDF-'
-          version=$(installed)
+          version=$(dpkg-query -W -f='${Version}' "$(dpkg-query -S "$app" | cut -d: -f1)")
           if dpkg --compare-versions "$version" ge 0.2.0; then
-            convert-wheel --convert png "$PWD/notes.pdf"
-            convert-wheel --convert txt "$PWD/notes.pdf"
+            "$app" --convert png "$PWD/notes.pdf"
+            "$app" --convert txt "$PWD/notes.pdf"
             file notes.png | grep -q PNG
             grep -q 'Some text' notes.txt
           else
-            echo "Convert Wheel $version has no PDF input yet: PDF conversion not tested"
+            echo "Pirouette $version has no PDF input yet: PDF conversion not tested"
           fi

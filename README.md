@@ -1,10 +1,8 @@
 # Pirouette
 
-Called Convert Wheel before. On Windows and Linux it kept that name up to 0.3.x; copies there take the new name when they update (the old copy is removed, settings stay).
-
 Hold Shift while dragging a file. A wheel of formats appears under the cursor. Drop the file on a format to convert it.
 
-This is our own build, written from scratch. The idea comes from what the paid Tangerine app for macOS visibly does. No Tangerine code, assets or binaries were used or inspected.
+This is our own build, written from scratch.
 
 **To install it, see [INSTALL.md](INSTALL.md).** Installers for every system are on the [Releases page](https://github.com/oracola91/pirouette/releases).
 
@@ -103,7 +101,7 @@ For video and audio (with ffmpeg):
 - **Split** (audio and video, one file at a time): opens a small window to pick how many equal parts (2 to 10), or how long each part is (10 seconds to 30 minutes). Each part is cut exactly, like Trim, and they go in a new folder next to the file: "clip (parts)/clip 1.mp4", "clip 2.mp4", ... Up to 50 parts of a second or more; a few moments left at the end go onto the last part.
 - **Info** (pictures, sound, video and PDFs, one file at a time): opens a window with what the file says about itself. A picture: its size, when it was taken, the camera and lens, and where it was taken (or "none in the file"). A video: its tags, when and on what it was recorded, and where. A PDF: its pages, title, author, what made it and its dates. A sound file's title, artist, album, year, genre and comment, and a PDF's title, author, subject and keywords, can be changed: they go into a copy, "song (new info).mp3", with everything else as it was (ffmpeg copies the sound, nothing is encoded again). A picture's date taken and location, and a video's recording date and location, can be changed too (JPEG, PNG, HEIC, WebP, TIFF, AVIF; MP4, MOV, M4V), with [ExifTool](https://exiftool.org), one more converter installed on demand like the others: the date as 2024-05-01 12:34:56, the place as latitude, longitude (51.50343, -0.12800), and an emptied Location box takes the place out, everything else in the file staying (the Tools wheel's Clean takes out all of it). ExifTool writes only the new copy (`-o`, no backup file, no config file, no shell line; 12.24 or newer). The app then reads the copy back, and a copy that doesn't say what was asked is deleted and the job fails. Videos get the date in QuickTime's own tag (from local time to UTC) and in Apple's keys, and the place in Apple's keys and the common user data, so Photos and other players find it. Other picture and video formats (BMP, GIF, MKV, WebM, AVI, WMV) are only shown. Older MuPDF (Ubuntu 22.04's) only shows a PDF's details too.
 
-Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland, Shift+drag (with Option or Control for these wheels) needs GNOME and its helper extension (see Linux below); the keyboard shortcut opens the Formats wheel, and while it is open a tap of Alt or Control switches it to the Tools or Actions wheel (by the Keys in Settings) and a second tap goes back; Tab goes round all three. `convert-wheel --show tools` and `--show actions` open those wheels straight away, for shortcuts of their own.
+Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland, Shift+drag (with Option or Control for these wheels) needs GNOME and its helper extension (see Linux below); the keyboard shortcut opens the Formats wheel, and while it is open a tap of Alt or Control switches it to the Tools or Actions wheel (by the Keys in Settings) and a second tap goes back; Tab goes round all three. `pirouette --show tools` and `--show actions` open those wheels straight away, for shortcuts of their own.
 
 ## The Actions wheel
 
@@ -175,7 +173,7 @@ Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS
 **Linux** (`src-tauri/src/linux.rs`)
 
 - **X11:** like Windows. A drag that starts in a file manager (Files/Nautilus, Nemo, Caja, Thunar, Dolphin, PCManFM) or on the desktop, with Shift held, opens the wheel at the cursor.
-- **Wayland:** apps can't watch the pointer, so the wheel opens from a keyboard shortcut running `convert-wheel --show`, which reaches the running app over a socket in `XDG_RUNTIME_DIR`. That wheel waits for a file; Esc, a click in the middle or 20 seconds close it.
+- **Wayland:** apps can't watch the pointer, so the wheel opens from a keyboard shortcut running `pirouette --show`, which reaches the running app over a socket in `XDG_RUNTIME_DIR`. That wheel waits for a file; Esc, a click in the middle or 20 seconds close it.
 - **Wayland on GNOME:** GNOME Shell can see drags, so the app installs a small GNOME Shell extension of its own (`src-tauri/gnome-shell/`, `src-tauri/src/gnome_shell.rs`) into `~/.local/share/gnome-shell/extensions` and turns it on the first time. While a drag goes on, the extension sends the app which app the drag started in and the keys held, over the same socket every 30 ms, and moves the wheel the app opens under the pointer (a Wayland app can't place its own windows). The app opens and switches the wheel from that as it does on X11. GNOME Shell loads a new or updated extension at the next login; the app says so once.
 - **Drop target:** our own GTK handlers instead of WebKit's. They answer "copy" over a format and nothing elsewhere, never "move" even with Shift held, and never ask the file manager to delete the original.
 - **Menu bar icon:** shown through AppIndicator.
@@ -184,15 +182,15 @@ Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS
 
 ## Updates
 
-From version 0.1.1 the app updates itself from this repo's [Releases page](https://github.com/oracola91/pirouette/releases). Thirty seconds after it starts, then once a day, it reads `latest.json` from the newest published release (a request to github.com, through the system proxy). When there is a newer version, a notification says so and the menu shows **Install Update … and Restart**. Nothing installs until the user chooses it, or starts the app with `convert-wheel --update`. Conversions still running are finished first.
+From version 0.1.1 the app updates itself from this repo's [Releases page](https://github.com/oracola91/pirouette/releases). Thirty seconds after it starts, then once a day, it reads `latest.json` from the newest published release (a request to github.com, through the system proxy). When there is a newer version, a notification says so and the menu shows **Install Update … and Restart**. Nothing installs until the user chooses it, or starts the app with `pirouette --update`. Conversions still running are finished first.
 
 **What protects an update.** Every update file is signed with the project's update key (minisign, Ed25519), and the signature records the version it was made for. The app checks the signature against the public key built into it (`plugins.updater.pubkey` in `tauri.conf.json`) and refuses an update whose signature or version doesn't match (`requireSignedVersion`), so a changed file, a fake one, or an older build relabelled as newer is not installed. Only newer versions install. Files the app downloads itself carry no "downloaded from the internet" mark, so updates don't go through SmartScreen or Gatekeeper: the signature check is the control.
 
 **The installers are not code-signed, on purpose.** A certificate Windows and macOS trust costs a yearly fee and a hardware or cloud key store, which this personal project doesn't have, so the first launch of a download warns about an unknown publisher. INSTALL.md, *Why the files aren't signed*, says what protects a download instead (checksums, the update signature) and how to open a checked file.
 
-**Where the key is.** Two copies: a secret in this repo's `release` environment on GitHub, which only `v*` tags can use and only the release job's signing step sees (the builds never do); and `~/.tauri/convert-wheel-updater.key` on the release Mac, with its password in the Keychain, used only by the last command of `scripts/release-macos.sh`. Keep an offline backup of the key file and its password in a password manager.
+**Where the key is.** Two copies: a secret in this repo's `release` environment on GitHub, which only `v*` tags can use and only the release job's signing step sees (the builds never do); and `~/.tauri/pirouette-updater.key` on the release Mac, with its password in the Keychain, used only by the last command of `scripts/release-macos.sh`. Keep an offline backup of the key file and its password in a password manager.
 
-**The Mac code-signing certificate.** macOS remembers which folders an app may open (Downloads, Documents) by the app's signature. An app signed ad hoc gets a new signature with every build, so after every update macOS would ask again. Releases and `scripts/install-macos.sh` builds are therefore signed with the project's own certificate, "Convert Wheel Signing", made once with `scripts/macos-signing-cert.sh` and kept in the release Mac's login keychain, with a backup (.p12 and its password) in a password manager. It is self-signed, not an Apple Developer ID: it keeps the permissions across updates, but macOS still asks for "Open Anyway" on the first launch of a downloaded copy.
+**The Mac code-signing certificate.** macOS remembers which folders an app may open (Downloads, Documents) by the app's signature. An app signed ad hoc gets a new signature with every build, so after every update macOS would ask again. Releases and `scripts/install-macos.sh` builds are therefore signed with the project's own certificate, "Pirouette Signing", made once with `scripts/macos-signing-cert.sh` and kept in the release Mac's login keychain, with a backup (.p12 and its password) in a password manager. It is self-signed, not an Apple Developer ID: it keeps the permissions across updates, but macOS still asks for "Open Anyway" on the first launch of a downloaded copy.
 
 **If the key is lost,** installed copies can no longer be updated: publish a build with a new key and ask everyone to install it once by hand. **If the key may have leaked,** do the same at once: generate a new key, put its public half in `tauri.conf.json`, replace both copies of the private key, release, and tell users to reinstall from the Releases page; copies with the old key can be offered files signed with the leaked one until they do.
 
@@ -250,9 +248,9 @@ Lossless formats (PNG, TIFF, WAV, FLAC, AIFF) and documents have no quality to c
 
 **About**: the version, and **Show Log**, which opens the folder with the log file.
 
-Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json` (Windows: `%APPDATA%\local.convertwheel`, Linux: `~/.config/local.convertwheel`). A settings file that can't be used is kept aside as `settings.json.bad` (or, if it can't be read at all, left alone and never saved over), and a notification says the settings were reset.
+Settings are kept in `~/Library/Application Support/io.github.oracola91.pirouette/settings.json` (Windows: `%APPDATA%\io.github.oracola91.pirouette`, Linux: `~/.config/io.github.oracola91.pirouette`). A settings file that can't be used is kept aside as `settings.json.bad` (or, if it can't be read at all, left alone and never saved over), and a notification says the settings were reset.
 
-**Show Log** opens the folder with the log of starts, conversions, errors and update checks: `~/Library/Logs/local.convertwheel/convert-wheel.log` (Windows: `%LOCALAPPDATA%\local.convertwheel\logs`, Linux: `~/.local/share/local.convertwheel/logs`). It holds file names, not folders (tool messages are stripped of paths), is readable by the user only, and keeps at most about 1 MB.
+**Show Log** opens the folder with the log of starts, conversions, errors and update checks: `~/Library/Logs/io.github.oracola91.pirouette/pirouette.log` (Windows: `%LOCALAPPDATA%\io.github.oracola91.pirouette\logs`, Linux: `~/.local/share/io.github.oracola91.pirouette/logs`). It holds file names, not folders (tool messages are stripped of paths), is readable by the user only, and keeps at most about 1 MB.
 
 **Quit** while conversions are running asks for a second Quit within 10 seconds, then stops them.
 
@@ -273,7 +271,7 @@ Then:
 npm install --ignore-scripts
 cd src-tauri
 cargo build
-./target/debug/convert-wheel
+./target/debug/pirouette
 ```
 
 The app has no Dock icon. It shows an orange icon in the menu bar, and that menu has Quit.
@@ -283,7 +281,7 @@ The app has no Dock icon. It shows an orange icon in the menu bar, and that menu
 The same converter runs from the command line. It prints the path of each new file:
 
 ```sh
-./target/debug/convert-wheel --convert pdf "report.docx" "budget.xlsx"
+./target/debug/pirouette --convert pdf "report.docx" "budget.xlsx"
 ```
 
 ## Test it by hand
@@ -318,7 +316,7 @@ Also worth trying: several files at once, a file with no extension, text dragged
 
 ## Fonts in PDFs
 
-LibreOffice running without a window only sees its own bundled fonts. The converter gives it a font list (`~/Library/Caches/local.convertwheel/fontconfig/fonts.conf`) with the macOS font folders, so documents keep their fonts.
+LibreOffice running without a window only sees its own bundled fonts. The converter gives it a font list (`~/Library/Caches/io.github.oracola91.pirouette/fontconfig/fonts.conf`) with the macOS font folders, so documents keep their fonts.
 
 Word's default font since 2023, Aptos, ships inside Word only, and its licence limits it to Microsoft products. So it is not handed to LibreOffice. Helvetica Neue, which comes with macOS, stands in for it. If Aptos is ever properly installed on the Mac, the real font is used instead. Calibri and Cambria need nothing, because LibreOffice ships look-alikes with the same spacing.
 

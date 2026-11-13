@@ -2,7 +2,7 @@
 // shown as they go with the browser's own filters. The app hands over the picture;
 // this page sends back only the three numbers, which the app checks and applies with
 // ImageMagick the same way (adjust_args in src-tauri/src/convert.rs).
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

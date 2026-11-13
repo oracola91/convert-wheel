@@ -1,0 +1,8 @@
+{
+  "uuid": "pirouette@oracola91.github.io",
+  "name": "Pirouette",
+  "description": "Lets Pirouette open its wheel when a file is dragged with Shift held. Installed and kept up to date by the Pirouette app.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/oracola91/pirouette",
+  "version": 2
+}

@@ -30,8 +30,8 @@ pub fn follow(app: &AppHandle) {
 /// Puts the Send To shortcut in place, pointing at this copy of the app (again on each
 /// start, so it follows an update to another folder), or takes it away.
 fn set(on: bool) {
-    // The entry had the old name up to 0.3.x: Send To would list both.
-    if let Some(old) = shortcut(crate::OLD_NAME).filter(|l| l.exists()) {
+    // The entry under the app's earlier name (migrate.rs): Send To would list both.
+    if let Some(old) = shortcut(crate::migrate::NAME).filter(|l| l.exists()) {
         match std::fs::remove_file(&old) {
             Ok(()) => crate::log::line("Send To entry renamed"),
             Err(e) => crate::log::line(&format!("couldn't remove the old Send To entry: {e}")),
