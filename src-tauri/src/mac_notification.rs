@@ -32,7 +32,7 @@ pub struct Ivars {
 
 define_class!(
     #[unsafe(super(NSObject))]
-    #[name = "ConvertWheelNotificationDelegate"]
+    #[name = "PirouetteNotificationDelegate"]
     #[ivars = Ivars]
     struct Delegate;
 
@@ -166,6 +166,6 @@ mod tests {
             PathBuf::from("/Users/a/Desktop/Ünïcödé\nline.pdf"),
         ];
         assert_eq!(files_in(&content("Converted to JPG", "2 files", &files)), files);
-        assert!(files_in(&content("Convert Wheel settings", "Problem", &[])).is_empty());
+        assert!(files_in(&content("Pirouette settings", "Problem", &[])).is_empty());
     }
 }

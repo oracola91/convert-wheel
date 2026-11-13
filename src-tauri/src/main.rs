@@ -25,6 +25,7 @@ mod login;
 #[cfg(target_os = "macos")]
 mod mac_notification;
 mod menu;
+mod migrate;
 mod reveal;
 mod settings;
 mod settings_window;
@@ -35,6 +36,7 @@ mod send_to;
 mod shelf;
 #[cfg(target_os = "macos")]
 mod shelf_window;
+mod terminal;
 mod transfer;
 mod trigger;
 mod update;
@@ -43,6 +45,8 @@ mod wheel;
 mod wheel_window;
 #[cfg(windows)]
 mod win32;
+#[cfg(windows)]
+mod win_toast;
 
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
@@ -179,6 +183,25 @@ impl Words {
                 "change the speed of",
                 "Stopped changing the speed",
             ),
+            "tool:resize" => tool("Resizing {}", "Resized", "Resized {} files", "resize", "Stopped resizing"),
+            "tool:flip" => tool("Flipping {}", "Flipped", "Flipped {} files", "flip", "Stopped flipping"),
+            "tool:mute" => tool("Taking the sound out of {}", "Muted", "Muted {} files", "mute", "Stopped muting"),
+            "tool:percent" => tool(
+                "Compressing {} to a share of its size",
+                "Compressed",
+                "Compressed {} files",
+                "compress",
+                "Stopped compressing",
+            ),
+            "tool:snapshot" => tool("Taking a picture of {}", "Saved the picture", "Saved pictures of {} files", "take a picture of", "Stopped taking pictures"),
+            "tool:lock" => tool(
+                "Adding a password to {}",
+                "Locked with a password",
+                "Locked {} files with a password",
+                "lock",
+                "Stopped adding the password",
+            ),
+            "tool:pdfa" => tool("Making {} a PDF/A", "Made into PDF/A", "Made {} files into PDF/A", "make PDF/A of", "Stopped making PDF/A"),
             "tool:parts" => tool(
                 "Splitting {} into parts",
                 "Split into parts",
@@ -262,12 +285,11 @@ impl Running {
 
 /// Longer file names are cut in the progress line, so the percent after them still
 /// fits in the menu.
-/// The name people see in the menu, the tooltip and notifications. macOS ships as
-/// Pirouette from 0.3.0. Windows and Linux keep Convert Wheel for now, as their
-/// installers do (`productName` in tauri.windows.conf.json and tauri.linux.conf.json):
-/// a renamed installer there would add a second copy next to the old one (Windows) or
-/// clash with the old package over /usr/bin/convert-wheel (Linux).
-pub(crate) const APP_NAME: &str = if cfg!(target_os = "macos") { "Pirouette" } else { "Convert Wheel" };
+/// The name people see in the menu, the tooltip and notifications. What the app was
+/// called before is moved over by migrate.rs and the installers.
+pub(crate) const APP_NAME: &str = "Pirouette";
+/// When this copy started (setup), for telling a second start apart from a restart.
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 const NAME_MAX_CHARS: usize = 32;
 
@@ -369,6 +391,11 @@ pub(crate) fn enqueue_edit(app: &AppHandle, path: String, format: &str, edit: co
     send_job(app, Job { paths: vec![path], format: format.into(), edit: Some(edit) });
 }
 
+/// Queues several files with the same choice from one window (Compress to %).
+pub(crate) fn enqueue_edits(app: &AppHandle, paths: Vec<String>, format: &str, edit: convert::Edit) {
+    send_job(app, Job { paths, format: format.into(), edit: Some(edit) });
+}
+
 fn send_job(app: &AppHandle, job: Job) {
     JOBS.fetch_add(1, Ordering::SeqCst);
     if app.state::<Sender<Job>>().send(job).is_err() {
@@ -436,7 +463,17 @@ fn run_job(app: &AppHandle, job: &Job, running: &Running) -> (String, String, Ve
     let encodes = !formats::is_tool(&job.format)
         || matches!(
             job.format.as_str(),
-            "tool:compress" | "tool:crop" | "tool:blackout" | "tool:trim" | "tool:speed" | "tool:parts" | "tool:join" | "tool:target"
+            "tool:compress"
+                | "tool:crop"
+                | "tool:blackout"
+                | "tool:trim"
+                | "tool:speed"
+                | "tool:parts"
+                | "tool:join"
+                | "tool:target"
+                | "tool:flip"
+                | "tool:resize"
+                | "tool:percent"
         );
     let slow = encodes
         && job.paths.iter().any(|p| {
@@ -619,20 +656,28 @@ fn show_notification(app: &AppHandle, id: i32, title: &str, body: &str, files: &
         let _ = id;
         mac_notification::show(app, title, body, files);
     }
+    // Windows: with a link, so a click from the notification list works too.
+    #[cfg(windows)]
+    if !win_toast::from_build_folder() {
+        match win_toast::show(&app.config().identifier, id, title, body) {
+            Ok(()) => return,
+            Err(e) => log::line(&format!("notification with a link not shown ({}); trying without", e.message())),
+        }
+    }
     #[cfg(not(target_os = "macos"))]
     if let Err(e) = app.notification().builder().id(id).title(title).body(body).show() {
         log::line(&format!("notification not shown ({e}): {title}: {body}"));
     }
 }
 
-/// `convert-wheel --convert <format> <file>...` converts without the wheel, for scripts and tests.
+/// `pirouette --convert <format> <file>...` converts without the wheel, for scripts and tests.
 fn cli(args: &[String]) -> i32 {
     let [format, files @ ..] = args else {
-        eprintln!("usage: convert-wheel --convert <format> <file>...");
+        eprintln!("usage: pirouette --convert <format> <file>...");
         return 2;
     };
     if files.is_empty() {
-        eprintln!("usage: convert-wheel --convert <format> <file>...");
+        eprintln!("usage: pirouette --convert <format> <file>...");
         return 2;
     }
     let downloads = convert::downloads();
@@ -672,7 +717,9 @@ fn main() {
     // on first, so the running copy's keyboard wheel can come to the front instead of
     // opening behind Explorer.
     #[cfg(windows)]
-    if trigger::files_in_args(&std::env::args().collect::<Vec<_>>(), &std::env::current_dir().unwrap_or_default()).is_some() {
+    if trigger::files_in_args(&std::env::args().collect::<Vec<_>>(), &std::env::current_dir().unwrap_or_default()).is_some()
+        || std::env::args().skip(1).any(|a| win_toast::is_link(&a))
+    {
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY);
         }
@@ -702,6 +749,10 @@ fn main() {
     if args.first().map(String::as_str) == Some("--trace") {
         std::process::exit(convert::svg::trace_main(&args[1..]));
     }
+    // Drawing an SVG for conversion, likewise in a process of its own.
+    if args.first().map(String::as_str) == Some("--draw-svg") {
+        std::process::exit(convert::svg::draw_main(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("--convert") {
         // A Windows release build has no console of its own; borrow the one it was
         // started from so the results and errors show up there.
@@ -726,13 +777,32 @@ fn main() {
         // opens a second wheel and menu icon. `--update` from a second copy only checks:
         // installing is for the menu or a fresh start with `--update`.
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            #[cfg(windows)]
+            if let Some(link) = args.iter().skip(1).find(|a| win_toast::is_link(a)) {
+                // A click on a notification, maybe from the notification list.
+                match win_toast::clicked(link) {
+                    Some(id) => reveal::show_notified(app, id),
+                    None => log::line("a notification from an earlier start was clicked"),
+                }
+                return;
+            }
             if args.iter().any(|a| a == "--update") {
                 update::check_soon(app);
             } else if let Some(files) = trigger::files_in_args(&args, std::path::Path::new(&cwd)) {
                 // Send To (Windows) or Open With (Linux) on files: the keyboard wheel.
                 trigger::open_for_keys(app, files);
             } else {
-                notify(app, &format!("{APP_NAME} is already running"), "Hold Shift while dragging a file to open the wheel.");
+                // Opened again from the Start menu, the app list or a launcher: Settings,
+                // which is also the way back when the menu bar icon is hidden. Not in
+                // the first half minute: a copy from before the new program name
+                // restarts the updated app by trying to start it again and again
+                // (update.rs there waits for the old process name), and each try lands
+                // here.
+                if STARTED.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(30)) {
+                    log::line("started again right after the start: nothing to do");
+                } else {
+                    settings_window::open(app);
+                }
             }
         }))
         .plugin(tauri_plugin_notification::init())
@@ -749,14 +819,17 @@ fn main() {
                 e
             })
         })
-        .invoke_handler(tauri::generate_handler![wheel_enter, settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
+        .invoke_handler(tauri::generate_handler![wheel_enter, settings_window::settings_view, settings_window::settings_change, settings_window::settings_action, wheel_cancel, wheel_words, wheel_more, wheel_keys, wheel_arrow, editor::editor_session, editor::editor_apply, editor::editor_trim, editor::editor_size, editor::editor_speed, editor::editor_resize, editor::editor_lock, editor::editor_frame, editor::editor_snapshot, editor::editor_percent, editor::editor_parts, editor::editor_bleep, editor::editor_adjust, editor::editor_markup, editor::editor_blackout, editor::editor_order, editor::editor_info, editor::editor_cancel, float_web::float_card, float_web::float_close, float_web::float_move, float_web::float_drag, float_web::float_dropped, shelf_web::shelf_items, shelf_web::shelf_open, shelf_web::shelf_drag, shelf_web::shelf_dragged, shelf_web::shelf_clear, shelf_web::shelf_reveal])
         .build(tauri::generate_context!());
     match app {
-        Ok(app) => app.run(|_, event| {
+        Ok(app) => app.run(|_app, event| match event {
             // Tools still running would otherwise carry on after the app is gone.
-            if let RunEvent::Exit = event {
-                convert::stop_all();
-            }
+            RunEvent::Exit => convert::stop_all(),
+            // macOS: the app opened again from Finder, Launchpad or Spotlight while it
+            // runs. Settings opens, the way back when the menu bar icon is hidden.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => settings_window::open(_app),
+            _ => {}
         }),
         Err(e) => {
             log::line(&format!("couldn't start: {e}"));
@@ -770,10 +843,28 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+    let _ = STARTED.set(std::time::Instant::now());
     log::init(app.path().app_log_dir().ok());
     log::line(&format!("started, version {}", app.package_info().version));
+    // What the app's earlier names still hold moves over first, the settings above all.
+    let id = app.config().identifier.clone();
+    migrate::settings(&app.path().app_config_dir()?, &id);
+    migrate::leftovers(
+        &[app.path().app_log_dir(), app.path().app_cache_dir(), app.path().app_local_data_dir(), app.path().app_data_dir()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        &id,
+    );
+    migrate::login();
+    #[cfg(target_os = "linux")]
+    {
+        migrate::shortcut();
+        migrate::gnome_extension();
+    }
     let (store, settings_problem) = settings::Store::load(app.path().app_config_dir()?.join("settings.json"));
     wheel::set_keys(store.get().keys);
+    trigger::set_hold(store.get().hold_to_convert);
     #[cfg(target_os = "macos")]
     trigger::set_mac_arrows(store.get().arrow_keys);
     app.manage(store);
@@ -795,6 +886,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
     menu::build(app)?;
+    // Hidden in Settings: the icon is made, then hidden, so it can come back.
+    if app.state::<settings::Store>().get().hide_icon {
+        menu::show_icon(app.handle(), false);
+    }
     app.manage(start_worker(app.handle().clone()));
     app.manage(estimates::start(app.handle().clone()));
     app.manage(wheel::WheelState::default());
@@ -813,6 +908,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     shelf_web::start(app.handle());
     trigger::start(app.handle().clone());
+    // Windows: notifications' links open this copy.
+    #[cfg(windows)]
+    win_toast::register();
     // Windows: the Send To entry for the keyboard wheel, kept pointing at this copy.
     #[cfg(windows)]
     {

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compress to %</title>
+  <link rel="stylesheet" href="editor.css">
+  <script src="percent.js" defer></script>
+</head>
+<body>
+  <main>
+    <section id="panel">
+      <p id="what"></p>
+      <label for="share">Make each file at most</label>
+      <div class="row">
+        <input id="share" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="hint">
+        <span>% of its own size</span>
+      </div>
+      <div id="presets" class="group" role="group" aria-label="Shares"></div>
+      <p id="hint"></p>
+      <p id="problem" role="alert" hidden></p>
+    </section>
+    <footer>
+      <div class="end">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="button" id="apply" class="primary">Compress</button>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>

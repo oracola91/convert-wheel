@@ -1,5 +1,5 @@
 #!/bin/sh
-# Makes Convert Wheel's own code-signing certificate on this Mac, once. The Mac install
+# Makes Pirouette's own code-signing certificate on this Mac, once. The Mac install
 # and release scripts sign with it, so macOS keeps the permissions it gave the app (the
 # Downloads and Documents folders, for one) across updates: an app signed ad hoc looks
 # new to macOS after every update and is asked again. The certificate is self-signed,
@@ -8,9 +8,9 @@
 # Leaves a backup of the key in the folder given (default ~/Downloads): a .p12 file and
 # its password. Keep both in the password manager, then delete them. To sign on another
 # Mac, import the .p12 there:
-#   security import "Convert Wheel signing key.p12" -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
+#   security import "Pirouette signing key.p12" -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
 set -eu
-name="Convert Wheel Signing"
+name="Pirouette Signing"
 out="${1:-$HOME/Downloads}"
 # OpenSSL 3, for -addext and the keychain's legacy .p12 format.
 openssl=/opt/homebrew/opt/openssl@3/bin/openssl
@@ -32,6 +32,6 @@ trap 'rm -rf "$work"' EXIT
 # codesign may use the key; anything else has to ask.
 security import "$work/key.p12" -k "$HOME/Library/Keychains/login.keychain-db" -f pkcs12 \
   -P "$(cat "$work/password")" -T /usr/bin/codesign >/dev/null
-cp "$work/key.p12" "$out/Convert Wheel signing key.p12"
-cp "$work/password" "$out/Convert Wheel signing key password.txt"
+cp "$work/key.p12" "$out/Pirouette signing key.p12"
+cp "$work/password" "$out/Pirouette signing key password.txt"
 echo "Made \"$name\". Its backup is in $out: save both files in the password manager, then delete them."

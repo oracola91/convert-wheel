@@ -105,6 +105,16 @@ pub struct View {
     transparency: u8,
     quality: Vec<QualityView>,
     levels: Vec<Choice>,
+    /// The terminal apps this computer has, for the Actions wheel's Terminal.
+    terminals: Vec<Choice>,
+    /// The one chosen, when it is still there; None is the system's own.
+    terminal: Option<&'static str>,
+    /// The menu bar (tray) icon is hidden.
+    icon_hidden: bool,
+    /// Hold to Convert; None where the app can't see a drag start (Wayland).
+    hold: Option<bool>,
+    /// macOS: whether Pages is installed, for Pages files. None elsewhere.
+    pages: Option<bool>,
 }
 
 /// One change from the page.
@@ -122,6 +132,10 @@ pub enum Change {
     Transparency { value: u8 },
     Quality { kind: String, level: String },
     SendTo { on: bool },
+    /// A key from terminal::installed, or None for the system's own.
+    Terminal { key: Option<String> },
+    HideIcon { on: bool },
+    Hold { on: bool },
 }
 
 fn system() -> &'static str {
@@ -142,8 +156,15 @@ fn shelf_here() -> bool {
     true
 }
 
+/// Hold to Convert needs to see a press and a drag start: not on Wayland, which keeps
+/// the pointer private (its GNOME extension reports Shift+drags only).
+fn hold_here() -> bool {
+    shelf_here()
+}
+
 fn view(app: &AppHandle) -> View {
     let s = app.state::<Store>().get();
+    let terminals = crate::terminal::installed();
     let kinds = formats::all()
         .map(|(kind, outputs)| KindView {
             label: kind.label(),
@@ -184,6 +205,11 @@ fn view(app: &AppHandle) -> View {
             .map(|(kind, label)| QualityView { kind, label, level: s.quality.get(kind).unwrap_or_default().key() })
             .collect(),
         levels: Level::ALL.iter().map(|l| Choice { key: l.key(), label: l.label() }).collect(),
+        terminal: s.terminal.as_deref().and_then(|key| terminals.iter().find(|t| t.key == key)).map(|t| t.key),
+        terminals: terminals.iter().map(|t| Choice { key: t.key, label: t.name }).collect(),
+        icon_hidden: s.hide_icon,
+        hold: hold_here().then_some(s.hold_to_convert),
+        pages: cfg!(target_os = "macos").then(crate::convert::pages_installed),
     }
 }
 
@@ -260,6 +286,26 @@ fn edit(change: &Change) -> Result<Edit, String> {
             let off = !on;
             Box::new(move |s| s.send_to_off = off)
         }
+        Change::Terminal { key } => {
+            if let Some(k) = key {
+                if !crate::terminal::known(k) {
+                    return Err(format!("no terminal {k}"));
+                }
+            }
+            let key = key.clone();
+            Box::new(move |s| s.terminal = key)
+        }
+        Change::HideIcon { on } => {
+            let on = *on;
+            Box::new(move |s| s.hide_icon = on)
+        }
+        Change::Hold { on } => {
+            if !hold_here() {
+                return Err("Hold to Convert can't see a drag start on Wayland".into());
+            }
+            let on = *on;
+            Box::new(move |s| s.hold_to_convert = on)
+        }
         Change::Login { .. } => Box::new(|_| {}),
     })
 }
@@ -280,6 +326,8 @@ fn apply(app: &AppHandle, change: Change) -> Result<(), String> {
             crate::shelf_web::setting_changed(app);
         }
         Change::Keys { .. } => crate::wheel::set_keys(saved.keys),
+        Change::HideIcon { on } => crate::menu::show_icon(app, !on),
+        Change::Hold { on } => crate::trigger::set_hold(on),
         // For Show Log: the next wheel should light up in this colour.
         Change::Highlight { .. } => log::line(&format!("highlight colour now {}", saved.highlight.key())),
         #[cfg(windows)]
@@ -319,8 +367,8 @@ pub fn settings_change(app: AppHandle, change: Change) -> Result<View, String> {
     Ok(view(&app))
 }
 
-/// The window's buttons: "log" (Show Log), "update-converters", "install-all", and
-/// "close" (Esc).
+/// The window's buttons: "log" (Show Log), "update-converters", "install-all",
+/// "get-pages" (macOS) and "close" (Esc).
 #[tauri::command]
 pub fn settings_action(app: AppHandle, action: String) -> Result<(), String> {
     match action.as_str() {
@@ -335,6 +383,11 @@ pub fn settings_action(app: AppHandle, action: String) -> Result<(), String> {
         }
         "install-all" if converters::available() => {
             converters::install_all(&app);
+            Ok(())
+        }
+        // Pages comes from the App Store: it opens on Pages.
+        "get-pages" if cfg!(target_os = "macos") => {
+            crate::convert::open_pages_store();
             Ok(())
         }
         "close" => {
@@ -433,6 +486,21 @@ mod tests {
         assert!(edit(&Change::Highlight { color: "gold".into() }).is_err());
         assert!(edit(&Change::Quality { kind: "fonts".into(), level: "best".into() }).is_err());
         assert_eq!(edit(&Change::Arrows { on: true }).is_ok(), cfg!(target_os = "macos"));
+        assert!(edit(&Change::Terminal { key: Some("bash -c rm".into()) }).is_err());
+    }
+
+    #[test]
+    fn terminal_icon_and_hold_come_from_the_page() {
+        let c: Change = serde_json::from_str(r#"{"what":"terminal","key":null}"#).unwrap();
+        assert_eq!(changed(c).terminal, None);
+        if cfg!(target_os = "macos") {
+            let c: Change = serde_json::from_str(r#"{"what":"terminal","key":"iterm"}"#).unwrap();
+            assert_eq!(changed(c).terminal.as_deref(), Some("iterm"));
+        }
+        let c: Change = serde_json::from_str(r#"{"what":"hide-icon","on":true}"#).unwrap();
+        assert!(changed(c).hide_icon);
+        let c: Change = serde_json::from_str(r#"{"what":"hold","on":true}"#).unwrap();
+        assert!(changed(c).hold_to_convert);
     }
 
     #[test]

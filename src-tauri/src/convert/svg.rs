@@ -96,9 +96,67 @@ pub fn config(style: Style, level: &str) -> Option<Config> {
 /// The tracing process: `--trace <pixels.pam> <out.svg> <photo|flat> <smaller|balanced|best>`.
 /// Returns the exit code; a failure's reason goes to the error output, whose last
 /// line becomes the notification's text.
+/// `pirouette --draw-svg <in.svg> <out.png>`: draws an SVG as a PNG (run by the
+/// app itself, convert.rs draw_svg). Never reads another file the SVG points to.
+pub fn draw_main(args: &[String]) -> i32 {
+    let [svg, png] = args else {
+        eprintln!("usage: pirouette --draw-svg <in.svg> <out.png>");
+        return 2;
+    };
+    match draw_file(Path::new(svg), Path::new(png)) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// Most an SVG to draw may weigh.
+const DRAW_MAX_BYTES: u64 = 50 * 1024 * 1024;
+/// The drawing's longest side: small SVGs (icons) are drawn up to this, so the picture
+/// is of use; large ones down to the next.
+const DRAW_MIN_SIDE: f32 = 1024.0;
+const DRAW_MAX_SIDE: f32 = 8192.0;
+
+/// Draws `svg` as a PNG with resvg, at its own size within DRAW_MIN_SIDE and
+/// DRAW_MAX_SIDE on the longest side. Pictures inside it come only from data: URLs;
+/// a link to any other file (or the web) is left out. Text uses the system's fonts.
+pub fn draw_file(svg: &Path, png: &Path) -> Result<(), String> {
+    use resvg::{tiny_skia, usvg};
+    let size = std::fs::metadata(svg).map_err(|e| format!("can't read the SVG: {e}"))?.len();
+    if size > DRAW_MAX_BYTES {
+        return Err("this SVG is larger than 50 MB".into());
+    }
+    let data = std::fs::read(svg).map_err(|e| format!("can't read the SVG: {e}"))?;
+    let mut options = usvg::Options { resources_dir: None, ..usvg::Options::default() };
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    options.fontdb_mut().load_system_fonts();
+    let tree = usvg::Tree::from_data(&data, &options).map_err(|e| format!("this SVG can't be read: {e}"))?;
+    let (width, height) = (tree.size().width(), tree.size().height());
+    let scale = draw_scale(width, height);
+    let (w, h) = ((width * scale).round().max(1.0) as u32, (height * scale).round().max(1.0) as u32);
+    let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("this SVG's size can't be drawn")?;
+    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    pixmap.save_png(png).map_err(|e| format!("can't save the drawing: {e}"))
+}
+
+/// How much to scale an SVG of this size so its longest side is from DRAW_MIN_SIDE to
+/// DRAW_MAX_SIDE.
+fn draw_scale(width: f32, height: f32) -> f32 {
+    let long = width.max(height).max(1.0);
+    if long < DRAW_MIN_SIDE {
+        DRAW_MIN_SIDE / long
+    } else if long > DRAW_MAX_SIDE {
+        DRAW_MAX_SIDE / long
+    } else {
+        1.0
+    }
+}
+
 pub fn trace_main(args: &[String]) -> i32 {
     let [pam, out, style, level] = args else {
-        eprintln!("usage: convert-wheel --trace <pixels.pam> <out.svg> <photo|flat> <smaller|balanced|best>");
+        eprintln!("usage: pirouette --trace <pixels.pam> <out.svg> <photo|flat> <smaller|balanced|best>");
         return 2;
     };
     match trace_file(Path::new(pam), Path::new(out), style, level) {
@@ -191,6 +249,36 @@ mod tests {
             format!("P7\nWIDTH {width}\nHEIGHT {height}\nDEPTH {depth}\nMAXVAL 255\nTUPLTYPE {tuple}\nENDHDR\n").into_bytes();
         data.extend_from_slice(body);
         data
+    }
+
+    #[test]
+    fn svgs_are_drawn_at_a_useful_size() {
+        assert_eq!(draw_scale(24.0, 24.0), 1024.0 / 24.0);
+        assert_eq!(draw_scale(2000.0, 1000.0), 1.0);
+        assert_eq!(draw_scale(10000.0, 5000.0), 8192.0 / 10000.0);
+    }
+
+    #[test]
+    fn an_svg_is_drawn_without_reading_other_files() {
+        let work = tempfile::tempdir().unwrap();
+        let secret = work.path().join("secret.png");
+        std::fs::write(&secret, b"not drawn").unwrap();
+        let svg = work.path().join("logo.svg");
+        let text = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="10"><rect width="10" height="10" fill="red"/><image href="{}" x="10" width="10" height="10"/></svg>"#,
+            secret.display()
+        );
+        std::fs::write(&svg, text).unwrap();
+        let png = work.path().join("logo.png");
+        draw_file(&svg, &png).unwrap();
+        let bytes = std::fs::read(&png).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG"));
+        // 20x10 drawn up to 1024 on the long side: 1024x512 in the PNG header.
+        assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 1024);
+        assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), 512);
+        let broken = work.path().join("broken.svg");
+        std::fs::write(&broken, b"<svg").unwrap();
+        assert!(draw_file(&broken, &png).unwrap_err().starts_with("this SVG can't be read"));
     }
 
     #[test]

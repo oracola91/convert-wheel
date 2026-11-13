@@ -1,10 +1,9 @@
 {
-  "productName": "Convert Wheel",
   "app": {
     "windows": [
       {
         "label": "wheel",
-        "title": "Convert Wheel",
+        "title": "Pirouette",
         "width": 340,
         "height": 340,
         "resizable": false,
@@ -24,6 +23,14 @@
     "targets": [
       "nsis",
       "msi"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
+      },
+      "wix": {
+        "upgradeCode": "15234095-7d06-514a-98b3-6696306b8c7a"
+      }
+    }
   }
 }

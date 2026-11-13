@@ -35,7 +35,7 @@ pub struct Ivars {
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ConvertWheelDropView"]
+    #[name = "PirouetteDropView"]
     #[ivars = Ivars]
     pub struct DropView;
 

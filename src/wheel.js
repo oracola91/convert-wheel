@@ -1,7 +1,7 @@
 // Draws the wheel: formats, (Option/Alt+Shift) tools or (Control+Shift) actions.
 // The drop itself is handled natively (drop_view.rs), which
 // says what is under the cursor. The glass and the file icon in the hub are native too.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { listen } = window.__TAURI__.event;
 const { invoke } = window.__TAURI__.core;
 
@@ -43,6 +43,13 @@ const TOOLS = {
   'tool:trim': ['Trim', 'Trim the ends'],
   'tool:bleep': ['Bleep', 'Bleep out a part'],
   'tool:speed': ['Speed', 'Faster or slower'],
+  'tool:resize': ['Resize', 'To any size'],
+  'tool:flip': ['Flip', 'Mirror left to right'],
+  'tool:mute': ['Mute', 'Without the sound'],
+  'tool:snapshot': ['Snapshot', 'A picture of any moment'],
+  'tool:percent': ['To %', 'Each to a share of its size'],
+  'tool:lock': ['Password', 'Lock it with a password'],
+  'tool:pdfa': ['PDF/A', 'For long-term archiving'],
   'tool:parts': ['Split', 'Split into parts'],
   'tool:join': ['Join', 'Join into one'],
   'tool:target': ['To a size', 'Compress to a size'],

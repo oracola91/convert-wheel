@@ -1,10 +1,9 @@
 {
-  "productName": "Convert Wheel",
   "app": {
     "windows": [
       {
         "label": "wheel",
-        "title": "Convert Wheel",
+        "title": "Pirouette",
         "width": 340,
         "height": 340,
         "resizable": false,
@@ -29,7 +28,16 @@
     "shortDescription": "Hold Shift while dragging a file to convert it",
     "linux": {
       "deb": {
-        "desktopTemplate": "linux/convert-wheel.desktop"
+        "desktopTemplate": "linux/pirouette.desktop",
+        "conflicts": [
+          "convert-wheel"
+        ],
+        "replaces": [
+          "convert-wheel"
+        ],
+        "provides": [
+          "convert-wheel"
+        ]
       }
     }
   }

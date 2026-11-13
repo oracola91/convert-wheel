@@ -26,6 +26,7 @@ use crate::settings::{Level, Quality};
 pub mod estimate;
 pub mod info;
 pub mod markup;
+pub mod sheet;
 pub mod svg;
 
 /// How long each tool may run before it is stopped. Generous: a stuck tool should not
@@ -110,30 +111,44 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
                 ("tool:target", Some(Edit::Size(bytes))) => format!("under {}", size_text(bytes)),
                 // Speed names the speed: "clip (2x speed).mov".
                 ("tool:speed", Some(Edit::Speed(percent))) => format!("{}x speed", speed_text(percent)),
+                // Resize names the size: "photo (1920 px).jpg".
+                ("tool:resize", Some(Edit::Resize(side))) => format!("{side} px"),
+                // Snapshot names the moment: "clip (frame at 1m05s).jpg".
+                ("tool:snapshot", Some(Edit::Snapshot(ms))) => format!("frame at {}", moment_text(ms)),
+                // Compress to % names the share: "photo (50%).jpg".
+                ("tool:percent", Some(Edit::Percent(p))) => format!("{p}%"),
                 _ => tool_suffix(t).to_string(),
             };
             (format!("{base} ({suffix})"), tool_out_ext(t, &ext))
         }
         None => (base.to_string(), target.to_string()),
     };
-    // Not a folder, a device or a pipe (a pipe would block the read below forever).
+    // Not a folder, a device or a pipe (a pipe would block the read below forever). An
+    // RTFD is a folder by design: rich text with its pictures beside it.
     let meta = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?;
-    if !meta.is_file() {
+    if ext == "rtfd" && !meta.is_dir() {
+        return Err("this .rtfd is not an RTFD folder".into());
+    }
+    if ext != "rtfd" && !meta.is_file() {
         return Err("this is not a regular file".into());
     }
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let out = work.path().join(format!("result.{out_ext}"));
 
     // Audio and video can be huge; ffmpeg reads them in place, locked down instead.
-    let input = if matches!(kind, Kind::Audio | Kind::Video) {
-        src.to_path_buf()
+    // RTFD folders and text clippings become a plain document first (`plain_document`),
+    // converted from then on as that.
+    let (input, ext) = if matches!(kind, Kind::Audio | Kind::Video) {
+        (src.to_path_buf(), ext)
+    } else if matches!(ext.as_str(), "rtfd" | "textclipping") {
+        plain_document(src, &ext, work.path()).map_err(|e| redact(&e, src, work.path()))?
     } else {
         let staged = work.path().join(format!("input.{ext}"));
         fs::copy(src, &staged).map_err(|e| format!("can't read the file: {e}"))?;
-        staged
+        (staged, ext)
     };
 
     // Office files must really be what their name says. LibreOffice otherwise picks a
@@ -161,6 +176,14 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
             file(size_limit().and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
         }
         (Some("tool:target"), Kind::Pdf) => file(size_limit().and_then(|limit| pdf_to_size(&input, &out, work.path(), limit))),
+        // Compress to %: To a Size, with the share of this file's own size as the size.
+        (Some("tool:percent"), Kind::Image) => file(percent_limit(meta.len()).and_then(|limit| image_to_size(&input, &out, limit))),
+        (Some("tool:percent"), Kind::Audio | Kind::Video) => {
+            file(percent_limit(meta.len()).and_then(|limit| media_to_size(&input, &ext, &out, work.path(), limit)))
+        }
+        (Some("tool:percent"), Kind::Pdf) => {
+            file(percent_limit(meta.len()).and_then(|limit| pdf_to_size(&input, &out, work.path(), limit)))
+        }
         (Some("tool:parts"), Kind::Audio | Kind::Video) => media_parts(&input, &ext, work.path()),
         // The date taken and the place, written by ExifTool into the copy.
         (Some("tool:info"), Kind::Image | Kind::Video) => match control().and_then(|c| c.edit.clone()) {
@@ -168,16 +191,33 @@ pub fn convert(src: &Path, target: &str, save_in: Option<&Path>, fallback: &Path
             _ => Err("Info opens its window from the wheel".to_string()),
         },
         (Some(t), Kind::Image) => file(image_tool(&input, t, &out)),
+        // Ghostscript alone; MuPDF isn't needed for it.
+        (Some("tool:pdfa"), Kind::Pdf) => file(to_pdfa(&input, &out, work.path())),
         (Some(t), Kind::Pdf) => pdf_tool(&input, t, &out, &work),
         (Some(t), Kind::Audio | Kind::Video) => file(media_tool(&input, &ext, t, &out)),
         (Some(_), _) => Err("the Tools wheel has no tools for this kind of file yet".to_string()),
+        // Camera RAW: decoded to a TIFF first, then converted from that.
+        (None, Kind::Image) if formats::is_raw(&ext) => raw_to_tiff(&input, &ext, &out).and_then(|tiff| {
+            file(if target == "svg" { to_svg(&tiff, &out, work.path()) } else { image(&tiff, target, &out) })
+        }),
         (None, Kind::Image) if target == "svg" => file(to_svg(&input, &out, work.path())),
+        // An SVG: drawn as a picture by the app itself first, then converted from that.
+        (None, Kind::Image) if ext == "svg" => {
+            let drawn = work.path().join("drawn.png");
+            file(draw_svg(&input, &drawn).and_then(|()| image(&drawn, target, &out)))
+        }
         (None, Kind::Image) => file(image(&input, target, &out)),
         (None, Kind::Audio) => file(audio(&input, target, &out)),
         (None, Kind::Video) => file(video(&input, &ext, target, &out)),
         (None, Kind::Doc) => file(document(&input, &ext, target, &out, &work)),
+        // A picture of each slide: the slides as a PDF first, then its pages drawn.
+        (None, Kind::Slides) if matches!(target, "jpg" | "png") => {
+            let slides = work.path().join("slides.pdf");
+            libreoffice(&input, "pdf", &slides).and_then(|()| pdf(&slides, target, &out, &work))
+        }
         (None, Kind::Sheet | Kind::Slides) => file(libreoffice(&input, target, &out)),
         (None, Kind::Pdf) => pdf(&input, target, &out, &work),
+        (None, Kind::Subtitles) if target == "txt" => file(subtitle_text(&input, &out)),
         (None, Kind::Subtitles) => file(ffmpeg(&input, &["-map", "0:s:0"], &out, QUICK)),
     };
     // Tool messages often start with a full path; keep only file names.
@@ -283,6 +323,73 @@ fn sniff_image(head: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Whether the start of a file fits its camera RAW extension: most are TIFF inside,
+/// Olympus, Panasonic and Fujifilm have their own, Canon's CR3 is an ISO media file.
+fn raw_head_ok(head: &[u8], ext: &str) -> bool {
+    let at = |i: usize, sig: &[u8]| head.get(i..i + sig.len()) == Some(sig);
+    let tiff = at(0, b"II*\0") || at(0, b"MM\0*");
+    match ext {
+        "orf" => at(0, b"IIRO") || at(0, b"IIRS") || at(0, b"MMOR") || tiff,
+        "rw2" => at(0, b"IIU\0") || tiff,
+        "raf" => at(0, b"FUJIFILMCCD-RAW"),
+        "cr3" => at(4, b"ftyp") && at(8, b"crx "),
+        _ => tiff,
+    }
+}
+
+/// A camera RAW file as a 16-bit TIFF in the work folder (next to `out`), for
+/// ImageMagick to convert from. macOS decodes it itself with sips (Apple's own RAW
+/// engine, the one Preview uses). Elsewhere ImageMagick does, but only when it was
+/// built with LibRaw: without it, it would hand the file to an outside program from
+/// its delegates list, which the app doesn't let it do.
+fn raw_to_tiff(src: &Path, ext: &str, out: &Path) -> Result<PathBuf, String> {
+    if !raw_head_ok(&read_head(src)?, ext) {
+        return Err(format!("this is not a valid .{ext} file"));
+    }
+    let tiff = out.with_file_name("raw.tiff");
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = Command::new("/usr/bin/sips");
+        cmd.args(["-s", "format", "tiff"]).arg(src).arg("--out").arg(&tiff);
+        run(cmd, QUICK)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let magick = magick()?;
+        if !magick_reads_raw(&magick) {
+            return Err(
+                "this ImageMagick can't read camera RAW: it was built without LibRaw (\"magick -version\" lists \"raw\" under Delegates when it can)"
+                    .into(),
+            );
+        }
+        let mut cmd = Command::new(magick);
+        cmd.args(IMAGE_LIMITS).arg(format!("{ext}:{}[0]", src.display())).arg(format!("tiff:{}", tiff.display()));
+        run(cmd, QUICK)?;
+    }
+    if !tiff.is_file() {
+        return Err("the RAW decoder wrote no picture".into());
+    }
+    Ok(tiff)
+}
+
+/// Whether this ImageMagick was built with LibRaw: "raw" among its built-in delegates.
+#[cfg(not(target_os = "macos"))]
+fn magick_reads_raw(magick: &Path) -> bool {
+    let mut cmd = Command::new(magick);
+    cmd.arg("-version").stdin(Stdio::null()).stderr(Stdio::null());
+    quiet(&mut cmd);
+    cmd.output().is_ok_and(|out| delegates_have_raw(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// "Delegates (built-in): bzlib ... raw ..." from `magick -version`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn delegates_have_raw(version: &str) -> bool {
+    version
+        .lines()
+        .find(|l| l.starts_with("Delegates"))
+        .is_some_and(|l| l.split_whitespace().any(|w| w == "raw"))
+}
+
 fn image(src: &Path, target: &str, out: &Path) -> Result<(), String> {
     // Naming the real input format stops ImageMagick from picking a decoder itself.
     // The real format, not the extension, so a PNG saved as .jpg still converts.
@@ -382,6 +489,14 @@ fn tool_suffix(tool: &str) -> &'static str {
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "new speed",
+        "tool:resize" => "resized",
+        "tool:flip" => "flipped",
+        "tool:mute" => "no sound",
+        "tool:snapshot" => "frame",
+        "tool:percent" => "compressed",
+        "tool:lock" => "locked",
+        // No slash: it can't be in a file name.
+        "tool:pdfa" => "PDF-A",
         "tool:parts" => "parts",
         "tool:join" => "joined",
         "tool:target" => "compressed",
@@ -414,6 +529,13 @@ fn tool_done(tool: &str) -> &'static str {
         "tool:trim" => "trimmed",
         "tool:bleep" => "bleeped",
         "tool:speed" => "sped up or slowed down",
+        "tool:resize" => "resized",
+        "tool:flip" => "flipped",
+        "tool:mute" => "muted",
+        "tool:snapshot" => "turned into a picture",
+        "tool:percent" => "compressed to a share of their size",
+        "tool:lock" => "locked with a password",
+        "tool:pdfa" => "made into PDF/A",
         "tool:parts" => "split into parts",
         "tool:join" => "joined",
         "tool:target" => "compressed to a size",
@@ -425,7 +547,7 @@ fn tool_done(tool: &str) -> &'static str {
 /// a QR code's text.
 fn tool_out_ext(tool_id: &str, ext: &str) -> String {
     match tool_id {
-        "tool:still" => "jpg".into(),
+        "tool:still" | "tool:snapshot" => "jpg".into(),
         "tool:qr" => "txt".into(),
         _ => formats::canonical(ext).into(),
     }
@@ -479,6 +601,44 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
             ffmpeg(src, &args, out, VIDEO)
         }
         "tool:still" => ffmpeg(src, &["-map", "0:v:0", "-frames:v", "1", "-q:v", "2", "-update", "1"], out, QUICK),
+        // The moment chosen in its window, as a JPEG at the video's own size.
+        "tool:snapshot" => {
+            let Some(Edit::Snapshot(ms)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Snapshot opens its window from the wheel".into());
+            };
+            frame_at(src, ms, out)
+        }
+        // The picture as it is, copied, without any sound track. Quick: nothing is
+        // encoded again.
+        "tool:mute" => {
+            let mut args = vec!["-map", MAIN_PICTURE, "-c:v", "copy", "-an", "-map_metadata", "0"];
+            args.extend(faststart(own));
+            ffmpeg(src, &args, out, AUDIO)
+        }
+        // Mirrored left to right, or at a new size (the longest side as chosen, the
+        // other in proportion, kept even); encoded again in the file's own format, at
+        // the menu's quality, with the first sound.
+        "tool:flip" | "tool:resize" => {
+            let filter = if tool_id == "tool:flip" {
+                "hflip".to_string()
+            } else {
+                let Some(Edit::Resize(side)) = control().and_then(|c| c.edit.clone()) else {
+                    return Err("Resize opens its window from the wheel".into());
+                };
+                if !(RESIZE_MIN..=RESIZE_VIDEO_MAX).contains(&side) {
+                    return Err(format!("pick a size from {RESIZE_MIN} to {RESIZE_VIDEO_MAX} pixels"));
+                }
+                resize_filter(side)
+            };
+            let codec = video_codec(own).ok_or_else(|| format!("{} files can't be {}", own.to_uppercase(), tool_done(tool_id)))?;
+            let frames = match video_fit(own) {
+                Some(fit) => format!("{filter},{fit}"),
+                None => filter,
+            };
+            let mut args = vec!["-map", "0:v:0", "-map", FIRST_SOUND, "-vf", &frames, "-map_metadata", "0"];
+            args.extend(codec);
+            ffmpeg(src, &args, out, VIDEO)
+        }
         // The box chosen in the Crop window, on the picture upright (ffmpeg turns a
         // phone's video by its tag first) and then turned as chosen there; encoded again
         // in the file's own format, at the menu's quality.
@@ -579,6 +739,12 @@ fn media_tool(src: &Path, ext: &str, tool_id: &str, out: &Path) -> Result<(), St
         }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+/// ffmpeg's scale for Resize: the longer side becomes `side`, the other follows in
+/// proportion and stays even (-2), as the encoders need.
+fn resize_filter(side: u32) -> String {
+    format!("scale=w='if(gte(iw,ih),{side},-2)':h='if(gte(iw,ih),-2,{side})'")
 }
 
 /// The part of a sound or video from `start_ms` to `end_ms`, cut exactly where asked:
@@ -684,6 +850,18 @@ fn image_tool(src: &Path, tool: &str, out: &Path) -> Result<(), String> {
         // IPTC), and comments.
         "tool:clean" => cmd.args(["+profile", "!icc,*", "+set", "comment"]),
         "tool:rotate" => cmd.args(["-rotate", "90"]),
+        // Mirrored left to right.
+        "tool:flip" => cmd.arg("-flop"),
+        // The longest side as chosen, the other in proportion; larger works too.
+        "tool:resize" => {
+            let Some(Edit::Resize(side)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Resize opens its window from the wheel".into());
+            };
+            if !(RESIZE_MIN..=RESIZE_PICTURE_MAX).contains(&side) {
+                return Err(format!("pick a size from {RESIZE_MIN} to {RESIZE_PICTURE_MAX} pixels"));
+            }
+            cmd.args(["-resize", &format!("{side}x{side}")])
+        }
         "tool:crop" => {
             let Some(Edit::Crop(crop)) = control().and_then(|c| c.edit.clone()) else {
                 return Err("Crop opens its window from the wheel".into());
@@ -915,7 +1093,7 @@ fn video_crop_filter(crop: &Crop, fit: Option<&str>) -> String {
 /// size, then made into the preview the way a picture's is.
 pub fn video_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let frame = work.path().join("frame.jpg");
@@ -923,11 +1101,51 @@ pub fn video_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     preview(&frame)
 }
 
+/// One frame of the video's main picture at `ms`, upright, as a JPEG at `out`. Seeking
+/// before reading (-ss ahead of -i) is quick even far into a long video.
+fn frame_at(src: &Path, ms: u64, out: &Path) -> Result<(), String> {
+    let at = format!("{}.{:03}", ms / 1000, ms % 1000);
+    let mut cmd = Command::new(tool("ffmpeg")?);
+    cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", &at]);
+    cmd.args(["-protocol_whitelist", "file", "-format_whitelist", FFMPEG_FORMATS, "-i"])
+        .arg(format!("file:{}", src.display()))
+        .args(["-map", MAIN_PICTURE, "-frames:v", "1", "-q:v", "2", "-update", "1"])
+        .arg(out);
+    run(cmd, QUICK)?;
+    if !out.is_file() {
+        return Err("there is no picture at that moment".into());
+    }
+    Ok(())
+}
+
+/// Snapshot's window: the frame at `ms`, made into the preview the way a picture's is.
+pub fn frame_preview(src: &Path, ms: u64) -> Result<Vec<u8>, String> {
+    let work = tempfile::Builder::new()
+        .prefix("pirouette-")
+        .tempdir()
+        .map_err(|e| format!("work folder: {e}"))?;
+    let frame = work.path().join("frame.jpg");
+    frame_at(src, ms, &frame)?;
+    preview(&frame).map(|(_, _, jpeg)| jpeg)
+}
+
+/// A moment for a file name: "12s", "1m05s", "1h02m03s" (no colons, which Windows
+/// doesn't allow in names).
+pub fn moment_text(ms: u64) -> String {
+    let total = ms / 1000;
+    let (h, m, s) = (total / 3600, total / 60 % 60, total % 60);
+    match (h, m) {
+        (0, 0) => format!("{s}s"),
+        (0, _) => format!("{m}m{s:02}s"),
+        _ => format!("{h}h{m:02}m{s:02}s"),
+    }
+}
+
 /// Black Out's window: a typical frame of the video's main picture (MAIN_PICTURE),
 /// upright, with its size, made into the preview the way a picture's is.
 pub fn blackout_preview(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let frame = work.path().join("frame.jpg");
@@ -984,7 +1202,7 @@ fn atempo(percent: u16) -> String {
 pub fn length_ms(src: &Path) -> Result<u64, String> {
     tool("ffprobe")?;
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let length = media_length(src, &work.path().join("probe")).ok_or("can't tell how long it plays")?;
@@ -1063,6 +1281,19 @@ fn document(src: &Path, ext: &str, target: &str, out: &Path, work: &TempDir) -> 
     let ext = formats::canonical(ext);
     let office_in = matches!(ext, "docx" | "doc" | "odt" | "rtf" | "pages");
     match target {
+        // A clipping's plain text to plain text, or an RTFD that is already Word: as it is.
+        _ if ext == target => fs::copy(src, out).map(drop).map_err(|e| format!("work folder: {e}")),
+        // Pages writes its own files: Word first, then Pages opens that and saves it.
+        "pages" => {
+            check_pages()?;
+            let docx = work.path().join("for pages.docx");
+            if ext == "docx" {
+                fs::copy(src, &docx).map_err(|e| format!("work folder: {e}"))?;
+            } else {
+                document(src, ext, "docx", &docx, work)?;
+            }
+            to_pages(&docx, out, work.path())
+        }
         // Plain text keeps its exact characters through LibreOffice; pandoc would read
         // it as Markdown and change *, # and _.
         "pdf" | "docx" | "odt" if office_in || ext == "txt" => libreoffice(src, target, out),
@@ -1138,9 +1369,20 @@ fn libreoffice(src: &Path, target: &str, out: &Path) -> Result<(), String> {
         Some("csv") => {
             cmd.arg("--infilter=CSV:44,34,76,1");
         }
+        // Tab-separated: the same reader with a tab (9) between the fields.
+        Some("tsv") => {
+            cmd.arg("--infilter=CSV:9,34,76,1");
+        }
         _ => {}
     }
-    cmd.args(["--convert-to", target, "--outdir"]).arg(&outdir).arg(src);
+    // CSV and TSV: LibreOffice's CSV writer with a comma or a tab between the fields,
+    // UTF-8 (76), said each time: otherwise it keeps what the file was read with.
+    let to = match target {
+        "csv" => "csv:Text - txt - csv (StarCalc):44,34,76",
+        "tsv" => "tsv:Text - txt - csv (StarCalc):9,34,76",
+        other => other,
+    };
+    cmd.args(["--convert-to", to, "--outdir"]).arg(&outdir).arg(src);
     run(cmd, OFFICE)?;
     // LibreOffice names the result after the input and can exit 0 without writing it.
     let stem = src.file_stem().ok_or("no file name")?.to_string_lossy();
@@ -1162,23 +1404,8 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
         return Err("this PDF has no pages".into());
     }
     match target {
-        "png" | "jpg" => {
-            let dir = work.path().join("pages");
-            fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
-            let last = count.min(MAX_PAGES);
-            for first in (1..=last).step_by(PAGE_BATCH) {
-                let pages = format!("{first}-{}", (first + PAGE_BATCH - 1).min(last));
-                // Inside the pages folder, so the "%d" in the output name is the only
-                // "%" mutool sees, whatever the work folder's path holds.
-                mutool.run(&dir, &["draw", "-q", "-r", PAGE_DPI, "-w", PAGE_MAX_PIXELS, "-h", PAGE_MAX_PIXELS, "-o", "%d.png"], &pages)?;
-                if folder_size(&dir)? > PAGES_BUDGET {
-                    return Err("this PDF's pages are too large to draw: the pictures would take more than 1 GB".into());
-                }
-            }
-            let mut files: Vec<PathBuf> = (1..=last).map(|n| dir.join(format!("{n}.png"))).collect();
-            if let Some(missing) = files.iter().position(|p| !p.is_file()) {
-                return Err(format!("MuPDF didn't draw page {} of this PDF", missing + 1));
-            }
+        "png" | "jpg" | "svg" => {
+            let mut files = draw_pages(&mutool, work.path(), count, if target == "svg" { "svg" } else { "png" })?;
             if target == "jpg" {
                 for png in &mut files {
                     mutool.time_left()?;
@@ -1193,7 +1420,28 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
             }
             Ok(Output::Pages { files, cut: count > MAX_PAGES })
         }
-        "txt" | "docx" => {
+        // A slide with a picture of each page, through pandoc: the pictures go inside the
+        // Markdown it reads, as data, so its sandbox never has to open another file.
+        "pptx" => {
+            if count > MAX_PAGES {
+                return Err(format!("this PDF has {count} pages: PowerPoint files are made from PDFs up to {MAX_PAGES} pages"));
+            }
+            use base64::Engine;
+            let pictures = draw_pages(&mutool, work.path(), count, "png")?;
+            let mut slides = String::new();
+            for (n, png) in pictures.iter().enumerate() {
+                let bytes = fs::read(png).map_err(|e| format!("work folder: {e}"))?;
+                if n > 0 {
+                    slides.push_str("\n---\n\n");
+                }
+                slides.push_str(&format!("![](data:image/png;base64,{})\n", base64::engine::general_purpose::STANDARD.encode(bytes)));
+            }
+            let md = work.path().join("slides.md");
+            fs::write(&md, slides).map_err(|e| format!("work folder: {e}"))?;
+            pandoc(&md, "md", "pptx", out)?;
+            Ok(Output::File)
+        }
+        "txt" | "docx" | "md" | "epub" => {
             if count > MAX_TEXT_PAGES {
                 return Err(format!("this PDF has {count} pages: the text can be taken out of PDFs up to {MAX_TEXT_PAGES} pages"));
             }
@@ -1210,19 +1458,505 @@ fn pdf(src: &Path, target: &str, out: &Path, work: &TempDir) -> Result<Output, S
             }
             let text = paragraphs(&String::from_utf8_lossy(&bytes));
             if text.is_empty() {
-                return Err("this PDF has no text to take out (its pages may be scans)".into());
+                return Err(NO_TEXT.into());
             }
             if target == "txt" {
                 fs::write(out, text.join("\n\n") + "\n").map_err(|e| format!("work folder: {e}"))?;
             } else {
                 let html = work.path().join("text.html");
                 fs::write(&html, paragraphs_html(&text)).map_err(|e| format!("work folder: {e}"))?;
-                pandoc(&html, "html", "docx", out)?;
+                pandoc(&html, "html", target, out)?;
             }
+            Ok(Output::File)
+        }
+        // Each page's text back in rows and columns, one sheet per page (convert/sheet.rs).
+        "xlsx" => {
+            if count > MAX_TEXT_PAGES {
+                return Err(format!("this PDF has {count} pages: spreadsheets are made from PDFs up to {MAX_TEXT_PAGES} pages"));
+            }
+            let mut sheets = Vec::new();
+            for first in (1..=count).step_by(SHEET_BATCH) {
+                let pages = format!("{first}-{}", (first + SHEET_BATCH - 1).min(count));
+                mutool.run(work.path(), &["draw", "-q", "-F", "stext", "-o", "text.xml"], &pages)?;
+                let part = work.path().join("text.xml");
+                if fs::metadata(&part).map_err(|e| format!("work folder: {e}"))?.len() > SHEET_BATCH_BUDGET {
+                    return Err("this PDF holds too much text to put in a spreadsheet".into());
+                }
+                let xml = fs::read(&part).map_err(|e| format!("work folder: {e}"))?;
+                for table in sheet::tables(&String::from_utf8_lossy(&xml)) {
+                    sheets.push((format!("Page {}", sheets.len() + 1), table));
+                }
+            }
+            if sheets.iter().all(|(_, rows)| rows.is_empty()) {
+                return Err(NO_TEXT.into());
+            }
+            sheet::write_xlsx(out, &sheets).map_err(|e| format!("couldn't write the spreadsheet: {e}"))?;
+            Ok(Output::File)
+        }
+        // The text as Word, as for DOCX, then into Pages.
+        "pages" => {
+            check_pages()?;
+            let docx = work.path().join("text.docx");
+            pdf(src, "docx", &docx, work)?;
+            to_pages(&docx, out, work.path())?;
             Ok(Output::File)
         }
         other => Err(format!("a PDF can't become .{other}")),
     }
+}
+
+const NO_TEXT: &str = "this PDF has no text to take out (its pages may be scans)";
+
+/// Pages read for a spreadsheet at a time: MuPDF's structured text says where every
+/// character is, so it is far bigger than the text itself.
+const SHEET_BATCH: usize = 20;
+const SHEET_BATCH_BUDGET: u64 = 200 * 1024 * 1024;
+
+/// RTFD folders and text clippings as a document the converters read, with its format.
+/// macOS turns an RTFD into a web page with its pictures inside (textutil, whose Word
+/// files leave the pictures out); elsewhere its rich text (TXT.rtf, inside the folder)
+/// is used, without the pictures. A text clipping holds rich text, plain text or both:
+/// rich text is taken first.
+fn plain_document(src: &Path, ext: &str, work: &Path) -> Result<(PathBuf, String), String> {
+    if ext == "textclipping" {
+        return clipping_document(src, work);
+    }
+    if cfg!(target_os = "macos") {
+        // textutil writes each picture as a file beside the page; they go into the
+        // page as data, so pandoc's sandbox never has to open another file.
+        let dir = work.join("rtfd");
+        fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
+        let page = dir.join("page.html");
+        let mut cmd = Command::new("/usr/bin/textutil");
+        cmd.args(["-convert", "html", "-output"]).arg(&page).arg(src);
+        run(cmd, QUICK)?;
+        let html = fs::read_to_string(&page).map_err(|_| "macOS couldn't read this RTFD".to_string())?;
+        let html_in = work.join("input.html");
+        fs::write(&html_in, inline_pictures(&html, &dir)).map_err(|e| format!("work folder: {e}"))?;
+        return Ok((html_in, "html".into()));
+    }
+    // Only a real file inside the folder, never a link out of it.
+    let inner = src.join("TXT.rtf");
+    if !fs::symlink_metadata(&inner).is_ok_and(|m| m.is_file()) {
+        return Err("this RTFD folder has no TXT.rtf inside".into());
+    }
+    let rtf = work.join("input.rtf");
+    fs::copy(&inner, &rtf).map_err(|e| format!("can't read the file: {e}"))?;
+    Ok((rtf, "rtf".into()))
+}
+
+/// A Finder text clipping: a property list whose "UTI-Data" holds the text under its
+/// type ("public.rtf", "public.utf8-plain-text", ...). Clippings from before macOS
+/// 10.x keep it in a resource fork instead, which other systems can't see.
+fn clipping_document(src: &Path, work: &Path) -> Result<(PathBuf, String), String> {
+    let size = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?.len();
+    if size == 0 {
+        return Err("this clipping keeps its text the old way (in a resource fork), which can't be read".into());
+    }
+    if size > 20 * 1024 * 1024 {
+        return Err("this clipping is too large".into());
+    }
+    let value = plist::Value::from_file(src).map_err(|_| "this is not a text clipping macOS saved".to_string())?;
+    let data = value
+        .as_dictionary()
+        .and_then(|d| d.get("UTI-Data"))
+        .and_then(plist::Value::as_dictionary)
+        .ok_or("this clipping holds no text")?;
+    let bytes = |key: &str| -> Option<Vec<u8>> {
+        let v = data.get(key)?;
+        v.as_data().map(<[u8]>::to_vec).or_else(|| v.as_string().map(|s| s.as_bytes().to_vec()))
+    };
+    if let Some(rtf) = bytes("public.rtf").filter(|b| b.starts_with(b"{\\rtf")) {
+        let path = work.join("input.rtf");
+        fs::write(&path, rtf).map_err(|e| format!("work folder: {e}"))?;
+        return Ok((path, "rtf".into()));
+    }
+    let text = bytes("public.utf8-plain-text")
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .or_else(|| bytes("public.utf16-external-plain-text").or_else(|| bytes("public.utf16-plain-text")).map(|b| utf16_text(&b)))
+        .or_else(|| bytes("public.plain-text").map(|b| String::from_utf8_lossy(&b).into_owned()))
+        .filter(|t| !t.trim().is_empty())
+        .ok_or("this clipping holds no text (it may be a picture or a link)")?;
+    let path = work.join("input.txt");
+    fs::write(&path, text).map_err(|e| format!("work folder: {e}"))?;
+    Ok((path, "txt".into()))
+}
+
+/// textutil's page with each `src="file:///NAME"` picture in `dir` put in as a data:
+/// URL. Only plain names count (no folders, no ".."), only picture types, and only
+/// pictures up to 50 MB; anything else is left as it was.
+fn inline_pictures(html: &str, dir: &Path) -> String {
+    use base64::Engine;
+    const MARK: &str = "src=\"file:///";
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find(MARK) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + MARK.len()..];
+        let Some(end) = after.find('"') else {
+            rest = &rest[at..];
+            break;
+        };
+        let name = percent_decode(&after[..end]);
+        let mime = Path::new(&name).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).and_then(|e| {
+            Some(match e.as_str() {
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "tif" | "tiff" => "image/tiff",
+                "heic" => "image/heic",
+                "webp" => "image/webp",
+                "bmp" => "image/bmp",
+                _ => return None,
+            })
+        });
+        let plain = !name.is_empty() && !name.contains(['/', '\\']) && name != ".." && name != ".";
+        let picture = dir.join(&name);
+        let small = fs::symlink_metadata(&picture).is_ok_and(|m| m.is_file() && m.len() <= 50 * 1024 * 1024);
+        match (mime, plain && small) {
+            (Some(mime), true) => match fs::read(&picture) {
+                Ok(bytes) => out.push_str(&format!("src=\"data:{mime};base64,{}\"", base64::engine::general_purpose::STANDARD.encode(bytes))),
+                Err(_) => out.push_str(&rest[at..at + MARK.len() + end + 1]),
+            },
+            _ => out.push_str(&rest[at..at + MARK.len() + end + 1]),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// "My%20Picture.png" to "My Picture.png".
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// UTF-16 text, big- or little-endian by its byte order mark (little without one, as
+/// Macs write it).
+fn utf16_text(bytes: &[u8]) -> String {
+    let (big, body) = match bytes {
+        [0xFE, 0xFF, rest @ ..] => (true, rest),
+        [0xFF, 0xFE, rest @ ..] => (false, rest),
+        rest => (false, rest),
+    };
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|p| if big { u16::from_be_bytes([p[0], p[1]]) } else { u16::from_le_bytes([p[0], p[1]]) })
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// Pages' bundle ids: the Mac app's own, and the one of the single Pages for iPhone, iPad
+/// and Mac that the App Store sells now (checked 2026-11-13: "Requires macOS 26.0 or
+/// later"). Pages files can only be written by Pages itself.
+#[cfg(target_os = "macos")]
+const PAGES_IDS: [&str; 2] = ["com.apple.iWork.Pages", "com.apple.Pages"];
+
+/// Pages in the App Store app (id361309726, checked 2026-11-13: the page covers Mac).
+pub const PAGES_STORE: &str = "macappstore://apps.apple.com/app/id361309726";
+
+/// How a conversion's error starts when Pages is missing; `converters::offer` reads it.
+pub const PAGES_MISSING: &str = "Pages isn't installed";
+
+/// The bundle id of the Pages on this Mac, if there is one.
+#[cfg(target_os = "macos")]
+fn pages_app() -> Option<&'static str> {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::NSString;
+    let workspace = NSWorkspace::sharedWorkspace();
+    PAGES_IDS.into_iter().find(|id| workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(id)).is_some())
+}
+
+/// Whether Apple's Pages app is on this Mac. Elsewhere there is no Pages.
+pub fn pages_installed() -> bool {
+    #[cfg(target_os = "macos")]
+    return pages_app().is_some();
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+/// Opens the App Store app on Pages (macOS), for Settings' Get Pages… and a drop on
+/// Pages without it.
+pub fn open_pages_store() {
+    #[cfg(target_os = "macos")]
+    if let Err(e) = Command::new("/usr/bin/open").arg(PAGES_STORE).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        crate::log::line(&format!("couldn't open the App Store: {e}"));
+    }
+}
+
+/// Opens a Word file in Pages and saves it as a Pages file, by AppleScript. Pages is
+/// quit again if it wasn't running before. macOS asks once whether the app may control
+/// Pages (System Settings > Privacy & Security > Automation).
+///
+/// Pages is started first and asked until it answers: an `open` that starts Pages
+/// itself gets back a placeholder that can't be saved ("doesn't understand the save
+/// message", Pages 15.4, 2026-11-13); once Pages is up, `open` gives the document.
+#[cfg(target_os = "macos")]
+const PAGES_SCRIPT: &str = r#"on run argv
+	set inFile to POSIX file (item 1 of argv)
+	set outFile to POSIX file (item 2 of argv)
+	set wasRunning to application id "PAGES_ID" is running
+	tell application id "PAGES_ID"
+		launch
+		set ready to false
+		repeat 120 times
+			try
+				count of documents
+				set ready to true
+				exit repeat
+			end try
+			delay 0.25
+		end repeat
+		if not ready then error "Pages didn't start within 30 seconds" number -1712
+		with timeout of 150 seconds
+			set theDoc to open inFile
+			save theDoc in outFile
+			close theDoc saving no
+		end timeout
+		if not wasRunning then quit
+	end tell
+end run
+"#;
+
+/// Pages is there to write a Pages file: checked before the Word file is made for it.
+fn check_pages() -> Result<(), String> {
+    if pages_installed() {
+        Ok(())
+    } else if cfg!(target_os = "macos") {
+        Err(format!("{PAGES_MISSING}: it is free in the App Store"))
+    } else {
+        Err("Pages files can only be made on a Mac with Pages".into())
+    }
+}
+
+fn to_pages(docx: &Path, out: &Path, work: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        check_pages()?;
+        let id = pages_app().ok_or(PAGES_MISSING)?;
+        let script = work.join("pages.applescript");
+        // The id is one of PAGES_IDS, never anything from the file.
+        fs::write(&script, PAGES_SCRIPT.replace("PAGES_ID", id)).map_err(|e| format!("work file: {e}"))?;
+        let mut cmd = Command::new("/usr/bin/osascript");
+        cmd.arg(&script).arg(docx).arg(out);
+        return match run_tool(cmd, OFFICE) {
+            // Apple events to Pages not allowed (errAEEventNotPermitted).
+            Err(f) if f.output.contains("-1743") || f.message.contains("-1743") => Err(format!(
+                "{} may not use Pages yet: allow it in System Settings > Privacy & Security > Automation, then try again",
+                crate::APP_NAME
+            )),
+            Err(f) => Err(f.message),
+            Ok(()) if out.is_dir() => Err("Pages saved a package folder: choose Pages > Settings > General > Save new documents as single files".into()),
+            Ok(()) => Ok(()),
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (docx, out, work);
+        Err("Pages files can only be made on a Mac with Pages".into())
+    }
+}
+
+/// The PDF/A output intent: the sRGB profile copied into the work folder as
+/// "srgb.icc", embedded once and named in the catalog. Ghostscript's own example
+/// (PDFA_def.ps) also sets the title to "Title"; this leaves the PDF's own.
+const PDFA_DEF: &str = r#"%!
+/ICCProfile (srgb.icc) def
+[/_objdef {icc_PDFA} /type /stream /OBJ pdfmark
+[{icc_PDFA} << /N 3 >> /PUT pdfmark
+[{icc_PDFA} ICCProfile (r) file /PUT pdfmark
+[/_objdef {OutputIntent_PDFA} /type /dict /OBJ pdfmark
+[{OutputIntent_PDFA} <<
+  /Type /OutputIntent
+  /S /GTS_PDFA1
+  /DestOutputProfile {icc_PDFA}
+  /OutputConditionIdentifier (sRGB)
+>> /PUT pdfmark
+[{Catalog} << /OutputIntents [ {OutputIntent_PDFA} ] >> /PUT pdfmark
+"#;
+
+/// PDF/A-2b, the archive form of PDF, with Ghostscript: fonts embedded, colours in
+/// sRGB. What PDF/A can't hold (scripts, outside links) is left out rather than giving
+/// up. Run in the work folder with short names, so no "%" in a path can reach
+/// Ghostscript's output name, and -dSAFER lets it read only the profile besides.
+fn to_pdfa(src: &Path, out: &Path, work: &Path) -> Result<(), String> {
+    let gs = ghostscript()?;
+    let profile = srgb_profile(&gs).ok_or("no sRGB colour profile was found for the PDF/A (reinstall Ghostscript)")?;
+    fs::copy(&profile, work.join("srgb.icc")).map_err(|e| format!("couldn't read the colour profile: {e}"))?;
+    fs::write(work.join("pdfa.ps"), PDFA_DEF).map_err(|e| format!("work file: {e}"))?;
+    let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).map(str::to_string).ok_or("work folder name");
+    let (input, output) = (name(src)?, name(out)?);
+    if src.parent() != Some(work) || out.parent() != Some(work) {
+        return Err("work folder".into());
+    }
+    let mut cmd = Command::new(gs);
+    cmd.current_dir(work)
+        .args(["-q", "-dPDFA=2", "-dBATCH", "-dNOPAUSE", "-dNOOUTERSAVE", "-dSAFER"])
+        .args(["-sColorConversionStrategy=RGB", "-sDEVICE=pdfwrite", "-dPDFACompatibilityPolicy=1", "--permit-file-read=srgb.icc"])
+        .arg(format!("-sOutputFile={output}"))
+        .arg("pdfa.ps")
+        .arg(input);
+    match run_tool(cmd, PDF_TOTAL) {
+        Err(f) if f.output.to_lowercase().contains("password") => Err("this PDF is locked with a password: Ghostscript can't open it".into()),
+        other => other.map_err(|f| f.message),
+    }
+}
+
+/// An sRGB colour profile: Ghostscript's own (beside it, or where Linux distributions
+/// put it), or else the system's.
+fn srgb_profile(gs: &Path) -> Option<PathBuf> {
+    let real = fs::canonicalize(gs).unwrap_or_else(|_| gs.to_path_buf());
+    let mut found = Vec::new();
+    if let Some(bin) = real.parent() {
+        // Homebrew and builds from source: bin/../share/ghostscript/iccprofiles.
+        found.push(bin.join("../share/ghostscript/iccprofiles/srgb.icc"));
+        // Windows: gs10.xx\bin\..\iccprofiles.
+        found.push(bin.join("../iccprofiles/srgb.icc"));
+    }
+    if cfg!(target_os = "linux") {
+        found.push("/usr/share/color/icc/ghostscript/srgb.icc".into());
+        found.push("/usr/share/ghostscript/iccprofiles/srgb.icc".into());
+        if let Ok(entries) = fs::read_dir("/usr/share/ghostscript") {
+            found.extend(entries.flatten().map(|e| e.path().join("iccprofiles/srgb.icc")));
+        }
+        found.push("/usr/share/color/icc/colord/sRGB.icc".into());
+    }
+    if cfg!(target_os = "macos") {
+        found.push("/System/Library/ColorSync/Profiles/sRGB Profile.icc".into());
+    }
+    if cfg!(windows) {
+        let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+        found.push(system.join("System32\\spool\\drivers\\color\\sRGB Color Space Profile.icm"));
+    }
+    found.into_iter().find(|p| p.is_file())
+}
+
+/// Ghostscript: `gs`, or on Windows `gswin64c.exe`, which its installer puts in
+/// "C:\Program Files\gs\gs<version>\bin" without adding it to the PATH.
+fn ghostscript() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        if let Ok(found) = tool("gswin64c") {
+            return Ok(found);
+        }
+        let programs = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap_or_else(|| "C:\\Program Files".into());
+        let version = |name: &str| -> Vec<u32> { name.trim_start_matches("gs").split('.').filter_map(|n| n.parse().ok()).collect() };
+        return fs::read_dir(programs.join("gs"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| (version(&e.file_name().to_string_lossy()), e.path().join("bin\\gswin64c.exe")))
+            .filter(|(_, exe)| exe.is_file())
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .map(|(_, exe)| exe)
+            .ok_or_else(|| not_installed("gs"));
+    }
+    #[cfg(not(windows))]
+    tool("gs")
+}
+
+/// The pages of a PDF drawn into a "pages" folder in `work`, as "1.png", "2.png", ...
+/// (or ".svg": vector shapes), at most MAX_PAGES of them and within PAGES_BUDGET.
+fn draw_pages(mutool: &Mutool, work: &Path, count: usize, ext: &str) -> Result<Vec<PathBuf>, String> {
+    let dir = work.join("pages");
+    fs::create_dir(&dir).map_err(|e| format!("work folder: {e}"))?;
+    let last = count.min(MAX_PAGES);
+    let name = format!("%d.{ext}");
+    for first in (1..=last).step_by(PAGE_BATCH) {
+        let pages = format!("{first}-{}", (first + PAGE_BATCH - 1).min(last));
+        // Inside the pages folder, so the "%d" in the output name is the only "%"
+        // mutool sees, whatever the work folder's path holds.
+        if ext == "svg" {
+            mutool.run(&dir, &["draw", "-q", "-F", "svg", "-o", &name], &pages)?;
+        } else {
+            mutool.run(&dir, &["draw", "-q", "-r", PAGE_DPI, "-w", PAGE_MAX_PIXELS, "-h", PAGE_MAX_PIXELS, "-o", &name], &pages)?;
+        }
+        if folder_size(&dir)? > PAGES_BUDGET {
+            return Err("this PDF's pages are too large to draw: the pictures would take more than 1 GB".into());
+        }
+    }
+    let files: Vec<PathBuf> = (1..=last).map(|n| dir.join(format!("{n}.{ext}"))).collect();
+    if let Some(missing) = files.iter().position(|p| !p.is_file()) {
+        return Err(format!("MuPDF didn't draw page {} of this PDF", missing + 1));
+    }
+    Ok(files)
+}
+
+/// Subtitles as plain text: the words of each cue, without numbers, times, styling
+/// tags or notes, one cue to a paragraph.
+fn subtitle_text(src: &Path, out: &Path) -> Result<(), String> {
+    let size = fs::metadata(src).map_err(|e| format!("can't read the file: {e}"))?.len();
+    if size > 20 * 1024 * 1024 {
+        return Err("these subtitles are larger than 20 MB".into());
+    }
+    let raw = fs::read(src).map_err(|e| format!("can't read the file: {e}"))?;
+    let text = subtitle_words(&String::from_utf8_lossy(&raw));
+    if text.is_empty() {
+        return Err("these subtitles have no words".into());
+    }
+    fs::write(out, text + "\n").map_err(|e| format!("work folder: {e}"))
+}
+
+/// The words of SRT or WebVTT subtitles, a cue to a paragraph.
+fn subtitle_words(text: &str) -> String {
+    let mut cues: Vec<String> = Vec::new();
+    for block in text.replace("\r\n", "\n").split("\n\n") {
+        let lines: Vec<&str> = block.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let Some(at) = lines.iter().position(|l| l.contains("-->")) else {
+            continue;
+        };
+        // Lines before the times are the cue's number or name; after them, its words.
+        let words: Vec<String> = lines[at + 1..].iter().map(|l| strip_tags(l)).filter(|l| !l.is_empty()).collect();
+        if !words.is_empty() {
+            cues.push(words.join(" "));
+        }
+    }
+    cues.join("\n\n")
+}
+
+/// A subtitle line without <i>, <b>, <font ...>, <c.yellow> or {\an8}-style tags.
+fn strip_tags(line: &str) -> String {
+    let mut out = String::new();
+    let mut skip: Option<char> = None;
+    for c in line.chars() {
+        match (skip, c) {
+            (None, '<') => skip = Some('>'),
+            (None, '{') => skip = Some('}'),
+            (Some(end), c) if c == end => skip = None,
+            (Some(_), _) => {}
+            (None, c) => out.push(c),
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// An SVG drawn as a PNG by this app itself (`--draw-svg`, convert/svg.rs), in a
+/// process of its own so a drawing that never ends is stopped like any other tool.
+fn draw_svg(src: &Path, png: &Path) -> Result<(), String> {
+    let me = std::env::current_exe().map_err(|e| format!("can't find {} itself to draw the SVG with: {e}", crate::APP_NAME))?;
+    let mut draw = Command::new(me);
+    draw.arg("--draw-svg").arg(src).arg(png);
+    run(draw, QUICK)?;
+    if !png.is_file() {
+        return Err("the SVG was drawn as nothing".into());
+    }
+    Ok(())
 }
 
 /// Most pages Split makes files of; the folder says so when the PDF had more.
@@ -1286,6 +2020,16 @@ fn smaller_gently(mutool: &Mutool, work: &Path, out_name: &str) -> Result<(), St
     Err("MuPDF crashes on this PDF, so it can't be made smaller here. The PDF itself is unchanged.".into())
 }
 
+/// Password's MuPDF script: the PDF saved again, encrypted with AES-256, with the
+/// password from password.txt beside it (checked: no comma, see Password::new).
+/// Older MuPDF (Ubuntu 22.04's 1.19) has no Document.openDocument and can't save a
+/// PDF encrypted: the script says so, and the app turns that into plain words.
+const PDF_LOCK: &str = r#"if (!Document.openDocument) throw new Error("PIROUETTE-OLD-MUPDF");
+var password = read("password.txt");
+var doc = Document.openDocument(scriptArgs[0]);
+doc.save(scriptArgs[1], "encrypt=aes-256,user-password=" + password + ",owner-password=" + password);
+"#;
+
 /// Runs a Tools wheel tool on a PDF (Merge, which takes several, is `combine`).
 fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Output, String> {
     let mutool = Mutool { path: tool("mutool")?, src, deadline: Instant::now() + PDF_TOTAL };
@@ -1332,6 +2076,25 @@ fn pdf_tool(src: &Path, tool_id: &str, out: &Path, work: &TempDir) -> Result<Out
             let after = info::pdf_args(out_name, &changes)?;
             mutool.run_args(work.path(), &["run", "info.js"], &after.iter().map(String::as_str).collect::<Vec<_>>())?;
             Ok(Output::File)
+        }
+        // AES-256, the same password to open and to change it. MuPDF's script reads the
+        // password from a file in the private work folder, so it is never on a command
+        // line, where other users of the computer could see it.
+        "tool:lock" => {
+            let Some(Edit::Password(password)) = control().and_then(|c| c.edit.clone()) else {
+                return Err("Password opens its window from the wheel".into());
+            };
+            fs::write(work.path().join("lock.js"), PDF_LOCK).map_err(|e| format!("work file: {e}"))?;
+            let secret = work.path().join("password.txt");
+            fs::write(&secret, password.0.as_bytes()).map_err(|e| format!("work file: {e}"))?;
+            let locked = mutool.run_failure(work.path(), &["run", "lock.js"], &[out_name]);
+            let _ = fs::remove_file(&secret);
+            match locked {
+                Err(f) if f.output.contains("PIROUETTE-OLD-MUPDF") || f.output.contains("Unused pdf arguments") => {
+                    Err("this MuPDF can't add a password to a PDF: a newer one is needed".into())
+                }
+                other => other.map(|()| Output::File).map_err(|f| f.message),
+            }
         }
         "tool:smaller" => {
             let mut args = vec!["clean"];
@@ -1425,7 +2188,7 @@ pub fn combine(srcs: &[PathBuf], target: &str, save_in: Option<&Path>, fallback:
         return Err(format!("One PDF takes up to {MAX_PICTURES} pictures"));
     }
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let deadline = Instant::now() + PDF_TOTAL;
@@ -1491,7 +2254,7 @@ fn collage(srcs: &[PathBuf], only: &str, save_in: Option<&Path>, fallback: &Path
         return Err(format!("Collage takes up to {MAX_COLLAGE} pictures"));
     }
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let magick = magick()?;
@@ -1568,6 +2331,19 @@ fn note(text: String) {
 }
 
 /// The size Compress to a Size aims under, from the editor.
+/// Compress to %: the size `bytes` comes down to at the share chosen in its window.
+fn percent_limit(bytes: u64) -> Result<u64, String> {
+    match control().and_then(|c| c.edit.clone()) {
+        Some(Edit::Percent(p)) if (PERCENT_MIN..=PERCENT_MAX).contains(&p) => Ok((bytes * u64::from(p) / 100).max(1_000)),
+        Some(Edit::Percent(_)) => Err(format!("pick a share from {PERCENT_MIN}% to {PERCENT_MAX}%")),
+        _ => Err("Compress to % opens its window from the wheel".into()),
+    }
+}
+
+/// Compress to %'s limits.
+pub const PERCENT_MIN: u8 = 5;
+pub const PERCENT_MAX: u8 = 95;
+
 fn size_limit() -> Result<u64, String> {
     match control().and_then(|c| c.edit.clone()) {
         Some(Edit::Size(bytes)) => Ok(bytes),
@@ -1795,7 +2571,7 @@ fn join_media(srcs: &[PathBuf], only: &str, save_in: Option<&Path>, fallback: &P
         return Err(format!("Join takes up to {MAX_JOIN} files"));
     }
     let work = tempfile::Builder::new()
-        .prefix("convert-wheel-")
+        .prefix("pirouette-")
         .tempdir()
         .map_err(|e| format!("work folder: {e}"))?;
     let (width, height, rate) = if video {
@@ -2090,7 +2866,57 @@ pub enum Edit {
     Order(Vec<u32>),
     /// Info: the tags changed in its window, by name, with their new values.
     Info(Vec<(String, String)>),
+    /// Resize: the longest side, in pixels.
+    Resize(u32),
+    /// Snapshot: the moment, in milliseconds from the start.
+    Snapshot(u64),
+    /// Compress to %: each file to at most this share of its own size.
+    Percent(u8),
+    /// Password: the one to open the PDF with.
+    Password(Password),
 }
+
+/// A PDF's new password, from its window. Never printed: Debug shows only that there
+/// is one, so it can't end up in a log line.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Password(String);
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password(..)")
+    }
+}
+
+impl Password {
+    /// One line of 1 to MAX_PASSWORD characters, without a comma (MuPDF takes its save
+    /// options as one comma-separated list) or control characters.
+    pub fn new(text: String) -> Result<Password, String> {
+        if text.is_empty() {
+            return Err("type a password first".into());
+        }
+        if text.chars().count() > MAX_PASSWORD || text.len() > MAX_PASSWORD_BYTES {
+            return Err(format!("a password can be at most {MAX_PASSWORD} characters"));
+        }
+        if text.contains(',') {
+            return Err("a password can't contain a comma".into());
+        }
+        if text.chars().any(char::is_control) {
+            return Err("a password can't contain tabs or line breaks".into());
+        }
+        Ok(Password(text))
+    }
+}
+
+/// Longest PDF password: AES-256 PDFs (revision 6) take at most 127 bytes of it, so
+/// also fewer characters where they need more than one byte.
+pub const MAX_PASSWORD: usize = 64;
+const MAX_PASSWORD_BYTES: usize = 127;
+
+/// Resize's limits for the longest side: a picture up to ImageMagick's own limit here,
+/// a video up to 8K.
+pub const RESIZE_MIN: u32 = 16;
+pub const RESIZE_PICTURE_MAX: u32 = 16_000;
+pub const RESIZE_VIDEO_MAX: u32 = 7_680;
 
 /// Adjust, from its window: brightness, contrast and saturation in percent, where 100
 /// leaves it as it was.
@@ -2822,26 +3648,105 @@ pub struct Converter {
     /// Homebrew's arguments after `brew install`.
     pub brew: &'static str,
     pub winget: &'static str,
+    /// Linux packages: Debian and Ubuntu, Fedora, Arch, openSUSE (names checked on
+    /// Repology, 2026-11-12).
     pub apt: &'static str,
+    pub dnf: &'static str,
+    pub pacman: &'static str,
+    pub zypper: &'static str,
 }
 
 pub const CONVERTERS: &[Converter] = &[
-    Converter { tool: "ffmpeg", name: "ffmpeg", brew: "ffmpeg", winget: "Gyan.FFmpeg", apt: "ffmpeg" },
-    Converter { tool: "magick", name: "ImageMagick", brew: "imagemagick", winget: "ImageMagick.ImageMagick", apt: "imagemagick" },
-    Converter { tool: "pandoc", name: "pandoc", brew: "pandoc", winget: "JohnMacFarlane.Pandoc", apt: "pandoc" },
+    // Fedora's and openSUSE's own ffmpeg have no H.264 encoder (that comes from RPM
+    // Fusion or Packman): MP4, MOV and MKV out need it, the other formats don't.
+    Converter {
+        tool: "ffmpeg",
+        name: "ffmpeg",
+        brew: "ffmpeg",
+        winget: "Gyan.FFmpeg",
+        apt: "ffmpeg",
+        dnf: "ffmpeg-free",
+        pacman: "ffmpeg",
+        zypper: "ffmpeg",
+    },
+    Converter {
+        tool: "magick",
+        name: "ImageMagick",
+        brew: "imagemagick",
+        winget: "ImageMagick.ImageMagick",
+        apt: "imagemagick",
+        dnf: "ImageMagick",
+        pacman: "imagemagick",
+        zypper: "ImageMagick",
+    },
+    Converter {
+        tool: "pandoc",
+        name: "pandoc",
+        brew: "pandoc",
+        winget: "JohnMacFarlane.Pandoc",
+        apt: "pandoc",
+        dnf: "pandoc",
+        pacman: "pandoc-cli",
+        zypper: "pandoc-cli",
+    },
     Converter {
         tool: "soffice",
         name: "LibreOffice",
         brew: "--cask libreoffice",
         winget: "TheDocumentFoundation.LibreOffice",
         apt: "libreoffice",
+        dnf: "libreoffice",
+        pacman: "libreoffice-fresh",
+        zypper: "libreoffice",
     },
-    Converter { tool: "mutool", name: "MuPDF", brew: "mupdf-tools", winget: "ArtifexSoftware.mutool", apt: "mupdf-tools" },
+    Converter {
+        tool: "mutool",
+        name: "MuPDF",
+        brew: "mupdf-tools",
+        winget: "ArtifexSoftware.mutool",
+        apt: "mupdf-tools",
+        dnf: "mupdf",
+        pacman: "mupdf-tools",
+        zypper: "mupdf",
+    },
     // Archives. macOS and Windows have it built in; only Linux ever misses it.
-    Converter { tool: "bsdtar", name: "bsdtar", brew: "libarchive", winget: "", apt: "libarchive-tools" },
+    Converter {
+        tool: "bsdtar",
+        name: "bsdtar",
+        brew: "libarchive",
+        winget: "",
+        apt: "libarchive-tools",
+        dnf: "bsdtar",
+        pacman: "libarchive",
+        zypper: "bsdtar",
+    },
     // Info's date and place for pictures and videos (council 2026-11-10).
-    Converter { tool: "exiftool", name: "ExifTool", brew: "exiftool", winget: "OliverBetz.ExifTool", apt: "libimage-exiftool-perl" },
+    Converter {
+        tool: "exiftool",
+        name: "ExifTool",
+        brew: "exiftool",
+        winget: "OliverBetz.ExifTool",
+        apt: "libimage-exiftool-perl",
+        dnf: "perl-Image-ExifTool",
+        pacman: "perl-image-exiftool",
+        zypper: "perl-Image-ExifTool",
+    },
+    // PDF/A. Not in winget (checked 2026-11-13): on Windows the message names the
+    // download page instead, and the menu doesn't offer to install it.
+    Converter {
+        tool: "gs",
+        name: "Ghostscript",
+        brew: "ghostscript",
+        winget: "",
+        apt: "ghostscript",
+        dnf: "ghostscript",
+        pacman: "ghostscript",
+        zypper: "ghostscript",
+    },
 ];
+
+/// Where Ghostscript for Windows is downloaded, as winget has no package for it.
+pub const GHOSTSCRIPT_DOWNLOAD: &str = "https://ghostscript.com/releases/gsdnld.html";
 
 fn converter(tool: &str) -> Option<&'static Converter> {
     CONVERTERS.iter().find(|c| c.tool == tool)
@@ -2863,6 +3768,7 @@ pub fn installed(c: &Converter) -> bool {
     match c.tool {
         "magick" => magick().is_ok(),
         "soffice" => soffice().is_ok(),
+        "gs" => ghostscript().is_ok(),
         tool_name => tool(tool_name).is_ok(),
     }
 }
@@ -2872,10 +3778,15 @@ fn install_hint(name: &str) -> String {
     if cfg!(target_os = "macos") {
         format!("brew install {}", c.map_or(name, |c| c.brew))
     } else if cfg!(windows) {
-        format!("winget install {}", c.map_or(name, |c| c.winget))
+        match c {
+            Some(c) if c.winget.is_empty() && c.tool == "gs" => format!("download it from {GHOSTSCRIPT_DOWNLOAD}"),
+            _ => format!("winget install {}", c.map_or(name, |c| c.winget)),
+        }
     } else {
-        let package = c.map_or(name, |c| c.apt);
-        format!("sudo apt install {package}, or your distribution's package manager")
+        match (c, crate::converters::Linux::here()) {
+            (Some(c), Some(pm)) => pm.hint(c),
+            _ => format!("sudo apt install {}, or your distribution's package manager", c.map_or(name, |c| c.apt)),
+        }
     }
 }
 
@@ -2908,14 +3819,14 @@ fn soffice() -> Result<PathBuf, String> {
 /// Our own working files: LibreOffice's profile and, on macOS, the font list.
 fn cache_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
-        home().join("Library/Caches/local.convertwheel")
+        home().join("Library/Caches/io.github.oracola91.pirouette")
     } else if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(home).join("convertwheel")
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(home).join("pirouette")
     } else {
         std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home().join(".cache"))
-            .join("convertwheel")
+            .join("pirouette")
     }
 }
 
@@ -3225,10 +4136,10 @@ mod tests {
     #[test]
     fn paths_are_kept_out_of_messages() {
         let src = Path::new("/Users/someone/Secret Projects/clip.mov");
-        let work = Path::new("/tmp/convert-wheel-abc");
+        let work = Path::new("/tmp/pirouette-abc");
         let msg = "ffmpeg failed: file:/Users/someone/Secret Projects/clip.mov: Invalid data";
         assert_eq!(redact(msg, src, work), "ffmpeg failed: clip.mov: Invalid data");
-        assert_eq!(redact("magick: /tmp/convert-wheel-abc/input.png bad", src, work), "magick: input.png bad");
+        assert_eq!(redact("magick: /tmp/pirouette-abc/input.png bad", src, work), "magick: input.png bad");
     }
 
     #[test]
@@ -3439,7 +4350,7 @@ mod tests {
             return;
         };
         let work = tempfile::tempdir().unwrap();
-        let code = qrcode::QrCode::new(b"https://example.com/convert-wheel").unwrap();
+        let code = qrcode::QrCode::new(b"https://example.com/pirouette").unwrap();
         let colors = code.to_colors();
         let (n, scale, quiet) = (code.width(), 8, 4);
         let side = (n + 2 * quiet) * scale;
@@ -3459,7 +4370,7 @@ mod tests {
         run(make, QUICK).unwrap();
         let text = convert(&png, "tool:qr", None, work.path()).unwrap();
         assert_eq!(text, work.path().join("code (QR code).txt"));
-        assert_eq!(fs::read_to_string(&text).unwrap(), "https://example.com/convert-wheel\n");
+        assert_eq!(fs::read_to_string(&text).unwrap(), "https://example.com/pirouette\n");
 
         let blank = work.path().join("blank.png");
         let mut make = Command::new(&magick);
@@ -3670,6 +4581,24 @@ mod tests {
         assert_eq!(rotated, work.path().join("photo (rotated).jpg"));
         assert_eq!(picture_size(&rotated), "30x40");
 
+        // Resize: the longest side as chosen (larger works too), the name says it.
+        let wide = Control::with_edit(Quality::default(), Some(Edit::Resize(100)));
+        let big = under(&wide, || convert(&photo, "tool:resize", None, work.path())).unwrap();
+        assert_eq!(big, work.path().join("photo (100 px).jpg"));
+        assert_eq!(picture_size(&big), "100x75");
+        assert_eq!(convert(&photo, "tool:resize", None, work.path()).unwrap_err(), "Resize opens its window from the wheel");
+
+        // Flip: red on the left becomes red on the right.
+        let halves = work.path().join("halves.png");
+        let mut make = Command::new(magick().unwrap());
+        make.args(["-size", "20x10", "xc:red", "-size", "20x10", "xc:blue", "+append"]).arg(&halves);
+        assert!(make.status().unwrap().success());
+        let flipped = convert(&halves, "tool:flip", None, work.path()).unwrap();
+        assert_eq!(flipped, work.path().join("halves (flipped).png"));
+        assert_eq!(picture_size(&flipped), "40x10");
+        let left = Command::new(magick().unwrap()).arg(&flipped).args(["-format", "%[fx:p{0,0}.b]", "info:"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&left.stdout).trim(), "1", "blue is on the left now");
+
         let clean = convert(&photo, "tool:clean", None, work.path()).unwrap();
         assert_eq!(clean, work.path().join("photo (no metadata).jpg"));
         assert!(!has(&clean, b"WHERE-I-WAS") && !has(&clean, b"Exif\0\0"));
@@ -3728,6 +4657,27 @@ mod tests {
         let one = work.path().join("one.pdf");
         fs::write(&one, tiny_pdf(&["Only"])).unwrap();
         assert_eq!(convert(&one, "tool:split", None, work.path()).unwrap_err(), "this PDF has only one page");
+
+        // Password: AES-256; MuPDF can't read the pages without it, can with it, and the
+        // password is in no file the app leaves behind.
+        let password = Password::new("s3cret pass=".into()).unwrap();
+        let secret = Control::with_edit(Quality::default(), Some(Edit::Password(password)));
+        match under(&secret, || convert(&three, "tool:lock", None, work.path())) {
+            // Ubuntu 22.04's MuPDF 1.19 can't; Homebrew's can.
+            Err(e) if e.contains("a newer one is needed") && !cfg!(target_os = "macos") => eprintln!("old MuPDF: Password not tested"),
+            locked => {
+                let locked = locked.unwrap();
+                assert_eq!(locked, work.path().join("report (locked).pdf"));
+                // (A PDF's numbers, such as its page count, are never encrypted; its content is.)
+                let refused = Command::new(tool("mutool").unwrap()).arg("info").arg(&locked).output().unwrap();
+                let said = String::from_utf8_lossy(&refused.stderr).to_lowercase();
+                assert!(!refused.status.success() && said.contains("password"), "it opens only with the password: {said}");
+                let opened = Command::new(tool("mutool").unwrap()).args(["info", "-p", "s3cret pass="]).arg(&locked).output().unwrap();
+                assert!(String::from_utf8_lossy(&opened.stdout).contains("Pages: 3"), "{}", String::from_utf8_lossy(&opened.stdout));
+                assert!(!fs::read(&locked).unwrap().windows(6).any(|w| w == b"s3cret"));
+            }
+        }
+        assert_eq!(convert(&three, "tool:lock", None, work.path()).unwrap_err(), "Password opens its window from the wheel");
 
         // Reorder: a picture of each page for its window, then the pages in the order
         // the window sent.
@@ -4120,6 +5070,31 @@ mod tests {
         assert!((0.9..1.15).contains(&length), "{length}");
         assert_eq!(convert(&clip, "tool:speed", None, work.path()).unwrap_err(), "Speed opens its window from the wheel");
 
+        // Mute: the picture copied, no sound left.
+        let muted = convert(&clip, "tool:mute", None, work.path()).unwrap();
+        assert_eq!(muted, work.path().join("clip (no sound).mp4"));
+        assert_eq!(video_size(&muted), "320x240");
+        assert!(sample_rate(&muted, &work.path().join("probe-muted")).is_none(), "the sound is gone");
+        assert!(sample_rate(&clip, &work.path().join("probe-clip")).is_some(), "the original keeps it");
+
+        // Flip and Resize: encoded again, at the new size for Resize.
+        let flipped = convert(&clip, "tool:flip", None, work.path()).unwrap();
+        assert_eq!(flipped, work.path().join("clip (flipped).mp4"));
+        assert_eq!(video_size(&flipped), "320x240");
+        let small = Control::with_edit(Quality::default(), Some(Edit::Resize(160)));
+        let resized = under(&small, || convert(&clip, "tool:resize", None, work.path())).unwrap();
+        assert_eq!(resized, work.path().join("clip (160 px).mp4"));
+        assert_eq!(video_size(&resized), "160x120");
+
+        // Snapshot: the moment chosen, at the video's own size, named after the moment.
+        assert!(frame_preview(&clip, 1500).unwrap().starts_with(&[0xFF, 0xD8]));
+        let moment = Control::with_edit(Quality::default(), Some(Edit::Snapshot(1500)));
+        let shot = under(&moment, || convert(&clip, "tool:snapshot", None, work.path())).unwrap();
+        assert_eq!(shot, work.path().join("clip (frame at 1s).jpg"));
+        assert_eq!(picture_size(&shot), "320x240");
+        assert_eq!(moment_text(65_000), "1m05s");
+        assert_eq!(moment_text(3_723_000), "1h02m03s");
+
         // Crop: the window's frame is the video's size, upright; the box comes out at
         // its own size, turned first when asked.
         let (width, height, jpeg) = video_preview(&clip).unwrap();
@@ -4377,5 +5352,366 @@ mod tests {
         // "v1.2 notes.docx" must look for "v1.2 notes.pdf", not "v1.pdf"
         let stem = Path::new("/x/v1.2 notes.docx").file_stem().unwrap().to_string_lossy();
         assert_eq!(format!("{stem}.pdf"), "v1.2 notes.pdf");
+    }
+
+    #[test]
+    fn subtitles_become_their_words() {
+        let srt = "1\r\n00:00:01,000 --> 00:00:02,000\r\n<i>Hello</i> there\r\nfriend\r\n\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\n{\\an8}Bye\r\n";
+        assert_eq!(subtitle_words(srt), "Hello there friend\n\nBye");
+        let vtt = "WEBVTT\n\nNOTE made by hand\n\nintro\n00:01.000 --> 00:02.000 align:start\n<c.yellow>Hi</c>\n";
+        assert_eq!(subtitle_words(vtt), "Hi");
+        let work = tempfile::tempdir().unwrap();
+        let file = work.path().join("film.srt");
+        fs::write(&file, srt).unwrap();
+        let txt = convert(&file, "txt", None, work.path()).unwrap();
+        assert_eq!(txt, work.path().join("film.txt"));
+        assert_eq!(fs::read_to_string(&txt).unwrap(), "Hello there friend\n\nBye\n");
+    }
+
+    #[test]
+    fn pdfs_become_svg_markdown_epub_and_slides() {
+        if tool("mutool").is_err() {
+            eprintln!("mutool isn't installed: PDF formats not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let pdf = work.path().join("notes.pdf");
+        fs::write(&pdf, tiny_pdf(&["First page", "Second page"])).unwrap();
+        let folder = convert(&pdf, "svg", None, work.path()).unwrap();
+        assert_eq!(folder, work.path().join("notes (SVG)"));
+        let page = fs::read_to_string(folder.join("notes 1.svg")).unwrap();
+        assert!(page.contains("<svg"), "{page}");
+        if tool("pandoc").is_err() {
+            eprintln!("pandoc isn't installed: PDF to Markdown, EPUB and PPTX not tested");
+            return;
+        }
+        let md = convert(&pdf, "md", None, work.path()).unwrap();
+        let text = fs::read_to_string(&md).unwrap();
+        assert!(text.contains("First page") && text.contains("Second page"), "{text}");
+        let epub = convert(&pdf, "epub", None, work.path()).unwrap();
+        assert!(fs::read(&epub).unwrap().starts_with(b"PK"));
+        let pptx = convert(&pdf, "pptx", None, work.path()).unwrap();
+        assert_eq!(pptx, work.path().join("notes.pptx"));
+        let listing = Command::new("unzip").arg("-l").arg(&pptx).output();
+        if let Ok(listing) = listing {
+            let names = String::from_utf8_lossy(&listing.stdout);
+            assert!(names.contains("ppt/slides/slide2.xml") && names.contains("ppt/media/"), "{names}");
+        }
+    }
+
+    #[test]
+    fn spreadsheets_go_to_tsv_and_slides_to_pictures() {
+        if soffice().is_err() {
+            eprintln!("LibreOffice isn't installed: TSV and slide pictures not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let csv = work.path().join("table.csv");
+        fs::write(&csv, "name,count\napples,3\n").unwrap();
+        let tsv = convert(&csv, "tsv", None, work.path()).unwrap();
+        assert_eq!(tsv, work.path().join("table.tsv"));
+        assert_eq!(fs::read_to_string(&tsv).unwrap().lines().next(), Some("name\tcount"));
+        let back = work.path().join("again.tsv");
+        fs::copy(&tsv, &back).unwrap();
+        let csv2 = convert(&back, "csv", None, work.path()).unwrap();
+        assert_eq!(fs::read_to_string(&csv2).unwrap().lines().nth(1), Some("apples,3"));
+        if tool("mutool").is_err() {
+            return;
+        }
+        // Slides: a two-slide deck (made by pandoc) becomes a folder with a picture of
+        // each slide.
+        let Ok(pandoc) = tool("pandoc") else {
+            return;
+        };
+        let md = work.path().join("deck.md");
+        fs::write(&md, "# One\n\nFirst\n\n# Two\n\nSecond\n").unwrap();
+        let deck = work.path().join("deck.pptx");
+        assert!(Command::new(pandoc).arg("-o").arg(&deck).arg(&md).status().unwrap().success());
+        let folder = convert(&deck, "png", None, work.path()).unwrap();
+        assert_eq!(folder, work.path().join("deck (PNG)"));
+        assert!(fs::read(folder.join("deck 1.png")).unwrap().starts_with(b"\x89PNG"));
+        assert!(folder.join("deck 2.png").is_file());
+    }
+
+    #[test]
+    fn passwords_the_pdf_can_take() {
+        assert!(Password::new("correct horse battery".into()).is_ok());
+        assert!(Password::new("pässwörd=1".into()).is_ok());
+        assert_eq!(Password::new(String::new()).unwrap_err(), "type a password first");
+        assert_eq!(Password::new("a,b".into()).unwrap_err(), "a password can't contain a comma");
+        assert!(Password::new("tab\there".into()).is_err());
+        assert!(Password::new("x".repeat(MAX_PASSWORD + 1)).is_err());
+        assert!(Password::new("é".repeat(MAX_PASSWORD)).is_err(), "128 bytes is over what AES-256 PDFs take");
+        assert_eq!(format!("{:?}", Password::new("hunter2".into()).unwrap()), "Password(..)");
+        assert!(!format!("{:?}", Edit::Password(Password::new("hunter2".into()).unwrap())).contains("hunter2"));
+    }
+
+    #[test]
+    fn camera_raw_files_are_checked_by_their_start() {
+        assert!(raw_head_ok(b"II*\0\x08\0\0\0", "cr2"));
+        assert!(raw_head_ok(b"MM\0*\0\0\0\x08", "nef"));
+        assert!(raw_head_ok(b"IIRO\x08\0\0\0", "orf"));
+        assert!(raw_head_ok(b"IIU\0\x08\0\0\0", "rw2"));
+        assert!(raw_head_ok(b"FUJIFILMCCD-RAW 0201", "raf"));
+        assert!(raw_head_ok(b"\0\0\0\x18ftypcrx \0\0\0\x01", "cr3"));
+        assert!(!raw_head_ok(&[0xFF, 0xD8, 0xFF, 0xE0], "dng"), "a JPEG named .dng");
+        assert!(!raw_head_ok(b"\0\0\0\x18ftypheic", "cr3"));
+        assert!(delegates_have_raw("Version: ImageMagick 7.1.2\nDelegates (built-in): bzlib heic jpeg lcms png raw tiff webp zlib\n"));
+        assert!(!delegates_have_raw("Delegates (built-in): bzlib heic jpeg png tiff\n"));
+        assert!(!delegates_have_raw("Delegates (built-in): bzlib rawish\n"));
+    }
+
+    /// macOS decodes camera RAW itself (sips). A TIFF named .dng stands in for one:
+    /// sips reads by content, and a DNG is a TIFF inside.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn camera_raw_goes_through_macos_own_decoder() {
+        if magick().is_err() {
+            eprintln!("ImageMagick isn't installed: RAW not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let tiff = work.path().join("made.tiff");
+        let mut make = Command::new(magick().unwrap());
+        make.args(["-size", "40x30", "gradient:red-blue"]).arg(&tiff);
+        assert!(make.status().unwrap().success());
+        let dng = work.path().join("photo.dng");
+        fs::rename(&tiff, &dng).unwrap();
+        let jpg = convert(&dng, "jpg", None, work.path()).unwrap();
+        assert_eq!(jpg, work.path().join("photo.jpg"));
+        assert_eq!(picture_size(&jpg), "40x30");
+        let fake = work.path().join("fake.nef");
+        fs::write(&fake, [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10]).unwrap();
+        assert_eq!(convert(&fake, "jpg", None, work.path()).unwrap_err(), "this is not a valid .nef file");
+    }
+
+    /// A one-page PDF with each text at its own place (x, y from the bottom left).
+    fn placed_pdf(texts: &[(u32, u32, &str)]) -> Vec<u8> {
+        let mut stream = String::new();
+        for (x, y, text) in texts {
+            stream.push_str(&format!("BT /F1 10 Tf {x} {y} Td ({text}) Tj ET\n"));
+        }
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [4 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend(format!("{} 0 obj\n{object}\nendobj\n", i + 1).bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            pdf.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        pdf.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
+        pdf
+    }
+
+    /// The first sheet of a workbook, read with the system's unzip (None without it).
+    fn first_sheet(xlsx: &Path) -> Option<String> {
+        let out = Command::new("unzip").arg("-p").arg(xlsx).arg("xl/worksheets/sheet1.xml").output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Needs MuPDF (REQUIRE_MUTOOL makes its absence a failure, as in CI).
+    #[test]
+    fn a_pdf_table_becomes_a_spreadsheet() {
+        if tool("mutool").is_err() {
+            assert!(std::env::var_os("REQUIRE_MUTOOL").is_none_or(|v| v.is_empty()), "mutool should be installed here");
+            eprintln!("mutool isn't installed: PDF to XLSX not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("prices.pdf");
+        fs::write(
+            &src,
+            placed_pdf(&[
+                (60, 720, "Product"),
+                (200, 720, "Units"),
+                (300, 720, "Price"),
+                (60, 700, "Widget A"),
+                (205, 700, "1200"),
+                (300, 700, "4.50"),
+                (60, 680, "Gadget & Co"),
+                (210, 680, "-3"),
+                (300, 680, "1,234.56"),
+            ]),
+        )
+        .unwrap();
+        let out = convert(&src, "xlsx", None, work.path()).unwrap();
+        assert_eq!(out, work.path().join("prices.xlsx"));
+        assert!(fs::read(&out).unwrap().starts_with(b"PK\x03\x04"));
+        if let Some(sheet) = first_sheet(&out) {
+            for cell in [
+                r#"<c r="A1" t="inlineStr"><is><t xml:space="preserve">Product</t></is></c>"#,
+                r#"<c r="B2"><v>1200</v></c>"#,
+                r#"<c r="A3" t="inlineStr"><is><t xml:space="preserve">Gadget &amp; Co</t></is></c>"#,
+                r#"<c r="B3"><v>-3</v></c>"#,
+                r#"<c r="C3"><v>1234.56</v></c>"#,
+            ] {
+                assert!(sheet.contains(cell), "{cell} not in {sheet}");
+            }
+        }
+        // A page without text: nothing to put in cells.
+        let blank = work.path().join("blank.pdf");
+        fs::write(&blank, placed_pdf(&[])).unwrap();
+        assert_eq!(convert(&blank, "xlsx", None, work.path()).unwrap_err(), NO_TEXT);
+    }
+
+    /// Needs Ghostscript; where it isn't installed this passes without checking.
+    #[test]
+    fn a_pdf_becomes_pdf_a() {
+        if ghostscript().is_err() {
+            eprintln!("Ghostscript isn't installed: PDF/A not tested");
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("report.pdf");
+        fs::write(&src, tiny_pdf(&["Archive me"])).unwrap();
+        let out = convert(&src, "tool:pdfa", None, work.path()).unwrap();
+        assert_eq!(out, work.path().join("report (PDF-A).pdf"));
+        let bytes = fs::read(&out).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        // The PDF/A part and level in its metadata, and the sRGB output intent.
+        let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"pdfaid:part"), "no PDF/A metadata");
+        assert!(has(b"OutputIntents") || has(b"GTS_PDFA1"), "no output intent");
+        // The original is never touched.
+        assert_eq!(fs::read(&src).unwrap(), tiny_pdf(&["Archive me"]));
+        assert!(srgb_profile(&ghostscript().unwrap()).is_some());
+    }
+
+    #[test]
+    fn ghostscript_is_offered_where_it_can_be_installed() {
+        let gs = converter("gs").unwrap();
+        assert_eq!(gs.name, "Ghostscript");
+        assert_eq!(missing(&not_installed("gs")).map(|c| c.tool), Some("gs"));
+        if cfg!(windows) {
+            assert!(install_hint("gs").contains("ghostscript.com"));
+        }
+    }
+
+    /// A binary property list like the ones Finder saves for dragged text.
+    fn clipping(data: &[(&str, plist::Value)]) -> Vec<u8> {
+        let mut uti = plist::Dictionary::new();
+        for (key, value) in data {
+            uti.insert((*key).to_string(), value.clone());
+        }
+        let mut top = plist::Dictionary::new();
+        top.insert("UTI-Data".into(), plist::Value::Dictionary(uti));
+        let mut bytes = Vec::new();
+        plist::Value::Dictionary(top).to_writer_binary(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn text_clippings_give_their_text() {
+        let work = tempfile::tempdir().unwrap();
+        let clip = work.path().join("Quote.textClipping");
+        fs::write(&clip, clipping(&[("public.utf8-plain-text", plist::Value::String("To be, or not *to* be.".into()))])).unwrap();
+        // Plain text to plain text: exactly as it was, no converter needed.
+        let out = convert(&clip, "txt", None, work.path()).unwrap();
+        assert_eq!(out, work.path().join("Quote.txt"));
+        assert_eq!(fs::read_to_string(out).unwrap(), "To be, or not *to* be.");
+        // UTF-16, as some apps put it.
+        let wide = work.path().join("Wide.textClipping");
+        let units: Vec<u8> = [0xFF, 0xFE].into_iter().chain("Grüße".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        fs::write(&wide, clipping(&[("public.utf16-external-plain-text", plist::Value::Data(units))])).unwrap();
+        assert_eq!(fs::read_to_string(convert(&wide, "txt", None, work.path()).unwrap()).unwrap(), "Grüße");
+        // Rich text is preferred, so it keeps its formatting.
+        let rich = work.path().join("Rich.textClipping");
+        let rtf = b"{\\rtf1\\ansi {\\b Bold} words}".to_vec();
+        fs::write(&rich, clipping(&[("public.utf8-plain-text", plist::Value::String("Bold words".into())), ("public.rtf", plist::Value::Data(rtf))])).unwrap();
+        let (staged, ext) = plain_document(&rich, "textclipping", work.path()).unwrap();
+        assert_eq!(ext, "rtf");
+        assert!(fs::read(staged).unwrap().starts_with(b"{\\rtf1"));
+        // An old clipping (text in the resource fork), a picture clipping, and junk.
+        let old = work.path().join("Old.textClipping");
+        fs::write(&old, b"").unwrap();
+        assert!(convert(&old, "txt", None, work.path()).unwrap_err().contains("resource fork"));
+        let picture = work.path().join("Picture.textClipping");
+        fs::write(&picture, clipping(&[("public.png", plist::Value::Data(vec![0x89, b'P']))])).unwrap();
+        assert!(convert(&picture, "txt", None, work.path()).unwrap_err().contains("holds no text"));
+        let junk = work.path().join("Junk.textClipping");
+        fs::write(&junk, b"not a property list").unwrap();
+        assert_eq!(convert(&junk, "txt", None, work.path()).unwrap_err(), "this is not a text clipping macOS saved");
+    }
+
+    /// An RTFD is a folder with TXT.rtf inside. macOS reads it with textutil; elsewhere
+    /// its TXT.rtf goes through LibreOffice. Either way pandoc writes the text.
+    #[test]
+    fn an_rtfd_folder_becomes_a_document() {
+        let work = tempfile::tempdir().unwrap();
+        let rtfd = work.path().join("Notes.rtfd");
+        fs::create_dir(&rtfd).unwrap();
+        fs::write(rtfd.join("TXT.rtf"), b"{\\rtf1\\ansi Hello from an RTFD.\\par}").unwrap();
+        // A file named .rtfd is not an RTFD.
+        let fake = work.path().join("Fake.rtfd");
+        fs::write(&fake, b"x").unwrap();
+        assert_eq!(convert(&fake, "txt", None, work.path()).unwrap_err(), "this .rtfd is not an RTFD folder");
+        let ready = tool("pandoc").is_ok_and(|p| check_pandoc_version(&p).is_ok()) && (cfg!(target_os = "macos") || soffice().is_ok());
+        if !ready {
+            eprintln!("pandoc (and LibreOffice off macOS) isn't installed: RTFD not tested");
+            return;
+        }
+        let out = convert(&rtfd, "txt", None, work.path()).unwrap();
+        assert_eq!(out, work.path().join("Notes.txt"));
+        assert!(fs::read_to_string(out).unwrap().contains("Hello from an RTFD."));
+        // macOS keeps the pictures: an RTFD made by textutil from a page with a PNG.
+        if cfg!(target_os = "macos") && magick().is_ok() {
+            let png = work.path().join("dot.png");
+            let mut make = Command::new(magick().unwrap());
+            make.args(["-size", "40x20", "xc:orange"]).arg(&png);
+            assert!(make.status().unwrap().success());
+            let page = work.path().join("page.html");
+            fs::write(&page, r#"<html><body><p>Before</p><img src="dot.png"><p>After</p></body></html>"#).unwrap();
+            let pictured = work.path().join("Pictured.rtfd");
+            let made = Command::new("/usr/bin/textutil").args(["-convert", "rtfd"]).arg(&page).arg("-output").arg(&pictured).status().unwrap();
+            assert!(made.success());
+            let docx = convert(&pictured, "docx", None, work.path()).unwrap();
+            let listed = Command::new("unzip").arg("-l").arg(&docx).output().unwrap();
+            assert!(String::from_utf8_lossy(&listed.stdout).contains("media/"), "the picture didn't reach the Word file");
+        }
+    }
+
+    #[test]
+    fn rtfd_pictures_go_into_the_page() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("My Pic.png"), b"\x89PNG\r\n").unwrap();
+        fs::write(dir.path().join("notes.pdf"), b"%PDF-").unwrap();
+        let html = r#"<img src="file:///My%20Pic.png" alt="a"><img src="file:///notes.pdf"><img src="file:///../up.png"><img src="file:///gone.png"><img src="file:///cut"#;
+        let out = inline_pictures(html, dir.path());
+        assert!(out.starts_with(r#"<img src="data:image/png;base64,iVBORw0K" alt="a">"#), "{out}");
+        // Not a picture, a way out of the folder, a missing file: left as they were.
+        assert!(out.contains(r#"<img src="file:///notes.pdf">"#));
+        assert!(out.contains(r#"<img src="file:///../up.png">"#));
+        assert!(out.contains(r#"<img src="file:///gone.png">"#));
+        assert!(out.ends_with(r#"<img src="file:///cut"#));
+        assert_eq!(percent_decode("a%20b%2"), "a b%2");
+        assert_eq!(percent_decode("caf%C3%A9"), "café");
+    }
+
+    #[test]
+    fn pages_needs_pages() {
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("letter.txt");
+        fs::write(&src, "Dear reader").unwrap();
+        if !pages_installed() {
+            let err = convert(&src, "pages", None, work.path()).unwrap_err();
+            if cfg!(target_os = "macos") {
+                assert_eq!(err, "Pages isn't installed: it is free in the App Store");
+                // converters::offer knows it by this start, and opens the App Store.
+                assert!(err.starts_with(PAGES_MISSING));
+                assert!(PAGES_STORE.starts_with("macappstore://apps.apple.com/app/id"));
+            } else {
+                assert_eq!(err, ".txt files can't become .pages");
+            }
+        }
     }
 }

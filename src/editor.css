@@ -723,3 +723,40 @@ footer.rows {
   font-size: 13px;
   font-variant-numeric: normal;
 }
+
+/* Password: fields wide enough for a long password, and the Show box. */
+#panel input.wide {
+  width: 100%;
+  max-width: 340px;
+  box-sizing: border-box;
+}
+
+#panel label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#panel label.check input {
+  width: auto;
+  padding: 0;
+}
+
+/* Snapshot: the frame fitted into the stage, and a full-width slider under it. */
+#stage.snapshot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#stage.snapshot #frame {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+#panel input[type="range"] {
+  width: 100%;
+  padding: 0;
+  box-sizing: border-box;
+}

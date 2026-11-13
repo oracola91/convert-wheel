@@ -1,7 +1,8 @@
 //! Installs the converters that drops found missing, when the menu's "Install …" item
-//! is chosen: with winget on Windows, with Homebrew on macOS, and on Ubuntu and Debian
-//! with apt-get through pkexec, which asks for the admin password in the desktop's own
-//! window. Other Linux systems get the message that names the command, as before.
+//! is chosen: with winget on Windows, with Homebrew on macOS, and on Linux with the
+//! system's own package manager (apt on Debian and Ubuntu, dnf on Fedora, pacman on
+//! Arch, zypper on openSUSE) through pkexec, which asks for the admin password in the
+//! desktop's own window. Other Linux systems get the message that names the command.
 //! "Update Converters…" asks the same package manager for newer versions of the
 //! converters it installed. On Windows without winget, App Installer (which brings it)
 //! is registered first, and failing that the Microsoft Store opens on it.
@@ -26,12 +27,103 @@ pub const AVAILABLE: bool = cfg!(any(target_os = "macos", windows));
 /// first; a package manager that hangs must still end.
 const LIMIT: Duration = Duration::from_secs(30 * 60);
 
-#[cfg(target_os = "macos")]
-const PACKAGE_MANAGER: &str = "Homebrew";
-#[cfg(windows)]
-const PACKAGE_MANAGER: &str = "winget";
-#[cfg(not(any(target_os = "macos", windows)))]
-const PACKAGE_MANAGER: &str = "apt";
+/// The package manager's name in messages: Homebrew, winget, or the one this Linux
+/// system has.
+struct PackageManager;
+
+impl std::fmt::Display for PackageManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if cfg!(target_os = "macos") {
+            "Homebrew"
+        } else if cfg!(windows) {
+            "winget"
+        } else {
+            Linux::here().map_or("A package manager", Linux::name)
+        })
+    }
+}
+
+const PACKAGE_MANAGER: PackageManager = PackageManager;
+
+/// The Linux package managers converters are installed with, through pkexec, in the
+/// order they are looked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+pub(crate) enum Linux {
+    /// Debian, Ubuntu.
+    Apt,
+    /// Fedora.
+    Dnf,
+    /// Arch.
+    Pacman,
+    /// openSUSE.
+    Zypper,
+}
+
+#[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+impl Linux {
+    const ALL: [Linux; 4] = [Linux::Apt, Linux::Dnf, Linux::Pacman, Linux::Zypper];
+
+    fn program(self) -> &'static str {
+        match self {
+            Linux::Apt => "/usr/bin/apt-get",
+            Linux::Dnf => "/usr/bin/dnf",
+            Linux::Pacman => "/usr/bin/pacman",
+            Linux::Zypper => "/usr/bin/zypper",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Linux::Apt => "apt",
+            Linux::Dnf => "dnf",
+            Linux::Pacman => "pacman",
+            Linux::Zypper => "zypper",
+        }
+    }
+
+    /// The one this system has, if any (always None on macOS and Windows).
+    pub(crate) fn here() -> Option<Linux> {
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
+        Self::ALL.into_iter().find(|pm| Path::new(pm.program()).is_file())
+    }
+
+    fn package(self, c: &Converter) -> &'static str {
+        match self {
+            Linux::Apt => c.apt,
+            Linux::Dnf => c.dnf,
+            Linux::Pacman => c.pacman,
+            Linux::Zypper => c.zypper,
+        }
+    }
+
+    /// What runs as root, after pkexec, to install `c` without questions.
+    fn install(self, c: &Converter) -> Vec<&'static str> {
+        let package = self.package(c);
+        match self {
+            // pkexec clears the environment, so env sets apt's quiet mode for it.
+            Linux::Apt => vec!["env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "install", "-y", package],
+            Linux::Dnf => vec!["/usr/bin/dnf", "install", "-y", package],
+            // --needed: nothing reinstalled. No -y: Arch updates with the whole system
+            // (pacman -Syu), and a list refresh alone would make a partial upgrade.
+            Linux::Pacman => vec!["/usr/bin/pacman", "-S", "--needed", "--noconfirm", package],
+            Linux::Zypper => vec!["/usr/bin/zypper", "--non-interactive", "install", package],
+        }
+    }
+
+    /// The command people type for `c`, for the message when it is missing.
+    pub(crate) fn hint(self, c: &Converter) -> String {
+        let package = self.package(c);
+        match self {
+            Linux::Apt => format!("sudo apt install {package}"),
+            Linux::Dnf => format!("sudo dnf install {package}"),
+            Linux::Pacman => format!("sudo pacman -S {package}"),
+            Linux::Zypper => format!("sudo zypper install {package}"),
+        }
+    }
+}
 
 /// The converters drops found missing, in the order found: what the Install item offers.
 #[derive(Default)]
@@ -50,7 +142,15 @@ static INSTALLING: AtomicBool = AtomicBool::new(false);
 /// converter is missing and this system can install it, the menu offers it and the
 /// message points there instead of at a command.
 pub fn offer(app: &AppHandle, error: String) -> String {
-    let Some(c) = convert::missing(&error).filter(|_| available()) else {
+    // Pages comes from the App Store, never from a package manager: the App Store opens
+    // on it, and the message says what to do there.
+    if cfg!(target_os = "macos") && error.starts_with(convert::PAGES_MISSING) {
+        convert::open_pages_store();
+        return PAGES_HINT.to_string();
+    }
+    // A converter the package manager can't install keeps the message that says where
+    // to get it (Ghostscript on Windows).
+    let Some(c) = convert::missing(&error).filter(|c| available() && updatable(c)) else {
         return error;
     };
     {
@@ -63,6 +163,9 @@ pub fn offer(app: &AppHandle, error: String) -> String {
     show(app);
     pointer(c)
 }
+
+/// What a drop on Pages without Pages says, with the App Store opening on it.
+const PAGES_HINT: &str = "Pages files are made by Apple's Pages app. The App Store is opening on it (free): get it, open it once, then drop the file again.";
 
 fn pointer(c: &Converter) -> String {
     format!("{} is not installed. Choose Install {} in the {} menu.", c.name, c.name, crate::APP_NAME)
@@ -245,13 +348,13 @@ fn package_manager() -> Option<PathBuf> {
     std::fs::symlink_metadata(&alias).is_ok().then_some(alias)
 }
 
-/// Linux: pkexec, which runs apt-get as root once the desktop's password window has
-/// said yes. Both must be there: without apt-get it is not Ubuntu or Debian, without
-/// pkexec there is no password window to ask with.
+/// Linux: pkexec, which runs the package manager as root once the desktop's password
+/// window has said yes. Both must be there: without pkexec there is no password
+/// window to ask with.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn package_manager() -> Option<PathBuf> {
     let pkexec = PathBuf::from("/usr/bin/pkexec");
-    (pkexec.is_file() && Path::new(APT_GET).is_file()).then_some(pkexec)
+    (pkexec.is_file() && Linux::here().is_some()).then_some(pkexec)
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -259,7 +362,7 @@ const APT_GET: &str = "/usr/bin/apt-get";
 
 /// Whether the menu can offer to install a missing converter, or to update them,
 /// here. macOS and Windows always offer it (without Homebrew or winget the menu says
-/// how to get them); Linux only where apt-get and pkexec are.
+/// how to get them); Linux only where pkexec and apt, dnf, pacman or zypper are.
 pub(crate) fn available() -> bool {
     AVAILABLE || package_manager().is_some()
 }
@@ -285,8 +388,7 @@ fn install_args(c: &Converter) -> Vec<&'static str> {
         args.extend(c.brew.split_whitespace());
         args
     } else {
-        // pkexec clears the environment, so env sets apt's quiet mode for it.
-        vec!["env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "install", "-y", c.apt]
+        Linux::here().map(|pm| pm.install(c)).unwrap_or_default()
     }
 }
 
@@ -297,7 +399,7 @@ fn install_one(pm: &Path, c: &Converter) -> Result<(), String> {
     cmd.args(install_args(c));
     #[cfg(target_os = "macos")]
     cmd.env("HOMEBREW_NO_ENV_HINTS", "1");
-    let (status, output) = run(cmd, PACKAGE_MANAGER)?;
+    let (status, output) = run(cmd, &PACKAGE_MANAGER.to_string())?;
     log::line(&format!("{PACKAGE_MANAGER} ({status}): {}", output.join(" | ")));
     if convert::installed(c) {
         return Ok(());
@@ -394,7 +496,13 @@ impl Report {
 /// The converters this system's package manager provides. bsdtar is built into macOS
 /// and Windows, and the app uses that one there.
 fn updatable(c: &Converter) -> bool {
-    c.tool != "bsdtar" || cfg!(not(any(target_os = "macos", windows)))
+    match c.tool {
+        // Built into macOS and Windows.
+        "bsdtar" => cfg!(not(any(target_os = "macos", windows))),
+        // Not in winget: Windows gets the download page instead.
+        "gs" => cfg!(not(windows)),
+        _ => true,
+    }
 }
 
 /// The menu's "Update Converters…": asks the package manager for a newer version of
@@ -436,7 +544,7 @@ fn update_all(pm: &Path, found: &[&'static Converter]) -> Report {
             Some(before) => {
                 let mut cmd = Command::new(pm);
                 cmd.arg("upgrade").args(c.brew.split_whitespace()).env("HOMEBREW_NO_ENV_HINTS", "1");
-                run(cmd, PACKAGE_MANAGER).and_then(|(status, output)| {
+                run(cmd, &PACKAGE_MANAGER.to_string()).and_then(|(status, output)| {
                     log::line(&format!("{PACKAGE_MANAGER} upgrade {} ({status}): {}", c.name, output.join(" | ")));
                     match brew_version(pm, c) {
                         Some(after) if after != before => Ok(Outcome::Newer),
@@ -480,7 +588,7 @@ fn update_all(pm: &Path, found: &[&'static Converter]) -> Report {
             "--accept-package-agreements",
             "--accept-source-agreements",
         ]);
-        let outcome = run(cmd, PACKAGE_MANAGER).and_then(|(status, output)| {
+        let outcome = run(cmd, &PACKAGE_MANAGER.to_string()).and_then(|(status, output)| {
             log::line(&format!("{PACKAGE_MANAGER} upgrade {} ({status}): {}", c.name, output.join(" | ")));
             winget_outcome(status.code(), &output).ok_or_else(|| stopped(status))
         });
@@ -506,15 +614,20 @@ fn winget_outcome(code: Option<i32>, output: &[String]) -> Option<Outcome> {
     }
 }
 
-/// Linux: one `apt-get install --only-upgrade` for all of them, so the password is
-/// asked once. apt uses the package lists the system refreshed last (Ubuntu does so
-/// every day); dpkg's version before and after says what changed.
+/// Linux: one upgrade for all of them, so the password is asked once: `apt-get install
+/// --only-upgrade`, `dnf upgrade` or `zypper update`, from the package lists the
+/// system refreshed last. The installed version before and after says what changed.
+/// Arch updates as a whole (pacman -Syu); upgrading single packages there would be a
+/// partial upgrade, so the report says to update the system instead.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn update_all(pm: &Path, found: &[&'static Converter]) -> Report {
     let mut report = Report::default();
+    let Some(linux) = Linux::here() else {
+        return report;
+    };
     let mut ours = Vec::new();
     for c in found {
-        match dpkg_version(c.apt) {
+        match installed_package_version(linux, linux.package(c)) {
             Some(before) => ours.push((*c, before)),
             None => report.add(c, Ok(Outcome::NotOurs)),
         }
@@ -522,18 +635,28 @@ fn update_all(pm: &Path, found: &[&'static Converter]) -> Report {
     if ours.is_empty() {
         return report;
     }
+    if linux == Linux::Pacman {
+        for (c, _) in ours {
+            report.add(c, Err("Arch updates converters with the whole system: sudo pacman -Syu".into()));
+        }
+        return report;
+    }
     let mut cmd = Command::new(pm);
-    cmd.args(["env", "DEBIAN_FRONTEND=noninteractive", APT_GET, "install", "--only-upgrade", "-y"]);
-    cmd.args(ours.iter().map(|(c, _)| c.apt));
-    let ran = run(cmd, PACKAGE_MANAGER);
+    cmd.args(match linux {
+        Linux::Apt => vec!["env", "DEBIAN_FRONTEND=noninteractive", APT_GET, "install", "--only-upgrade", "-y"],
+        Linux::Dnf => vec!["/usr/bin/dnf", "upgrade", "-y"],
+        _ => vec!["/usr/bin/zypper", "--non-interactive", "update"],
+    });
+    cmd.args(ours.iter().map(|(c, _)| linux.package(c)));
+    let ran = run(cmd, &PACKAGE_MANAGER.to_string());
     if let Ok((status, output)) = &ran {
         log::line(&format!("{PACKAGE_MANAGER} upgrade ({status}): {}", output.join(" | ")));
     }
     for (c, before) in ours {
-        let changed = dpkg_version(c.apt).is_some_and(|after| after != before);
+        let changed = installed_package_version(linux, linux.package(c)).is_some_and(|after| after != before);
         let outcome = match &ran {
             _ if changed => Ok(Outcome::Newer),
-            Ok((status, _)) if status.success() => Ok(Outcome::Current),
+            Ok((status, _)) if ran_through(linux, status) => Ok(Outcome::Current),
             Ok((status, _)) if matches!(status.code(), Some(126 | 127)) => Err("The admin password wasn't given, so nothing was updated.".into()),
             Ok((status, _)) => Err(stopped(*status)),
             Err(e) => Err(e.clone()),
@@ -541,6 +664,30 @@ fn update_all(pm: &Path, found: &[&'static Converter]) -> Report {
         report.add(c, outcome);
     }
     report
+}
+
+/// Whether the package manager ran to the end: zypper also ends with 100 and up to say
+/// something more (updates waiting, a restart needed).
+#[cfg(not(any(target_os = "macos", windows)))]
+fn ran_through(linux: Linux, status: &ExitStatus) -> bool {
+    status.success() || (linux == Linux::Zypper && status.code().is_some_and(|c| c >= 100))
+}
+
+/// The installed version of `package`, or None when it isn't installed: dpkg on apt
+/// systems, rpm on dnf and zypper ones (by what a package provides, as Fedora renames
+/// some), pacman on Arch.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn installed_package_version(linux: Linux, package: &str) -> Option<String> {
+    let query = |program: &str, args: &[&str]| -> Option<String> {
+        let out = Command::new(program).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !text.is_empty()).then_some(text)
+    };
+    match linux {
+        Linux::Apt => dpkg_version(package),
+        Linux::Pacman => query("/usr/bin/pacman", &["-Q", package]),
+        Linux::Dnf | Linux::Zypper => query("/usr/bin/rpm", &["-q", "--whatprovides", package, "--qf", "%{NAME}-%{VERSION}-%{RELEASE}\\n"]),
+    }
 }
 
 /// The installed version of a Debian package, or None when it isn't installed.
@@ -672,8 +819,19 @@ mod tests {
             assert_eq!(install_args(named("soffice")), ["install", "--cask", "libreoffice"]);
             assert_eq!(install_args(named("mutool")), ["install", "mupdf-tools"]);
         }
-        if cfg!(target_os = "linux") {
-            assert_eq!(install_args(named("mutool")), ["env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "install", "-y", "mupdf-tools"]);
+        assert_eq!(Linux::Apt.install(named("mutool")), ["env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "install", "-y", "mupdf-tools"]);
+        assert_eq!(Linux::Dnf.install(named("mutool")), ["/usr/bin/dnf", "install", "-y", "mupdf"]);
+        assert_eq!(Linux::Pacman.install(named("pandoc")), ["/usr/bin/pacman", "-S", "--needed", "--noconfirm", "pandoc-cli"]);
+        assert_eq!(Linux::Zypper.install(named("exiftool")), ["/usr/bin/zypper", "--non-interactive", "install", "perl-Image-ExifTool"]);
+        assert_eq!(Linux::Dnf.hint(named("ffmpeg")), "sudo dnf install ffmpeg-free");
+    }
+
+    #[test]
+    fn every_converter_has_a_package_on_every_linux() {
+        for c in convert::CONVERTERS {
+            for pm in Linux::ALL {
+                assert!(!pm.package(c).is_empty(), "{} on {}", c.name, pm.name());
+            }
         }
     }
 

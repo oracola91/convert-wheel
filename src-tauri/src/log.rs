@@ -1,8 +1,8 @@
 //! A small log file, so there is a trace when a notification can't be shown or
 //! something fails with no window to say so. File names only: tool messages are
 //! stripped of folders before they get here. Readable by the user only.
-//! macOS: ~/Library/Logs/local.convertwheel; Windows: %LOCALAPPDATA%\local.convertwheel\logs;
-//! Linux: ~/.local/share/local.convertwheel/logs.
+//! macOS: ~/Library/Logs/io.github.oracola91.pirouette; Windows: %LOCALAPPDATA%\io.github.oracola91.pirouette\logs;
+//! Linux: ~/.local/share/io.github.oracola91.pirouette/logs.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -21,9 +21,9 @@ pub fn init(dir: Option<PathBuf>) {
     let usable = |d: &Path| make_private_dir(d).is_ok();
     let dir = dir
         .filter(|d| usable(d))
-        .unwrap_or_else(|| std::env::temp_dir().join("convert-wheel-logs"));
+        .unwrap_or_else(|| std::env::temp_dir().join("pirouette-logs"));
     let _ = make_private_dir(&dir);
-    let _ = FILE.set(dir.join("convert-wheel.log"));
+    let _ = FILE.set(dir.join("pirouette.log"));
 }
 
 /// The log file, for "Show Log" in the menu.
@@ -42,7 +42,7 @@ fn make_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 pub fn line(message: &str) {
-    eprintln!("convert-wheel: {message}");
+    eprintln!("pirouette: {message}");
     let Some(file) = FILE.get() else {
         return;
     };

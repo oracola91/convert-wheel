@@ -26,7 +26,7 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// After this many failed daily checks in a row, say so once instead of only logging.
 const QUIET_FAILURES: u32 = 3;
-const RELEASES: &str = "https://github.com/oracola91/convert-wheel/releases";
+const RELEASES: &str = "https://github.com/oracola91/pirouette/releases";
 
 /// The newer version found by the last check, if any.
 #[derive(Default)]
@@ -203,7 +203,7 @@ fn relaunch(app: &AppHandle) {
             r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
             for try in 1 2 3 4 5 6 7 8 9 10; do
                 sleep 0.5; open -n "$2"; sleep 1.5
-                pgrep -U "$(id -u)" -x convert-wheel >/dev/null && exit 0
+                pgrep -U "$(id -u)" -x pirouette >/dev/null && exit 0
             done"#
         } else {
             r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec "$2""#
@@ -237,7 +237,7 @@ fn relaunch(app: &AppHandle) {
 fn relaunch_target() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     if cfg!(target_os = "macos") {
-        // .../Convert Wheel.app/Contents/MacOS/convert-wheel
+        // .../Pirouette.app/Contents/MacOS/pirouette
         return exe.ancestors().nth(3).map(|p| p.to_path_buf());
     }
     std::env::var_os("APPIMAGE").map(std::path::PathBuf::from).or(Some(exe))

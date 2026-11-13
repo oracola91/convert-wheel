@@ -1,12 +1,10 @@
 # Pirouette
 
-Called Convert Wheel before 0.3.0. On Windows and Linux it still installs under that name for now, so updates there keep replacing the old copy.
-
 Hold Shift while dragging a file. A wheel of formats appears under the cursor. Drop the file on a format to convert it.
 
 This is our own build, written from scratch.
 
-**To install it, see [INSTALL.md](INSTALL.md).** Installers for every system are on the [Releases page](https://github.com/oracola91/convert-wheel/releases).
+**To install it, see [INSTALL.md](INSTALL.md).** Installers for every system are on the [Releases page](https://github.com/oracola91/pirouette/releases).
 
 ## Status (macOS)
 
@@ -25,24 +23,31 @@ This is our own build, written from scratch.
 
 | Files | Can become | Done by |
 |---|---|---|
-| Images: JPG, PNG, HEIC, WebP, TIFF, BMP, GIF, AVIF | JPG, PNG, HEIC, WebP, TIFF, GIF, AVIF, BMP, ICO, PDF, SVG | ImageMagick; SVG traced by [vtracer](https://github.com/visioncortex/vtracer), in the app |
+| Images: JPG, PNG, HEIC, WebP, TIFF, BMP, GIF, AVIF, SVG | JPG, PNG, HEIC, WebP, TIFF, GIF, AVIF, BMP, ICO, PDF, SVG | ImageMagick; SVG traced by [vtracer](https://github.com/visioncortex/vtracer), in the app |
+| Camera RAW: DNG, CR2, CR3, NEF, NRW, ARW, ORF, RW2, RAF, PEF, SRW (read only) | JPG, PNG, HEIC, WebP, TIFF, AVIF, PDF | macOS's own RAW decoder (`sips`, as Preview); on Windows and Linux an ImageMagick built with LibRaw |
 | Audio: MP3, WAV, M4A, AAC, FLAC, AIFF, OGG, Opus, WMA | MP3, M4A, WAV, FLAC, AIFF, OGG, Opus, WMA | ffmpeg |
 | Video: MP4, MOV, M4V, MKV, WebM, AVI, WMV | MP4, MOV, WebM, MKV, AVI, WMV, GIF, MP3 (sound only) | ffmpeg |
-| Documents: DOCX, DOC, ODT, RTF, Pages, Markdown, HTML, TXT, EPUB | PDF, DOCX, ODT, HTML, Markdown, TXT, EPUB | LibreOffice for PDF and office formats, pandoc for the rest |
-| Spreadsheets: XLSX, XLS, ODS, CSV, Numbers | PDF, XLSX, ODS, CSV (first sheet) | LibreOffice |
-| Presentations: PPTX, PPT, ODP, Keynote | PDF, PPTX, ODP | LibreOffice |
-| PDF | JPG, PNG (a picture of each page), TXT, DOCX (the text only) | MuPDF (`mutool`); pandoc for DOCX |
-| Subtitles: SRT, VTT | SRT, VTT | ffmpeg |
+| Documents: DOCX, DOC, ODT, RTF, Pages, Markdown, HTML, TXT, EPUB, RTFD, text clippings | PDF, DOCX, ODT, HTML, Markdown, TXT, EPUB, Pages (macOS, made by Apple's Pages app) | LibreOffice for PDF and office formats, pandoc for the rest; Pages itself for Pages |
+| Spreadsheets: XLSX, XLS, ODS, CSV, TSV, Numbers | PDF, XLSX, ODS, CSV, TSV (first sheet) | LibreOffice |
+| Presentations: PPTX, PPT, ODP, Keynote | PDF, PPTX, ODP, JPG, PNG (a picture of each slide) | LibreOffice; MuPDF for the pictures |
+| PDF | JPG, PNG (a picture of each page), SVG (each page as vector shapes), TXT, DOCX, Markdown, EPUB (the text only), PPTX (a slide with a picture of each page), XLSX (each page's text in rows and columns, a sheet per page), Pages (the text, macOS) | MuPDF (`mutool`); pandoc for DOCX, Markdown, EPUB and PPTX; the app itself writes the XLSX |
+| Subtitles: SRT, VTT | SRT, VTT, TXT (only the words) | ffmpeg; the app itself for TXT |
 
-An SVG is the picture traced into flat-coloured shapes, which scale to any size: best for logos, drawings, icons and screenshots; a photo becomes a poster-like picture. ImageMagick reads the picture and makes it at most 2000 pixels on its longer side (photos 1200, which trace in a few seconds), then vtracer (MIT or Apache-2.0, pure Rust, built into the app) traces it in a process of its own, so a slow one is stopped like any other tool. JPEG, HEIC and AVIF are taken as photos (coarser layers, small specks dropped); other pictures keep their flat colours. The picture quality in Settings > Quality picks how fine: Smaller Files drops more specks and merges more colours, Best Quality keeps more of both. Transparency is kept. An SVG can't be read back in: the wheel takes only plain pictures.
+A camera RAW photo is first developed into a 16-bit TIFF in the app's work folder, then converted from that like any picture. On a Mac that uses macOS's own RAW engine, so it needs nothing installed and reads the RAW files Preview reads. On Windows and Linux ImageMagick does it, but only when it was built with LibRaw: `magick -version` then lists `raw` under Delegates. Without LibRaw ImageMagick would hand the file to an outside program from its delegates list, which the app doesn't let it do; it says the RAW file can't be read instead. The file's start is checked against its RAW type first (TIFF inside for most, Olympus, Panasonic and Fujifilm their own, Canon's CR3 an ISO media file).
+
+An SVG going in is drawn by the app itself with [resvg](https://github.com/linebender/resvg), in a process of its own, never by an outside SVG reader: at its own size, but at least 1024 and at most 8192 pixels on the longest side, with the system's fonts for its text. Pictures inside it are drawn only when they are part of the file (data: URLs); a link to any other file or to the web is left out. Then it converts like any picture.
+
+An SVG going out is the picture traced into flat-coloured shapes, which scale to any size: best for logos, drawings, icons and screenshots; a photo becomes a poster-like picture. ImageMagick reads the picture and makes it at most 2000 pixels on its longer side (photos 1200, which trace in a few seconds), then vtracer (MIT or Apache-2.0, pure Rust, built into the app) traces it in a process of its own, so a slow one is stopped like any other tool. JPEG, HEIC and AVIF are taken as photos (coarser layers, small specks dropped); other pictures keep their flat colours. The picture quality in Settings > Quality picks how fine: Smaller Files drops more specks and merges more colours, Best Quality keeps more of both. Transparency is kept. An SVG can't be read back in: the wheel takes only plain pictures.
 
 An icon (ICO) holds the picture at 256, 128, 64, 48, 32 and 16 pixels, fitted into a square with see-through edges rather than stretched. MKV is a fast copy of the streams when they fit, H.264 otherwise; AVI is MPEG-4 Part 2 (what Xvid makes) with MP3, and WMV is Windows Media 8 with WMA, for older players, at most 1920 pixels on the long side. Pages, Numbers and Keynote files go through LibreOffice, which reads them; a file saved as a package folder (older versions) is refused: save it as a single file. Subtitles should be UTF-8.
 
 The wheel only shows formats that every dragged file can become. The new file lands next to the original. If the name is taken it becomes `name 2.ext`, `name 3.ext` and so on. Nothing is ever overwritten.
 
+An RTFD (TextEdit's rich text with pictures, a folder) keeps its pictures on macOS, where textutil reads it; on Windows and Linux only its text and formatting come through. A text clipping (what Finder saves when text is dragged to a folder) gives its rich text, or else its plain text; a clipping of a picture or a link has no text to give. A PDF to XLSX puts each page's text back into rows and columns from where it sits on the page, one sheet per page; plain numbers ("1,234.56", "-3") become numbers, codes with leading zeros stay text. Scanned pages have no text to take. Pages comes from Apple's Pages app (free in the App Store): the document goes to Word first, then Pages opens that and saves it, so macOS asks once whether Pirouette may control Pages. Pages is always on the wheel on a Mac; without the Pages app, a drop on it opens the App Store on Pages and the notification says what to do, and Settings > General > Converters has **Get Pages…**. No app can install it from the App Store for you: the App Store asks for your Apple ID. Open Pages once after installing it, so its welcome window doesn't stand in the way.
+
 A PDF with several pages becomes a folder of pictures next to it, `report (PNG)` holding `report 1.png`, `report 2.png` and so on, at 150 dpi; at most the first 100 pages, and the folder name says so when there were more. Text is taken from PDFs of up to 2000 pages. As text or a Word file, a PDF keeps its words and paragraphs but not its layout, tables or pictures. A scanned PDF has no text to take out. A PDF that needs a password to open is refused with a note to save a copy without it. For a Word file that keeps the layout, open the PDF in Word itself.
 
-A notification says when a drop is done or why it failed, and how the size changed ("2.2 MB → 410 KB · photo (compressed).jpg"; not for folders, such as a split PDF). A click on it opens the folder with the new files selected (on Windows only while the notification is on screen, not from the Action Center; on macOS also later from Notification Center). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
+A notification says when a drop is done or why it failed, and how the size changed ("2.2 MB → 410 KB · photo (compressed).jpg"; not for folders, such as a split PDF). A click on it opens the folder with the new files selected (also later from the notification list: Notification Center on macOS, Action Center on Windows, until the app is quit; on Linux while the notification is on screen). Video also gets a "Converting…" notification first, because it can take a while. Meanwhile the menu shows how far a drop is, and **Stop Converting** ends it.
 
 ## The Tools wheel
 
@@ -50,8 +55,10 @@ Hold Option as well as Shift while dragging (Alt+Shift on Windows and on Linux w
 
 - **Compress**: JPEG at quality 70; WebP and AVIF at 55, HEIC at 45 (its numbers run higher); PNG down to 256 colours (dithered); TIFF with lossless ZIP. A result that isn't smaller is not saved, and the notification says so.
 - **Half size**: half the width and height.
+- **Resize** (one picture at a time): opens a small window with the picture's size, a box for the longest side in pixels (16 to 16000, larger works too) and common sizes (3840 down to 640); the other side follows in proportion: "photo (1920 px).jpg".
 - **Remove metadata**: takes out EXIF (camera, date, location), XMP, IPTC and comments, and keeps the colour profile. The picture is turned upright first, so it looks the same without the EXIF turn.
 - **Rotate**: a quarter turn clockwise.
+- **Flip**: mirrored left to right: "photo (flipped).jpg".
 - **QR code** (GIFs too, their first frame): reads every QR code in the picture. The text is saved next to it ("photo (QR code).txt"), copied to the clipboard and shown in the notification; a link in it is never opened. Read by [rqrr](https://github.com/WanzenBug/rqrr), in the app itself.
 - **Adjust** (one picture at a time): opens a window with the picture and sliders for brightness, contrast and saturation (each 0 to 200%), shown on the picture as they move; Reset puts them back, Enter adjusts, Esc cancels. ImageMagick then does the same steps as the preview, in the same order: "photo (adjusted).jpg". The window only sends the three numbers back.
 - **Mark up** (one picture at a time): opens a window with the picture to draw on: a pen, a see-through highlighter, shapes (arrow, line, box, circle, from one Shapes menu), words and numbered steps (click to drop 1, 2, 3 in coloured circles). **Select** picks a mark already drawn: drag it or nudge it with the arrow keys (Shift for bigger steps), change its colour or size, Delete removes it, and a double-click on words retypes them (so does clicking them with Text). Undo (Cmd/Ctrl+Z) steps back through every change. Words are typed straight onto the picture: click where they go, type, Enter (Esc drops them). A Size box works like Word's: pick from the list (8 to 72 for words, 1 to 20 for lines) or type a number, in points as the picture looks in the window, so what you see is what is saved. Six quick colours (red, yellow, blue, green, black, white), and More opens a palette of 60 others or takes any colour code like #ff8800; the last three picked stay next to the quick ones. **Black out** covers a part with solid black. The window only sends the shapes back; the app checks each one and ImageMagick draws them, the blacked-out parts last so nothing lands on top of them. A picture with a blacked-out part also loses its metadata, keeping only the colour profile: the small preview a camera keeps in the EXIF would otherwise still show what was covered. Words are drawn in a font the system has (Arial or Helvetica on macOS, Arial on Windows, DejaVu, Liberation or Noto Sans on Linux). The result is "photo (marked up).jpg".
@@ -68,6 +75,9 @@ For PDFs (with MuPDF):
 - **Merge** (two PDFs or more dropped together): one PDF with all their pages, in the order dropped, next to the first: "report (merged).pdf". Up to 2000 pages in all. A PDF that MuPDF can't read stops the merge with its name, instead of being left out quietly.
 - **Split**: one PDF per page in a new folder, "report (pages)/report 01.pdf"; the first 100 pages, and the folder name says so when there were more.
 - **Reorder** (one PDF of 2 to 100 pages at a time): opens a window with a small picture of every page, to drag into a new order. A page picked with a click or the arrow keys also moves with Shift and the arrow keys; Reverse turns the whole order round, Reset puts it back. Enter reorders, Esc cancels. Bookmarks follow their pages, and the title and author stay: "report (reordered).pdf". The window only sends the new order back.
+- **To %** (two or more files: JPEG, HEIC, WebP, AVIF pictures, the videos and sounds To a Size takes, PDFs): one window for all of them, a share from 5 to 95% (75, 50, 25, 10 or typed); each file is compressed as To a Size would, to at most that share of its own size: "photo (50%).jpg". For one file, To a Size has Half and Quarter.
+- **Password** (one PDF at a time): opens a small window for a password, typed twice (at most 64 characters, no comma: MuPDF takes its save options as one comma-separated list). The copy is encrypted with AES-256 and opens only with it; the same password allows changes. MuPDF's script reads the password from a file in the app's private work folder, removed right after, so it is never on a command line, where other users of the computer could see it: "report (locked).pdf". Keep the password: without it the copy can't be opened. The original stays as it was. Ubuntu 22.04's MuPDF 1.19 is too old for it: there the notification says a newer MuPDF is needed.
+- **PDF/A**: a copy in PDF/A-2b, the form of PDF meant for archiving: fonts embedded, colours in sRGB with the sRGB profile as its output intent, and what PDF/A can't hold (scripts, outside links) left out: "report (PDF-A).pdf". The title and other details stay. Made with Ghostscript (`brew install ghostscript`, `sudo apt install ghostscript`); winget has no Ghostscript, so on Windows the message points to ghostscript.com's download page. A PDF locked with a password can't be read.
 - **Smaller**: pictures above 225 dpi scaled down to 150 dpi and photos saved again as JPEG at quality 60, each only where that is smaller; fonts and streams compressed, unused and duplicate parts dropped. Text stays text. Older MuPDF without the picture options (Ubuntu's own packages) only tidies the file, which seldom makes it much smaller. Not saved if it isn't smaller. If MuPDF crashes on a PDF (seen on Windows with a few PDFs), Smaller tries again with less tidying, then with only compressing the streams; if MuPDF still crashes, the notification says so and the PDF is left as it was.
 
 For video and audio (with ffmpeg):
@@ -75,6 +85,10 @@ For video and audio (with ffmpeg):
 - **Compress** (MP4, MOV, M4V, MKV, WebM): at most 1920 pixels on the long side; H.264 at CRF 28 with AAC 128k, or for WebM VP9 at CRF 38 with Opus 96k. Not saved if it isn't smaller.
 - **Remove metadata** (video and audio): a copy of the picture and sound without the file's and the streams' metadata (where and when it was recorded, the device, tags, cover art, chapters) or the data tracks phones keep it in. Nothing is encoded again, so it is quick.
 - **First frame** (video): the first frame as a JPEG: "clip (first frame).jpg".
+- **Snapshot** (video, one file at a time): opens a window with the video's frame and a slider along it (arrow keys step a frame, with Shift a second); Save Picture writes that moment as a JPEG at the video's own size: "clip (frame at 1m05s).jpg".
+- **Mute** (video): the picture copied as it is, without any sound track; quick, nothing is encoded again: "clip (no sound).mp4".
+- **Flip** (video): mirrored left to right, encoded again in the file's own format at the menu's quality, with the first sound.
+- **Resize** (video, one file at a time): the same window as for pictures, with 4K, 1440p, 1080p, 720p, 480p and 360p (as the longest side: 3840 down to 640) or any longest side from 16 to 7680; the other side follows, kept even; encoded again like Flip: "clip (1280 px).mp4".
 - **Loudness** (audio): evened out to -16 LUFS with peaks at most -1.5 dB (ffmpeg's loudnorm), at the file's own sample rate, tags kept.
 - **Mono** (audio): both channels mixed into one.
 - **Compress** (MP3, M4A, AAC, Ogg, Opus, WMA, FLAC): the same format at a lower bit rate (MP3, M4A and WMA 96k, Ogg and Opus 64k), tags kept; FLAC stays lossless at its strongest packing. Not saved if it isn't smaller. WAV and AIFF have nothing to compress with.
@@ -87,7 +101,7 @@ For video and audio (with ffmpeg):
 - **Split** (audio and video, one file at a time): opens a small window to pick how many equal parts (2 to 10), or how long each part is (10 seconds to 30 minutes). Each part is cut exactly, like Trim, and they go in a new folder next to the file: "clip (parts)/clip 1.mp4", "clip 2.mp4", ... Up to 50 parts of a second or more; a few moments left at the end go onto the last part.
 - **Info** (pictures, sound, video and PDFs, one file at a time): opens a window with what the file says about itself. A picture: its size, when it was taken, the camera and lens, and where it was taken (or "none in the file"). A video: its tags, when and on what it was recorded, and where. A PDF: its pages, title, author, what made it and its dates. A sound file's title, artist, album, year, genre and comment, and a PDF's title, author, subject and keywords, can be changed: they go into a copy, "song (new info).mp3", with everything else as it was (ffmpeg copies the sound, nothing is encoded again). A picture's date taken and location, and a video's recording date and location, can be changed too (JPEG, PNG, HEIC, WebP, TIFF, AVIF; MP4, MOV, M4V), with [ExifTool](https://exiftool.org), one more converter installed on demand like the others: the date as 2024-05-01 12:34:56, the place as latitude, longitude (51.50343, -0.12800), and an emptied Location box takes the place out, everything else in the file staying (the Tools wheel's Clean takes out all of it). ExifTool writes only the new copy (`-o`, no backup file, no config file, no shell line; 12.24 or newer). The app then reads the copy back, and a copy that doesn't say what was asked is deleted and the job fails. Videos get the date in QuickTime's own tag (from local time to UTC) and in Apple's keys, and the place in Apple's keys and the common user data, so Photos and other players find it. Other picture and video formats (BMP, GIF, MKV, WebM, AVI, WMV) are only shown. Older MuPDF (Ubuntu 22.04's) only shows a PDF's details too.
 
-Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland, Shift+drag (with Option or Control for these wheels) needs GNOME and its helper extension (see Linux below); the keyboard shortcut opens the Formats wheel, and while it is open a tap of Alt or Control switches it to the Tools or Actions wheel (by the Keys in Settings) and a second tap goes back; Tab goes round all three. `convert-wheel --show tools` and `--show actions` open those wheels straight away, for shortcuts of their own.
+Loudness and Mono save the audio again in its own format (MP3 VBR quality 2, AAC 256k, Opus 160k; WAV and AIFF as 16-bit). On Wayland, Shift+drag (with Option or Control for these wheels) needs GNOME and its helper extension (see Linux below); the keyboard shortcut opens the Formats wheel, and while it is open a tap of Alt or Control switches it to the Tools or Actions wheel (by the Keys in Settings) and a second tap goes back; Tab goes round all three. `pirouette --show tools` and `--show actions` open those wheels straight away, for shortcuts of their own.
 
 ## The Actions wheel
 
@@ -97,15 +111,16 @@ Hold Control+Shift while dragging and a third wheel opens: what can be done with
 - **Show**: opens the folder with the files selected.
 - **Copy to** and **Move to**: the system's folder picker opens (where the last one went), and the files and folders go into the folder chosen. Nothing there is replaced: a name that is taken gets a number ("photo 2.jpg"). Move renames on the same disk; onto another disk it copies, and removes the original only once the copy is complete. Links are copied as links, never followed.
 - **Float**: the files go on a small card that floats above every window, next to the pointer, to drag out later into any app or folder: drag it by its icon or name to take the files out, or by the rest of the card to move the card. With Shift held while dragging them out, the wheel opens as for any drag. Finder decides move or copy as it does for its own drags; after a copy the card stays for the next place, and once the files have moved elsewhere it goes by itself. The × puts it away. Each Float makes its own card. Windows and Linux come later.
-- **Terminal**: a terminal in the file's folder (in a dragged folder itself): Terminal on macOS, PowerShell on Windows, GNOME Terminal, Console, Konsole or the system's default on Linux. The folder is handed over as the starting folder, never inside a command line.
+- **Terminal**: a terminal in the file's folder (in a dragged folder itself): the one chosen in Settings > General, or else Terminal on macOS, PowerShell on Windows, GNOME Terminal, Console, Ptyxis, Konsole or the system's default on Linux. The folder is handed over as the starting folder, never inside a command line.
 - **AirDrop** (macOS): the AirDrop window for the files.
+- **Share**: macOS: a menu at the pointer with what macOS offers for the files (Mail, Messages, AirDrop, Notes and apps that add their own), as in Finder's Share. Windows: the system's share sheet. Linux, which has no share sheet: email (xdg-email), Bluetooth (GNOME's or Blueman's send window) and each phone KDE Connect or GSConnect can reach, whichever the computer has; with more than one, a small window asks which.
 
 - **ZIP**, **TAR.GZ**, **TAR**: an archive of everything dragged, files and folders, next to the first: "Photos.zip", "notes.txt.zip", or "Archive.zip" for several.
 - **Unpack** (when every dragged file is a ZIP, TAR, TAR.GZ, GZ or RAR): what the archive holds at the top goes next to it, when that is one folder or file, as Finder's Archive Utility does it; otherwise a new folder named after the archive. Nothing already there is replaced ("Photos 2").
 
 Archives go through bsdtar (libarchive): built into macOS and into Windows 10 and later (tar.exe), `libarchive-tools` on Linux (the setup script installs it). It refuses names with ".." and strips a leading "/", so nothing lands outside the new folder; an archive that does try is refused as a whole and leaves nothing behind. Unpacking may write at most 1 GB plus twenty times the archive's size, so a "zip bomb" is stopped. Unpacking first goes into a hidden folder next to the archive, so a half-done unpack is never mistaken for a finished one. A password-protected archive is refused. A plain .gz (one file, not a TAR) is unpacked by the app itself, within the same budget.
 
-On a Mac, start the drag first and then press Control+Shift: Control held before the click turns it into a right-click. Copying and moving files and sharing on Windows come later ([ROADMAP](ROADMAP.md), stage 3). For moving files by hand there is the shelf.
+On a Mac, start the drag first and then press Control+Shift: Control held before the click turns it into a right-click. For moving files by hand there is the shelf.
 
 ## The shelf
 
@@ -125,7 +140,7 @@ Windows (above the clock) and Linux follow.
 
 ### Switching wheels in one drag
 
-**Arrow keys** while a wheel is open: Left and Right move a highlight round the wheel, Up and Down show the next or the previous set of a full wheel. Drop the file on the middle and it goes to the highlighted item; the mouse over a segment still wins. On macOS they are off until switched on in Settings > Wheel > Arrow keys on the wheel: reading the keys while another app is in front needs Input Monitoring (System Settings > Privacy & Security), and macOS asks for it when you switch them on, never before. Windows and Linux read them always. On Wayland they work on the shortcut's wheel.
+**Arrow keys** while a wheel is open: Left and Right move a highlight round the wheel, Up and Down show the next or the previous set of a full wheel. Drop the file on the middle and it goes to the highlighted item; the mouse over a segment still wins. On macOS they are off until switched on in Settings > Wheel > Arrow keys on the wheel: reading the keys while another app is in front needs Input Monitoring (System Settings > Privacy & Security), and macOS asks for it when you switch them on, never before. Windows and Linux read them always. On Wayland they work on the shortcut's wheel, and on GNOME also during a Shift+drag: the app's GNOME Shell extension takes the arrow keys while the wheel is open and hands them to it (a log-out and back in after the update loads the new extension).
 
 Once a wheel is open, the keys keep choosing: add Option (Alt) and it becomes the Tools wheel, press Control instead and it becomes the Actions wheel, keep only Shift and it is the formats again. With no keys held the wheel stays as it is, so they can be let go on the way to a segment. On Linux this works with X11; the Wayland shortcut opens the formats wheel only.
 
@@ -138,8 +153,8 @@ A wheel shows at most ten segments. When it has more to offer, it shows them a s
 Select files in the file manager and hand them to the wheel, no drag needed:
 
 - **macOS**: Finder's right-click menu > **Open in Pirouette Wheel**, at the bottom of the menu below Quick Actions (with many Services installed, Finder groups them in a Services submenu; other apps show it under their menu's Services). Finder hands over the files itself, so Pirouette asks for no permission. A key for it can be set in System Settings > Keyboard > Keyboard Shortcuts > Services (Files and Folders).
-- **Windows**: File Explorer's right-click > **Send to > Convert Wheel**: a shortcut in your own SendTo folder, made at start and switched off in Settings > General.
-- **Linux**: Files' right-click > **Open With** > Convert Wheel (the app's own desktop entry lists the file types it takes).
+- **Windows**: File Explorer's right-click > **Send to > Pirouette**: a shortcut in your own SendTo folder, made at start and switched off in Settings > General.
+- **Linux**: Files' right-click > **Open With** > Pirouette (the app's own desktop entry lists the file types it takes).
 
 The wheel opens in the middle with the keyboard: Left and Right pick a segment, Up and Down show the next or previous set, **Enter** applies the picked item, **Esc** closes, and a tap of Option (Alt) or Control switches to the Tools or Actions wheel (the one those keys open during a drag) and the same tap again goes back; **Tab** and Shift+Tab go round all three. The wheel stays switched with the key let go, so Left, Right and Enter work on it (holding Control with an arrow is the system's: on macOS it moves to another desktop). It closes by itself after a minute. On macOS the keys need no Input Monitoring here: the wheel has the keyboard itself. (Council 2026-11-10: the system hands over the selection; no global hotkey and no reading of another app's selection.)
 
@@ -158,7 +173,7 @@ Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS
 **Linux** (`src-tauri/src/linux.rs`)
 
 - **X11:** like Windows. A drag that starts in a file manager (Files/Nautilus, Nemo, Caja, Thunar, Dolphin, PCManFM) or on the desktop, with Shift held, opens the wheel at the cursor.
-- **Wayland:** apps can't watch the pointer, so the wheel opens from a keyboard shortcut running `convert-wheel --show`, which reaches the running app over a socket in `XDG_RUNTIME_DIR`. That wheel waits for a file; Esc, a click in the middle or 20 seconds close it.
+- **Wayland:** apps can't watch the pointer, so the wheel opens from a keyboard shortcut running `pirouette --show`, which reaches the running app over a socket in `XDG_RUNTIME_DIR`. That wheel waits for a file; Esc, a click in the middle or 20 seconds close it.
 - **Wayland on GNOME:** GNOME Shell can see drags, so the app installs a small GNOME Shell extension of its own (`src-tauri/gnome-shell/`, `src-tauri/src/gnome_shell.rs`) into `~/.local/share/gnome-shell/extensions` and turns it on the first time. While a drag goes on, the extension sends the app which app the drag started in and the keys held, over the same socket every 30 ms, and moves the wheel the app opens under the pointer (a Wayland app can't place its own windows). The app opens and switches the wheel from that as it does on X11. GNOME Shell loads a new or updated extension at the next login; the app says so once.
 - **Drop target:** our own GTK handlers instead of WebKit's. They answer "copy" over a format and nothing elsewhere, never "move" even with Shift held, and never ask the file manager to delete the original.
 - **Menu bar icon:** shown through AppIndicator.
@@ -167,13 +182,15 @@ Install steps are in [INSTALL.md](INSTALL.md). What works differently from macOS
 
 ## Updates
 
-From version 0.1.1 the app updates itself from this repo's [Releases page](https://github.com/oracola91/convert-wheel/releases). Thirty seconds after it starts, then once a day, it reads `latest.json` from the newest published release (a request to github.com, through the system proxy). When there is a newer version, a notification says so and the menu shows **Install Update … and Restart**. Nothing installs until the user chooses it, or starts the app with `convert-wheel --update`. Conversions still running are finished first.
+From version 0.1.1 the app updates itself from this repo's [Releases page](https://github.com/oracola91/pirouette/releases). Thirty seconds after it starts, then once a day, it reads `latest.json` from the newest published release (a request to github.com, through the system proxy). When there is a newer version, a notification says so and the menu shows **Install Update … and Restart**. Nothing installs until the user chooses it, or starts the app with `pirouette --update`. Conversions still running are finished first.
 
 **What protects an update.** Every update file is signed with the project's update key (minisign, Ed25519), and the signature records the version it was made for. The app checks the signature against the public key built into it (`plugins.updater.pubkey` in `tauri.conf.json`) and refuses an update whose signature or version doesn't match (`requireSignedVersion`), so a changed file, a fake one, or an older build relabelled as newer is not installed. Only newer versions install. Files the app downloads itself carry no "downloaded from the internet" mark, so updates don't go through SmartScreen or Gatekeeper: the signature check is the control.
 
-**Where the key is.** Two copies: a secret in this repo's `release` environment on GitHub, which only `v*` tags can use and only the release job's signing step sees (the builds never do); and `~/.tauri/convert-wheel-updater.key` on the release Mac, with its password in the Keychain, used only by the last command of `scripts/release-macos.sh`. Keep an offline backup of the key file and its password in a password manager.
+**The installers are not code-signed, on purpose.** A certificate Windows and macOS trust costs a yearly fee and a hardware or cloud key store, which this personal project doesn't have, so the first launch of a download warns about an unknown publisher. INSTALL.md, *Why the files aren't signed*, says what protects a download instead (checksums, the update signature) and how to open a checked file.
 
-**The Mac code-signing certificate.** macOS remembers which folders an app may open (Downloads, Documents) by the app's signature. An app signed ad hoc gets a new signature with every build, so after every update macOS would ask again. Releases and `scripts/install-macos.sh` builds are therefore signed with the project's own certificate, "Convert Wheel Signing", made once with `scripts/macos-signing-cert.sh` and kept in the release Mac's login keychain, with a backup (.p12 and its password) in a password manager. It is self-signed, not an Apple Developer ID: it keeps the permissions across updates, but macOS still asks for "Open Anyway" on the first launch of a downloaded copy.
+**Where the key is.** Two copies: a secret in this repo's `release` environment on GitHub, which only `v*` tags can use and only the release job's signing step sees (the builds never do); and `~/.tauri/pirouette-updater.key` on the release Mac, with its password in the Keychain, used only by the last command of `scripts/release-macos.sh`. Keep an offline backup of the key file and its password in a password manager.
+
+**The Mac code-signing certificate.** macOS remembers which folders an app may open (Downloads, Documents) by the app's signature. An app signed ad hoc gets a new signature with every build, so after every update macOS would ask again. Releases and `scripts/install-macos.sh` builds are therefore signed with the project's own certificate, "Pirouette Signing", made once with `scripts/macos-signing-cert.sh` and kept in the release Mac's login keychain, with a backup (.p12 and its password) in a password manager. It is self-signed, not an Apple Developer ID: it keeps the permissions across updates, but macOS still asks for "Open Anyway" on the first launch of a downloaded copy.
 
 **If the key is lost,** installed copies can no longer be updated: publish a build with a new key and ask everyone to install it once by hand. **If the key may have leaked,** do the same at once: generate a new key, put its public half in `tauri.conf.json`, replace both copies of the private key, release, and tell users to reinstall from the Releases page; copies with the old key can be offered files signed with the leaked one until they do.
 
@@ -185,10 +202,10 @@ The ring icon in the menu bar opens a short menu:
 
 - **Last: …**: how the last drop went, for when notifications are off. A click on it opens the folder with the new files selected, like a click on the notification. While a drop converts, the line shows how far it is: "Converting 3 of 10 to PNG…", with a percent for audio and video, or the time so far for a tool that doesn't report one.
 - **Stop Converting**: ends the drop being converted now. Files already done stay; the one in progress leaves nothing behind. Drops queued after it still run.
-- **Install ffmpeg…**: appears when a drop needed a converter that isn't installed, and the notification points to it. It runs `brew install` on macOS, `winget install` on Windows, or on Ubuntu and Debian `apt-get install` through pkexec (the desktop asks for the admin password) for that converter (several in a row: "Install ffmpeg and MuPDF…"), checks the app can now find it, and says so; then drop the files again. Without Homebrew it opens brew.sh. Without winget it first registers App Installer, which brings winget (Microsoft's own fix: a new Windows account gets it only some time after the first sign-in); if winget is still missing, the Microsoft Store opens on App Installer. On Windows, choosing it accepts the package's terms as typing the command would, and packages that install for all users, such as LibreOffice, still ask for admin rights. The package manager's last lines go to the log. Other Linux systems get the notification that names the command; the setup script installs everything at once.
+- **Install ffmpeg…**: appears when a drop needed a converter that isn't installed, and the notification points to it. It runs `brew install` on macOS, `winget install` on Windows, or on Linux the system's own package manager through pkexec (the desktop asks for the admin password): `apt-get install` on Debian and Ubuntu, `dnf install` on Fedora, `pacman -S --needed` on Arch, `zypper install` on openSUSE, for that converter (several in a row: "Install ffmpeg and MuPDF…"), checks the app can now find it, and says so; then drop the files again. Without Homebrew it opens brew.sh. Without winget it first registers App Installer, which brings winget (Microsoft's own fix: a new Windows account gets it only some time after the first sign-in); if winget is still missing, the Microsoft Store opens on App Installer. On Windows, choosing it accepts the package's terms as typing the command would, and packages that install for all users, such as LibreOffice, still ask for admin rights. The package manager's last lines go to the log. Fedora's and openSUSE's own ffmpeg has no H.264 encoder (MP4, MOV and MKV out need it; RPM Fusion or Packman have the full one). Other Linux systems get the notification that names the command; the setup script (Debian and Ubuntu) installs everything at once.
 - **Settings…** (Cmd+, on macOS): the Settings window, below.
 - **Check for Updates… / Install Update … and Restart**.
-- **Quit Pirouette** (Quit Convert Wheel on Windows and Linux).
+- **Quit Pirouette**.
 
 Stop Converting shows only while a drop converts, and Install only while a drop found a converter missing.
 
@@ -199,8 +216,11 @@ The **Settings window** holds everything else, in four tabs, the same on every s
 - **Open at login**: adds or removes Pirouette in System Settings > General > Login Items. Only works for the installed app.
 - **Save converted files**: next to the original (default) or in Downloads. When the original's folder can't be written to, the file goes to Downloads either way and the notification says so.
 - **Shelf at the top of the screen**: on unless switched off (not on Wayland).
+- **Terminal**: what Terminal on the Actions wheel opens. The list shows the terminals found on this computer: on macOS Terminal, iTerm2, Warp, Ghostty, kitty, Alacritty and WezTerm; on Windows Windows PowerShell, PowerShell 7, Windows Terminal, Command Prompt and Git Bash; on Linux GNOME Terminal, Console, Ptyxis, Konsole, Xfce Terminal, MATE Terminal, Tilix, Terminator, kitty, Alacritty, WezTerm, Ghostty and foot. The folder always goes in as its own argument, never inside a command.
+- **Hide the menu bar icon** (the icon in the notification area on Windows, the tray icon on Linux): Pirouette keeps running without it. Opening Pirouette again (Spotlight, Launchpad or Applications; the Start menu; the app list) shows Settings, where it can be switched back on.
+- **Hold to convert** (not on Wayland): press a file, hold it still for half a second, then drag, and the Formats wheel opens without a key. Made for touch screens, where no key can be held during a drag. Off unless switched on; a quick drag still just moves the file.
 - **Install Missing Converters…** (where Install works): installs every converter the app can't find in one run of the same Install (one-step setup); the line above it names them. LibreOffice is a large download.
-- **Update Converters…** (where Install works): a button that asks the same package manager for a newer version of every converter the app finds: `brew upgrade`, `winget upgrade`, or one `apt-get install --only-upgrade` for all of them on Ubuntu and Debian (one password; apt uses the package lists the system refreshed last, which Ubuntu does daily). A converter the package manager didn't install, such as a LibreOffice downloaded from its website, is left alone, and so is the bsdtar built into macOS and Windows. The notification says which ones were updated, which were already up to date, and which were left alone. One package manager job runs at a time, so Install waits for it.
+- **Update Converters…** (where Install works): a button that asks the same package manager for a newer version of every converter the app finds: `brew upgrade`, `winget upgrade`, or on Linux one run for all of them (one password): `apt-get install --only-upgrade`, `dnf upgrade` or `zypper update`, from the package lists the system refreshed last. Arch updates as a whole (`sudo pacman -Syu`), so there the notification says that instead of upgrading single packages. A converter the package manager didn't install, such as a LibreOffice downloaded from its website, is left alone, and so is the bsdtar built into macOS and Windows. The notification says which ones were updated, which were already up to date, and which were left alone. One package manager job runs at a time, so Install waits for it.
 
 **Wheel**
 
@@ -228,9 +248,9 @@ Lossless formats (PNG, TIFF, WAV, FLAC, AIFF) and documents have no quality to c
 
 **About**: the version, and **Show Log**, which opens the folder with the log file.
 
-Settings are kept in `~/Library/Application Support/local.convertwheel/settings.json` (Windows: `%APPDATA%\local.convertwheel`, Linux: `~/.config/local.convertwheel`). A settings file that can't be used is kept aside as `settings.json.bad` (or, if it can't be read at all, left alone and never saved over), and a notification says the settings were reset.
+Settings are kept in `~/Library/Application Support/io.github.oracola91.pirouette/settings.json` (Windows: `%APPDATA%\io.github.oracola91.pirouette`, Linux: `~/.config/io.github.oracola91.pirouette`). A settings file that can't be used is kept aside as `settings.json.bad` (or, if it can't be read at all, left alone and never saved over), and a notification says the settings were reset.
 
-**Show Log** opens the folder with the log of starts, conversions, errors and update checks: `~/Library/Logs/local.convertwheel/convert-wheel.log` (Windows: `%LOCALAPPDATA%\local.convertwheel\logs`, Linux: `~/.local/share/local.convertwheel/logs`). It holds file names, not folders (tool messages are stripped of paths), is readable by the user only, and keeps at most about 1 MB.
+**Show Log** opens the folder with the log of starts, conversions, errors and update checks: `~/Library/Logs/io.github.oracola91.pirouette/pirouette.log` (Windows: `%LOCALAPPDATA%\io.github.oracola91.pirouette\logs`, Linux: `~/.local/share/io.github.oracola91.pirouette/logs`). It holds file names, not folders (tool messages are stripped of paths), is readable by the user only, and keeps at most about 1 MB.
 
 **Quit** while conversions are running asks for a second Quit within 10 seconds, then stops them.
 
@@ -251,7 +271,7 @@ Then:
 npm install --ignore-scripts
 cd src-tauri
 cargo build
-./target/debug/convert-wheel
+./target/debug/pirouette
 ```
 
 The app has no Dock icon. It shows an orange icon in the menu bar, and that menu has Quit.
@@ -261,7 +281,7 @@ The app has no Dock icon. It shows an orange icon in the menu bar, and that menu
 The same converter runs from the command line. It prints the path of each new file:
 
 ```sh
-./target/debug/convert-wheel --convert pdf "report.docx" "budget.xlsx"
+./target/debug/pirouette --convert pdf "report.docx" "budget.xlsx"
 ```
 
 ## Test it by hand
@@ -296,7 +316,7 @@ Also worth trying: several files at once, a file with no extension, text dragged
 
 ## Fonts in PDFs
 
-LibreOffice running without a window only sees its own bundled fonts. The converter gives it a font list (`~/Library/Caches/local.convertwheel/fontconfig/fonts.conf`) with the macOS font folders, so documents keep their fonts.
+LibreOffice running without a window only sees its own bundled fonts. The converter gives it a font list (`~/Library/Caches/io.github.oracola91.pirouette/fontconfig/fonts.conf`) with the macOS font folders, so documents keep their fonts.
 
 Word's default font since 2023, Aptos, ships inside Word only, and its licence limits it to Microsoft products. So it is not handed to LibreOffice. Helvetica Neue, which comes with macOS, stands in for it. If Aptos is ever properly installed on the Mac, the real font is used instead. Calibri and Cambria need nothing, because LibreOffice ships look-alikes with the same spacing.
 

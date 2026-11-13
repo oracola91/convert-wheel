@@ -35,6 +35,54 @@ const PENDING_TIMEOUT: Duration = Duration::from_secs(3);
 const PINNED_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long the keyboard wheel waits for a choice before it closes by itself.
 const KEYBOARD_TIMEOUT: Duration = Duration::from_secs(60);
+/// Hold to Convert: how long a press must stay still before the drag starts.
+pub(crate) const HOLD: Duration = Duration::from_millis(500);
+
+/// Hold to Convert (Settings > General), read by each system's trigger loop.
+static HOLD_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switches Hold to Convert on or off: at the start from the settings, and from
+/// Settings.
+pub(crate) fn set_hold(on: bool) {
+    HOLD_ON.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn hold_on() -> bool {
+    HOLD_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Watches one press for Hold to Convert: a file pressed and held still for HOLD, then
+/// dragged, opens the Formats wheel with no key held. Made for touch screens, where no
+/// key can be held during a drag; a quick drag still just moves the file.
+#[derive(Default)]
+pub(crate) struct HoldWatch {
+    start: Option<(f64, f64)>,
+    still: Duration,
+    moved: bool,
+}
+
+impl HoldWatch {
+    /// One poll with the button down, the pointer at `at`. Moving more than `slack`
+    /// either way (the system's own drag distance) ends the still part.
+    pub(crate) fn poll(&mut self, at: (f64, f64), slack: (f64, f64), step: Duration) {
+        match self.start {
+            None => self.start = Some(at),
+            Some(start) if !self.moved => {
+                if (at.0 - start.0).abs() > slack.0 || (at.1 - start.1).abs() > slack.1 {
+                    self.moved = true;
+                } else {
+                    self.still += step;
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// The press stayed still long enough, and then the pointer moved off: a drag.
+    pub(crate) fn held(&self) -> bool {
+        self.moved && self.still >= HOLD
+    }
+}
 
 #[derive(Clone, Serialize)]
 struct WheelShow {
@@ -121,6 +169,7 @@ pub fn start(app: AppHandle) {
         let mut held: u8 = 0;
         let mut keys = KeyFollower::default();
         let mut arrows = Arrows::default();
+        let mut hold = HoldWatch::default();
         // This drag carries files, so the shelf follows it (until the wheel opens), and
         // whether that was checked yet.
         let mut shelf_drag = false;
@@ -150,6 +199,7 @@ pub fn start(app: AppHandle) {
                     held = 0;
                     keys = KeyFollower::default();
                     arrows = Arrows::default();
+                    hold = HoldWatch::default();
                     shelf_drag = false;
                     idle = (idle + 1) % SHELF_REFRESH;
                     if idle == 0 {
@@ -162,22 +212,30 @@ pub fn start(app: AppHandle) {
                     shelf_drag = !macos::dragged_files().is_empty();
                 }
                 held = if macos::shift_down() { held.saturating_add(1) } else { 0 };
-                if dragging && !shown && held >= KEYS_SETTLE {
+                // Finder starts a drag after about 3 points of movement.
+                hold.poll(macos::mouse_at(), (3.0, 3.0), POLL);
+                let wanted = if dragging && !shown && held >= KEYS_SETTLE {
                     // Keys switched off in the menu open no wheel; the drag goes on as usual.
-                    if let Some(which) = Which::from_keys(macos::option_down(), macos::control_down()) {
-                        let paths = macos::dragged_files();
-                        // Not a file drag (text, a tab, ...): ignore it until the next drag.
-                        if paths.is_empty() {
-                            dragging = false;
-                            return;
-                        }
-                        show_wheel(&app, paths, which);
-                        shown = true;
-                        // The wheel has this drag now: the shelf steps aside.
-                        if shelf_drag {
-                            shelf_drag = false;
-                            crate::shelf_window::drag_ended_soon(&app);
-                        }
+                    Which::from_keys(macos::option_down(), macos::control_down())
+                } else if dragging && !shown && held == 0 && hold_on() && hold.held() {
+                    // Hold to Convert: held still, then dragged, with no key.
+                    Some(Which::Formats)
+                } else {
+                    None
+                };
+                if let Some(which) = wanted {
+                    let paths = macos::dragged_files();
+                    // Not a file drag (text, a tab, ...): ignore it until the next drag.
+                    if paths.is_empty() {
+                        dragging = false;
+                        return;
+                    }
+                    show_wheel(&app, paths, which);
+                    shown = true;
+                    // The wheel has this drag now: the shelf steps aside.
+                    if shelf_drag {
+                        shelf_drag = false;
+                        crate::shelf_window::drag_ended_soon(&app);
                     }
                 } else if shown {
                     follow_keys(&app, &mut keys, macos::shift_down(), macos::option_down(), macos::control_down());
@@ -344,7 +402,7 @@ pub(crate) fn files_in_args(args: &[String], cwd: &std::path::Path) -> Option<Ve
 }
 
 /// Opens the wheel from the keyboard shortcut and closes it again if no file comes.
-/// `convert-wheel --show tools` (or actions) opens that wheel instead of the formats.
+/// `pirouette --show tools` (or actions) opens that wheel instead of the formats.
 #[cfg(target_os = "linux")]
 pub(crate) fn show_pinned(app: &AppHandle, which: Which) {
     let generation = open_wheel(app, Vec::new(), true, which);
@@ -597,6 +655,12 @@ pub(crate) fn drop_on_wheel(app: &AppHandle, hover: Hover, paths: Vec<String>) -
             hide_wheel(app, false, None);
             false
         }
+        // Compress to %: one window for all the files dropped.
+        Some("tool:percent") if paths.len() > 1 => {
+            hide_wheel(app, true, None);
+            crate::editor::open_percent(app, paths);
+            true
+        }
         // Crop first opens its window; the job is queued from there.
         Some(tool) if !paths.is_empty() && formats::opens_editor(tool) => {
             hide_wheel(app, true, None);
@@ -689,6 +753,12 @@ mod macos {
         NSEvent::pressedMouseButtons() & 1 == 1
     }
 
+    /// The pointer, in screen points.
+    pub fn mouse_at() -> (f64, f64) {
+        let at = NSEvent::mouseLocation();
+        (at.x, at.y)
+    }
+
     pub fn shift_down() -> bool {
         NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Shift)
     }
@@ -761,6 +831,32 @@ mod arrow_tests {
         assert_eq!(files_in_args(&args(&[]), elsewhere), None);
         assert_eq!(files_in_args(&args(&["--update"]), elsewhere), None);
         assert_eq!(files_in_args(&args(&[&file, "/no/such/file"]), elsewhere), None);
+    }
+
+    #[test]
+    fn a_press_held_still_then_dragged_counts_as_a_hold() {
+        use super::{HoldWatch, HOLD};
+        use std::time::Duration;
+        let step = Duration::from_millis(30);
+        let polls = (HOLD.as_millis() / step.as_millis()) as usize;
+        // Still for the whole hold, then a drag: a hold.
+        let mut w = HoldWatch::default();
+        for _ in 0..=polls {
+            w.poll((100.0, 100.0), (3.0, 3.0), step);
+        }
+        assert!(!w.held(), "still pressing, no drag yet");
+        w.poll((102.0, 101.0), (3.0, 3.0), step);
+        assert!(!w.held(), "a wobble inside the slack is still");
+        w.poll((120.0, 100.0), (3.0, 3.0), step);
+        assert!(w.held());
+        // A quick drag is a plain drag, and moving back doesn't make it a hold.
+        let mut quick = HoldWatch::default();
+        quick.poll((100.0, 100.0), (3.0, 3.0), step);
+        quick.poll((110.0, 100.0), (3.0, 3.0), step);
+        for _ in 0..=polls {
+            quick.poll((100.0, 100.0), (3.0, 3.0), step);
+        }
+        assert!(!quick.held());
     }
 
     #[test]

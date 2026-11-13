@@ -87,11 +87,24 @@ function general(v) {
   if (v.shelf !== null) {
     rows.push(row('Shelf at the top of the screen', toggle('shelf', v.shelf, (e) => change({ what: 'shelf', on: e.target.checked })), 'Holds files you drag to the top of the screen, to drag out later.'));
   }
+  // The Actions wheel's Terminal: the system's own, or one of those found here.
+  const terminal = h(
+    'select',
+    { id: 'terminal', onchange: (e) => change({ what: 'terminal', key: e.target.value === 'default' ? null : e.target.value }) },
+    [{ key: 'default', label: 'System default' }, ...v.terminals].map((t) => h('option', { value: t.key, selected: (v.terminal ?? 'default') === t.key }, t.label)),
+  );
+  rows.push(row('Terminal', terminal, 'What Terminal on the Actions wheel opens, in the file\'s folder.'));
+  const icon = { macos: 'menu bar icon', windows: 'icon in the notification area', linux: 'tray icon' }[v.system];
+  const back = { macos: 'Spotlight, Launchpad or Applications', windows: 'the Start menu', linux: 'the app list' }[v.system];
+  rows.push(row(`Hide the ${icon}`, toggle('hide-icon', v.icon_hidden, (e) => change({ what: 'hide-icon', on: e.target.checked })), `${v.app} keeps working. Open it again from ${back} to come back to Settings.`));
+  if (v.hold !== null) {
+    rows.push(row('Hold to convert', toggle('hold', v.hold, (e) => change({ what: 'hold', on: e.target.checked })), 'Press a file, hold it still for half a second, then drag: the Formats wheel opens without a key. For touch screens.'));
+  }
   // The keyboard wheel: how each system hands it the selected files.
   const entry = {
     macos: ['Finder: right-click > Services > Open in Pirouette Wheel', 'Set a key for it in System Settings > Keyboard > Keyboard Shortcuts > Services. Then ← → pick, Enter applies, Esc closes.'],
-    windows: ['File Explorer: right-click > Send to > Convert Wheel', 'Then ← → pick, Enter applies, Esc closes.'],
-    linux: ['Files: right-click > Open With > Convert Wheel', 'Then ← → pick, Enter applies, Esc closes.'],
+    windows: ['File Explorer: right-click > Send to > Pirouette', 'Then ← → pick, Enter applies, Esc closes.'],
+    linux: ['Files: right-click > Open With > Pirouette', 'Then ← → pick, Enter applies, Esc closes.'],
   }[v.system];
   const keyboardRow = v.send_to !== null
     ? row(entry[0], toggle('send-to', v.send_to, (e) => change({ what: 'send-to', on: e.target.checked })), entry[1])
@@ -101,6 +114,17 @@ function general(v) {
     group('', ...rows),
     group('Open the wheel from the keyboard', keyboardRow),
   ];
+  // Pages files come from Apple's Pages app, which only the App Store has (macOS).
+  const pagesRow = v.pages === null
+    ? null
+    : v.pages
+      ? row('Pages is installed, for Pages files', h('span', { class: 'note' }, ''))
+      : row(
+        'Pages, for Pages files: not installed',
+        h('button', { type: 'button', class: 'action', id: 'get-pages', onclick: () => invoke('settings_action', { action: 'get-pages' }).catch((e) => showProblem(String(e))) }, 'Get Pages…'),
+        'Free in the App Store. Open it once after installing, then come back here.',
+      );
+  if (!v.converters && pagesRow) parts.push(group('Converters', pagesRow));
   if (v.converters) {
     const button = h(
       'button',
@@ -148,7 +172,7 @@ function general(v) {
         'All of them in one go (LibreOffice is a large download). A notification says when they are in.',
       )
       : row('All converters are installed', h('span', { class: 'note' }, ''));
-    parts.push(group('Converters', installRow, row('Newer versions of ffmpeg, ImageMagick and the others', button, 'Only those the package manager installed. A notification says what changed.')));
+    parts.push(group('Converters', installRow, pagesRow, row('Newer versions of ffmpeg, ImageMagick and the others', button, 'Only those the package manager installed. A notification says what changed.')));
   }
   return parts;
 }

@@ -2,7 +2,7 @@
 // shapes to pick, quarter turns, then Crop or Cancel. The app hands over a preview of
 // the picture and its size; this page sends back only the box, in pixels of the full
 // picture as turned.
-if (!window.__TAURI__) throw new Error('Convert Wheel: the Tauri bridge is missing');
+if (!window.__TAURI__) throw new Error('Pirouette: the Tauri bridge is missing');
 const { invoke } = window.__TAURI__.core;
 
 const stage = document.getElementById('stage');

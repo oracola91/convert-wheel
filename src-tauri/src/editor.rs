@@ -38,6 +38,9 @@ impl Editing {
 pub struct Session {
     #[serde(skip)]
     path: PathBuf,
+    /// Compress to %: the other files dropped with the first. Empty for the others.
+    #[serde(skip)]
+    more: Vec<PathBuf>,
     name: String,
     #[serde(flatten)]
     view: View,
@@ -72,6 +75,15 @@ enum View {
     Order { pages: Vec<String> },
     /// What the file is, what it says (label, value) and the tags that can be changed.
     Info { what: &'static str, facts: Vec<(String, String)>, fields: Vec<convert::info::Field> },
+    /// Resize: the picture's or video's size upright, what it is ("picture", "video"),
+    /// and the smallest and largest longest side the app takes.
+    Resize { width: u32, height: u32, what: &'static str, min: u32, max: u32 },
+    /// Password: the longest password the app takes.
+    Lock { max: usize },
+    /// Snapshot: how long the video plays; frames come one at a time (editor_frame).
+    Snapshot { length_ms: u64 },
+    /// Compress to %: how many files, their size together, and the shares taken.
+    Percent { count: usize, bytes: u64, min: u8, max: u8 },
 }
 
 impl View {
@@ -86,6 +98,10 @@ impl View {
             View::Parts { .. } => "parts.html",
             View::Order { .. } => "order.html",
             View::Info { .. } => "info.html",
+            View::Resize { .. } => "resize.html",
+            View::Lock { .. } => "lock.html",
+            View::Snapshot { .. } => "snapshot.html",
+            View::Percent { .. } => "percent.html",
         }
     }
 
@@ -94,6 +110,10 @@ impl View {
         match self {
             View::Size { .. } => ((480.0, 370.0), (420.0, 330.0)),
             View::Speed { .. } => ((480.0, 300.0), (420.0, 280.0)),
+            View::Resize { .. } => ((480.0, 340.0), (420.0, 320.0)),
+            View::Lock { .. } => ((440.0, 300.0), (400.0, 280.0)),
+            View::Snapshot { .. } => ((720.0, 560.0), (520.0, 440.0)),
+            View::Percent { .. } => ((480.0, 320.0), (420.0, 300.0)),
             View::Parts { .. } => ((480.0, 360.0), (420.0, 330.0)),
             View::Info { .. } => ((480.0, 560.0), (420.0, 360.0)),
             // Room for all of Mark Up's tools on one row.
@@ -115,6 +135,10 @@ impl View {
             View::Parts { .. } => format!("Split: {name}"),
             View::Order { .. } => format!("Reorder: {name}"),
             View::Info { .. } => format!("Info: {name}"),
+            View::Resize { .. } => format!("Resize: {name}"),
+            View::Lock { .. } => format!("Password: {name}"),
+            View::Snapshot { .. } => format!("Snapshot: {name}"),
+            View::Percent { .. } => format!("Compress to %: {name}"),
         }
     }
 }
@@ -127,7 +151,7 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 /// that happens on a thread of its own and the window opens once it is ready.
 pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
     let [path] = paths.as_slice() else {
-        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Black Out, Trim, Bleep, Speed, Split, Reorder, Info and Compress to a Size open one file: drag just one.");
+        notify(app, "One file at a time", "Crop, Adjust, Mark Up, Black Out, Trim, Bleep, Speed, Split, Reorder, Info, Resize, Password, Snapshot and Compress to a Size open one file: drag just one.");
         return;
     };
     let (app, path, tool) = (app.clone(), PathBuf::from(path), tool.to_string());
@@ -141,6 +165,12 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
         } else if tool == "tool:order" {
             convert::page_pictures(&path)
                 .map(|pngs| View::Order { pages: pngs.iter().map(|png| data_url("image/png", png)).collect() })
+        } else if tool == "tool:resize" {
+            resize_view(&path)
+        } else if tool == "tool:snapshot" {
+            convert::length_ms(&path).map(|length_ms| View::Snapshot { length_ms })
+        } else if tool == "tool:lock" {
+            Ok(View::Lock { max: convert::MAX_PASSWORD })
         } else if tool == "tool:info" {
             convert::info::read(&path).map(|i| View::Info { what: i.what, facts: i.facts, fields: i.fields })
         } else if tool == "tool:markup" {
@@ -170,7 +200,7 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
             Ok(view) => {
                 let name = file_name(&path);
                 let (page, title, size) = (view.page(), view.title(&name), view.window());
-                *app.state::<Editing>().lock() = Some(Session { path, name, view });
+                *app.state::<Editing>().lock() = Some(Session { path, more: Vec::new(), name, view });
                 let handle = app.clone();
                 let _ = app.run_on_main_thread(move || show_window(&handle, page, &title, size));
             }
@@ -180,6 +210,42 @@ pub fn open(app: &AppHandle, tool: &str, paths: Vec<String>) {
             }
         }
     });
+}
+
+/// Compress to %: one window for every file dropped (two or more).
+pub fn open_percent(app: &AppHandle, paths: Vec<String>) {
+    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    let bytes = paths.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+    let [first, rest @ ..] = paths.as_slice() else {
+        return;
+    };
+    let view = View::Percent { count: paths.len(), bytes, min: convert::PERCENT_MIN, max: convert::PERCENT_MAX };
+    let name = format!("{} files", paths.len());
+    let (page, title, size) = (view.page(), view.title(&name), view.window());
+    *app.state::<Editing>().lock() = Some(Session { path: first.clone(), more: rest.to_vec(), name, view });
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || show_window(&handle, page, &title, size));
+}
+
+/// Compress to %: a share within the limits, for all the files at once.
+#[tauri::command]
+pub fn editor_percent(app: AppHandle, editing: State<Editing>, percent: u8) -> Result<(), String> {
+    let mut session = editing.lock();
+    let Some(current) = session.as_ref() else {
+        return Err("nothing to do: drag the files onto the wheel again".into());
+    };
+    let View::Percent { min, max, .. } = current.view else {
+        return Err("this window doesn't compress to a share".into());
+    };
+    if !(min..=max).contains(&percent) {
+        return Err(format!("pick a share from {min}% to {max}%"));
+    }
+    let paths = std::iter::once(&current.path).chain(&current.more).map(|p| p.to_string_lossy().into_owned()).collect();
+    *session = None;
+    drop(session);
+    close_window(&app);
+    crate::enqueue_edits(&app, paths, "tool:percent", Edit::Percent(percent));
+    Ok(())
 }
 
 /// Shows the editor window on `page`, or moves the open one there for the new file.
@@ -235,6 +301,16 @@ fn size_view(path: &Path) -> Result<View, String> {
         smaller_below: warnings.map(|w| w.0),
         blurry_below: warnings.map(|w| w.1),
     })
+}
+
+/// What Resize shows: the size upright (a video's from one of its frames), and the
+/// limits for the longest side.
+fn resize_view(path: &Path) -> Result<View, String> {
+    let ext = crate::formats::extension(path).unwrap_or_default();
+    let video = crate::formats::kind_of(&ext) == Some(crate::formats::Kind::Video);
+    let (width, height, _) = if video { convert::video_preview(path)? } else { convert::preview(path)? };
+    let (what, max) = if video { ("video", convert::RESIZE_VIDEO_MAX) } else { ("picture", convert::RESIZE_PICTURE_MAX) };
+    Ok(View::Resize { width, height, what, min: convert::RESIZE_MIN, max })
 }
 
 /// For Speed and Split: how long the file plays, and whether it is a video or a sound.
@@ -312,6 +388,28 @@ pub fn editor_size(app: AppHandle, editing: State<Editing>, bytes: u64) -> Resul
     })
 }
 
+/// Resize: a longest side within the limits, and not the size it already has.
+#[tauri::command]
+pub fn editor_resize(app: AppHandle, editing: State<Editing>, side: u32) -> Result<(), String> {
+    finish(&app, &editing, "tool:resize", |view| match view {
+        View::Resize { width, height, min, max, .. } if (*min..=*max).contains(&side) && side != (*width).max(*height) => {
+            Ok(Edit::Resize(side))
+        }
+        View::Resize { width, height, .. } if side == (*width).max(*height) => Err("that is the size it has already".into()),
+        View::Resize { min, max, .. } => Err(format!("pick a size from {min} to {max} pixels")),
+        _ => Err("this window doesn't resize".into()),
+    })
+}
+
+/// Password: one the app takes (convert::Password::new says why not).
+#[tauri::command]
+pub fn editor_lock(app: AppHandle, editing: State<Editing>, password: String) -> Result<(), String> {
+    finish(&app, &editing, "tool:lock", |view| match view {
+        View::Lock { .. } => convert::Password::new(password).map(Edit::Password),
+        _ => Err("this window doesn't add a password".into()),
+    })
+}
+
 /// Speed: one of the speeds the window offers.
 #[tauri::command]
 pub fn editor_speed(app: AppHandle, editing: State<Editing>, percent: u16) -> Result<(), String> {
@@ -377,6 +475,28 @@ pub fn editor_info(app: AppHandle, editing: State<Editing>, changes: Vec<(String
     finish(&app, &editing, "tool:info", |view| match view {
         View::Info { fields, .. } => convert::info::check(&changes, fields).map(|()| Edit::Info(changes)),
         _ => Err("this window doesn't change tags".into()),
+    })
+}
+
+/// Snapshot's window: the frame at `ms`, as a JPEG data: URL. On a thread of its own,
+/// as ffmpeg takes a moment.
+#[tauri::command(async)]
+pub fn editor_frame(editing: State<'_, Editing>, ms: u64) -> Result<String, String> {
+    let path = match editing.lock().as_ref() {
+        Some(Session { path, view: View::Snapshot { length_ms }, .. }) if ms <= *length_ms => path.clone(),
+        Some(Session { view: View::Snapshot { .. }, .. }) => return Err("that moment is past the end".into()),
+        _ => return Err("this window shows no video".into()),
+    };
+    convert::frame_preview(&path, ms).map(|jpeg| data_url("image/jpeg", &jpeg))
+}
+
+/// Snapshot: a moment within the video.
+#[tauri::command]
+pub fn editor_snapshot(app: AppHandle, editing: State<Editing>, ms: u64) -> Result<(), String> {
+    finish(&app, &editing, "tool:snapshot", |view| match view {
+        View::Snapshot { length_ms } if ms <= *length_ms => Ok(Edit::Snapshot(ms)),
+        View::Snapshot { .. } => Err("that moment is past the end".into()),
+        _ => Err("this window takes no snapshot".into()),
     })
 }
 

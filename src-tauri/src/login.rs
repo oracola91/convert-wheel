@@ -44,7 +44,9 @@ mod imp {
     };
 
     const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    const NAME: PCWSTR = w!("Convert Wheel");
+    /// The value's name: the app's name (crate::APP_NAME), which the uninstaller also
+    /// takes away.
+    const NAME: PCWSTR = w!("Pirouette");
 
     /// A development build would register a path that disappears on the next build.
     pub fn available() -> bool {
@@ -57,16 +59,15 @@ mod imp {
         Ok(format!("\"{}\"", exe.display()))
     }
 
-    /// On only if the entry starts this copy; an entry left by a moved or removed copy
-    /// counts as off, and turning it on rewrites it.
-    pub fn is_enabled() -> bool {
+    /// The command under value `name`, if there is one.
+    fn read(name: PCWSTR) -> Option<String> {
         let mut buf = [0u16; 1024];
         let mut size = (buf.len() * 2) as u32;
         let read = unsafe {
             RegGetValueW(
                 HKEY_CURRENT_USER,
                 RUN,
-                NAME,
+                name,
                 RRF_RT_REG_SZ,
                 None,
                 Some(buf.as_mut_ptr().cast()),
@@ -74,10 +75,48 @@ mod imp {
             )
         };
         if read.is_err() {
-            return false;
+            return None;
         }
         let len = (size as usize / 2).saturating_sub(1).min(buf.len());
-        command().is_ok_and(|c| String::from_utf16_lossy(&buf[..len]).eq_ignore_ascii_case(&c))
+        Some(String::from_utf16_lossy(&buf[..len]))
+    }
+
+    /// On only if the entry starts this copy; an entry left by a moved or removed copy
+    /// counts as off, and turning it on rewrites it.
+    pub fn is_enabled() -> bool {
+        read(NAME).is_some_and(|v| command().is_ok_and(|c| v.eq_ignore_ascii_case(&c)))
+    }
+
+    /// Open at Login made by a copy under the app's earlier names (migrate.rs): under
+    /// the earlier name (an MSI update keeps it; the .exe update moves it itself,
+    /// windows/hooks.nsh), or under this name but starting the earlier program file.
+    /// Either way the same choice, starting this copy, and the old value goes.
+    pub fn move_old_entry() {
+        if !available() {
+            return;
+        }
+        let old_name = windows::core::HSTRING::from(crate::migrate::NAME);
+        let old_value = read(PCWSTR(old_name.as_ptr()));
+        let old_program = format!("\\{}.exe", crate::migrate::PROGRAM);
+        let stale = read(NAME).is_some_and(|v| v.to_ascii_lowercase().contains(&old_program));
+        if old_value.is_none() && !stale {
+            return;
+        }
+        match set_enabled(true) {
+            Ok(()) => {
+                if old_value.is_some() {
+                    let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, PCWSTR(old_name.as_ptr())) };
+                }
+                crate::log::line("Open at Login moved from the app's earlier name");
+            }
+            Err(e) => crate::log::line(&format!("couldn't move Open at Login from the app's earlier name: {e}")),
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn the_run_value_carries_the_app_name() {
+        assert_eq!(unsafe { NAME.to_string() }.unwrap(), crate::APP_NAME);
     }
 
     pub fn set_enabled(on: bool) -> Result<(), String> {
@@ -116,7 +155,7 @@ mod imp {
         let config = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-        Some(config.join("autostart/convert-wheel.desktop"))
+        Some(config.join("autostart/pirouette.desktop"))
     }
 
     /// A development build would register a path that disappears on the next build.
@@ -142,7 +181,8 @@ mod imp {
             .filter(|p| p.is_file())
             .map_or_else(|| std::env::current_exe().map_err(|e| e.to_string()), Ok)?;
         let desktop = format!(
-            "[Desktop Entry]\nType=Application\nName=Convert Wheel\nExec={}\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
+            "[Desktop Entry]\nType=Application\nName={}\nExec={}\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n",
+            crate::APP_NAME,
             exec_quote(&exe.to_string_lossy())
         );
         fs::create_dir_all(entry.parent().ok_or("no autostart folder")?)
